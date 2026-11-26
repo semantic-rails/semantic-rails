@@ -426,11 +426,16 @@ VALUE_FILTERS = {
 
 
 UNDECLARED_TOTAL = f"{ORDER}.order_total_cents"
-# The shapes that multiply the order total, a column no dimension declares, also name it.
+# The shapes that multiply the order total, a column no dimension declares, also name it, as do
+# those where the customer's revenue decides what else appears (revenue beside it, the stores).
 COMPUTES_TOTAL = {
     "arithmetic": [UNDECLARED_TOTAL, ORDER_CUSTOMER_ID],
     "case_in_arithmetic": [ORDER_CUSTOMER_ID, UNDECLARED_TOTAL],
+    "entity_filter_input": [ORDER_CUSTOMER_ID, UNDECLARED_TOTAL],
+    "ratio": [ORDER_CUSTOMER_ID, UNDECLARED_TOTAL],
 }
+# Revenue's constraint also holds the customer's revenue in the ratio, whose own column is free.
+ALSO_HOLDS = {"ratio": [[ORDER_CUSTOMER_ID]]}
 
 
 @pytest.mark.parametrize("shape", sorted(VALUE_FILTERS))
@@ -453,10 +458,14 @@ def test_a_filter_in_a_conditional_aggregate_value_is_refused_like_its_condition
     assert violations == [
         {
             "kind": "disallowed_where",
-            "disallowed": COMPUTES_TOTAL.get(shape, [ORDER_CUSTOMER_ID]),
+            "disallowed": disallowed,
             "allowed": [LARGE_ORDER, STORE_NAME],
             "source": "inline_expression",
         }
+        for disallowed in [
+            COMPUTES_TOTAL.get(shape, [ORDER_CUSTOMER_ID]),
+            *ALSO_HOLDS.get(shape, []),
+        ]
     ]
     if shape in COMPUTES_TOTAL:
         return  # its message also names the total (test_a_column_no_dimension_declares_…)
@@ -957,6 +966,7 @@ LARGE_ORDERS = {"kind": "aggregate_if", "aggregation": "count", "condition": IS_
 ONE_CUSTOMERS_ORDERS = {"kind": "aggregate_if", "aggregation": "count", "condition": ONE_CUSTOMER}
 RETURNING_ORDERS = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}}
 REVENUE_MEASURE = {"kind": "measure", "measure": REVENUE}
+LARGEST_FLAG = {"kind": "aggregate_if", "aggregation": "max", "value": IS_LARGE["left"]}
 
 
 def _more_than(value, count):
@@ -983,6 +993,22 @@ GATED_TOTALS = {
     "cohort_case_on_a_metric": (
         _case(_more_than(2, ONE_CUSTOMERS_ORDERS), AOV),
         ORDER_CUSTOMER_ID,
+    ),
+    "customer_count_case": (
+        _case(_more_than(10, _counted("count_distinct", ORDER_CUSTOMER)), REVENUE_MEASURE),
+        ORDER_CUSTOMER_ID,
+    ),
+    "large_order_flag_case": (
+        _case(
+            {
+                "kind": "comparison",
+                "op": "=",
+                "left": LARGEST_FLAG,
+                "right": {"kind": "literal", "value": True},
+            },
+            REVENUE_MEASURE,
+        ),
+        LARGE_ORDER,
     ),
     "filtered_count_case": (_case(_more_than(0, RETURNING_ORDERS), REVENUE_MEASURE), CUSTOMER_TYPE),
     "nullif": (
@@ -1028,6 +1054,87 @@ def test_a_condition_that_gates_a_governed_value_counts_for_it(config, monkeypat
         {
             "kind": "disallowed_where",
             "disallowed": [disallowed],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+# Each value decides what else appears: a count of customers that gates revenue, under one
+# constraint on revenue and the ordering-customer count, whose own column it counts; and having
+# on whether a store has a large order.
+DECIDING_VALUES = {
+    "customer_count_gate": (
+        ["measure.jaffle.ordering_customer_count", REVENUE],
+        _select(
+            _case(_more_than(10, _counted("count_distinct", ORDER_CUSTOMER)), REVENUE_MEASURE),
+            group_by=[STORE_NAME],
+        ),
+        ORDER_CUSTOMER_ID,
+    ),
+    "large_order_having": (
+        REVENUE,
+        {
+            "select": [
+                {"expression": REVENUE, "as": "revenue"},
+                {"expression": LARGEST_FLAG, "as": "large"},
+            ],
+            "group_by": [STORE_NAME],
+            "having": [{"field": "large", "op": "is", "value": True}],
+        },
+        LARGE_ORDER,
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(DECIDING_VALUES))
+def test_a_value_that_decides_what_appears_reads_the_columns_it_aggregates(
+    config, monkeypatch, shape
+):
+    """Each column it aggregates is a filter. A count of the orders' key gates as the order
+    count does and answers."""
+    governed, query, disallowed = DECIDING_VALUES[shape]
+    key = {"kind": "column", "entity": ORDER, "column": "order_id"}
+    orders_gate = _case(_more_than(5, _counted("count", key)), REVENUE_MEASURE)
+    result = _validated(config, {"allowed_where": [STORE_NAME]}, REVENUE, orders_gate)
+    assert result["ok"], result["errors"]
+    _compiles(config, query)
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [disallowed],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_a_read_in_one_select_item_counts_only_for_what_it_shows(config, monkeypatch):
+    """Returning customers' tax per order shares the order count with the average order value
+    beside it: the filter counts for the order count in its own item, not for the average."""
+    filtered_tax = {
+        "kind": "aggregate",
+        "measure": "measure.jaffle.tax_paid_usd",
+        "filter": {"all": [RETURNING]},
+    }
+    per_order = {"kind": "ratio", "numerator": filtered_tax, "denominator": ORDERS}
+    result = _validated(config, {"allowed_where": [STORE_NAME]}, AOV, per_order, AOV)
+    assert result["ok"], result["errors"]
+    query = _select(per_order, group_by=[STORE_NAME])
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, ORDERS)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [CUSTOMER_TYPE],
             "allowed": [STORE_NAME],
             "source": "inline_expression",
         }

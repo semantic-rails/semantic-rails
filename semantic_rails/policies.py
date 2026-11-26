@@ -123,9 +123,9 @@ def query_policy_effects(
     )
     metric_filter_refs = cache(lambda object_id: _metric_filter_refs(config, bound(), object_id))
     # Each constraint's inline filters, read once per request (the policies outlive it).
-    inline_reads: dict[int, list[tuple[str | None, str | _Undeclared]]] = {}
+    inline_reads: dict[int, list[_Read]] = {}
 
-    def inline_filters(policy: SemanticPolicyConfig) -> list[tuple[str | None, str | _Undeclared]]:
+    def inline_filters(policy: SemanticPolicyConfig) -> list[_Read]:
         if id(policy) not in inline_reads:
             normalized = normalize_query(dict(query or {}))
             operands = _counted_operands(policy, bound())
@@ -996,7 +996,7 @@ def _metric_constraint_effect(
     metric_filter_refs: Callable[[str], dict[str, list[str]]],
     bound: Callable[[], BoundQuery],
     object_id: str,
-    inline_filters: Callable[[SemanticPolicyConfig], list[tuple[str | None, str | _Undeclared]]],
+    inline_filters: Callable[[SemanticPolicyConfig], list[_Read]],
 ) -> dict[str, Any]:
     violations = _metric_constraint_violations(
         policy, query_payload, metric_filter_refs, bound, object_id, inline_filters
@@ -1047,7 +1047,7 @@ def _metric_constraint_violations(
     metric_filter_refs: Callable[[str], dict[str, list[str]]],
     bound: Callable[[], BoundQuery],
     object_id: str,
-    inline_filters: Callable[[SemanticPolicyConfig], list[tuple[str | None, str | _Undeclared]]],
+    inline_filters: Callable[[SemanticPolicyConfig], list[_Read]],
 ) -> list[dict[str, Any]]:
     policy_config = policy.config
     query = normalize_query(dict(query_payload or {}))
@@ -1578,6 +1578,8 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
         return False
 
 
+# The columns an aggregate may read without picking rows, given whether its value gates others.
+_Operands = Callable[[ConditionalAggregateExpr, bool], frozenset[tuple[str, str]]]
 # The aggregations that count the rows where their value has a value (an average divides by that
 # count), so a column the value returns as it is picks those rows.
 _COUNTING = frozenset({"count", "count_distinct", "avg"})
@@ -1587,7 +1589,9 @@ _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 def _condition_fields(
     expr: ConditionalAggregateExpr,
     config: PackageConfig,
-    operands: Callable[[ConditionalAggregateExpr], frozenset[tuple[str, str]]] | None = None,
+    operands: _Operands | None = None,
+    *,
+    gating: bool = False,
 ) -> list[str | _Undeclared]:
     """The fields a conditional aggregate reads to pick rows: each column of its condition and
     of each CASE condition in its value, and each column the value computes with (0 for every
@@ -1600,15 +1604,16 @@ def _condition_fields(
     returned column other than one of its operands picks the rows where it has a value, a column
     the SQL binds to a dimension meets its dimensions as the warehouse reads names
     (``_dimensions_over``), and another entity's dimension grants a column only over the same
-    relation, named in full.
+    relation, named in full. With ``gating`` (the aggregate's value decides what else appears),
+    every returned column is read but a key it counts.
     ``filterable: false``, which every caller meets and which only refuses, passes none and reads
     columns as it always has: no count rule, the spelling as written, relations matched by their
     last name part, and no value column that no dimension declares."""
     governed = operands is not None
     whens, columns = _value_reads(expr.value)
     conditions = [expr.condition, *whens] if expr.condition is not None else whens
-    counting = expr.aggregation.lower() in _COUNTING
-    counted = operands(expr) if operands is not None and counting else None
+    counting = gating or expr.aggregation.lower() in _COUNTING
+    counted = operands(expr, gating) if operands is not None and counting else None
     lookup = _dimensions_over if governed else dimensions_over_column
     relations = {row.id: row.table for row in config.entities}
 
@@ -1653,6 +1658,11 @@ class _Undeclared(NamedTuple):
         return f"{self.entity}.{self.column}"
 
 
+# ``(owner, field)``: the measure whose cut a read is, the ids one select item shows (each is cut),
+# or None for the whole query.
+_Read = tuple[str | frozenset[str] | None, str | _Undeclared]
+
+
 def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]]]:
     """The CASE conditions in a value, and each other column it reads with whether the value
     returns it as it is (the whole value, or what a CASE branch returns)."""
@@ -1672,15 +1682,15 @@ def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]
     return whens, columns
 
 
-def _counted_operands(
-    policy: SemanticPolicyConfig, binding: BoundQuery
-) -> Callable[[ConditionalAggregateExpr], frozenset[tuple[str, str]]]:
+def _counted_operands(policy: SemanticPolicyConfig, binding: BoundQuery) -> _Operands:
     """The columns a count or an average may count under ``policy`` without picking rows, as
     ``(entity, _column_key)``: each entity's key and, when every measure the policy governs that
     governs the aggregate (``_synthetic_constraint_sources``, matched once per lookup; every
     measure, package-wide) is one column as it is, that column. A measure that wraps its column
     (``COALESCE(customer_id, 'guest')``, a division) reads rows where the column has no value, so
-    it exempts nothing. Each aggregate is read by its own measures, never by a sibling's."""
+    it exempts nothing. Each aggregate is read by its own measures, never by a sibling's. An
+    aggregate whose value gates others (``gating``) reads every column it returns but a key it
+    counts, since its value then picks rows by that column for them."""
     config = binding.config
     keys = frozenset(
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
@@ -1691,7 +1701,9 @@ def _counted_operands(
     governed = set(policy.object_ids or measures) & set(measures)
     sources = cache(lambda: _synthetic_constraint_sources(config, binding, governed))
 
-    def operands(expr: ConditionalAggregateExpr) -> frozenset[tuple[str, str]]:
+    def operands(expr: ConditionalAggregateExpr, gating: bool) -> frozenset[tuple[str, str]]:
+        if gating:
+            return keys if expr.aggregation.lower() in {"count", "count_distinct"} else frozenset()
         owners = sources().get(_synthetic_conditional_measure(expr, config)[0], set())
         own = {
             (
@@ -1747,17 +1759,23 @@ def _child_exprs(expr: Any) -> Iterator[Any]:
 def _inline_filters(
     query: NormalizedQuery,
     config: PackageConfig,
-    operands: Callable[[ConditionalAggregateExpr], frozenset[tuple[str, str]]] | None = None,
-) -> list[tuple[str | None, str | _Undeclared]]:
+    operands: _Operands | None = None,
+) -> list[_Read]:
     """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
     expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
     predicate inputs included. A conditional aggregate has no declared measure: each field it
     reads (``_condition_fields``, given ``operands``) is owned by the measure the binder makes
     of it (``_synthetic_conditional_measure``), or by ``""`` with no ``operands``.
     ``measure=None`` marks whole-query attribution under predicates, metric filters and
-    conversion operands. Recipes are not read here.
+    conversion operands. Recipes' own filters are not read here.
+
+    Given ``operands``, each read in a select item is also owned by the ids the item shows
+    (``_shown_measures``) but its own aggregate's, and so is each column a conditional aggregate
+    returns (``gating``): any of them can decide whether, or which, governed value appears.
+    Outside a select item, such a column counts for the whole query.
     """
-    found: list[tuple[str | None, str | _Undeclared]] = []
+    found: list[_Read] = []
+    gates: list[_Read] = []
 
     def field_id(clause: Mapping[str, Any]) -> str:
         # The id a name or alias binds to, so a renamed field meets the same lists.
@@ -1792,23 +1810,25 @@ def _inline_filters(
             if not whole_query:
                 owner = "" if operands is None else _synthetic_conditional_measure(expr, config)[0]
             found.extend((owner, field) for field in _condition_fields(expr, config, operands))
+            if operands is not None:
+                read = _condition_fields(expr, config, operands, gating=True)
+                (found if owner is None else gates).extend((owner, field) for field in read)
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"), whole_query=True)
         for child in _child_exprs(expr):
             visit(child, whole_query=whole_query)
 
     for row in query.select:
-        start = len(found)
+        start, gated = len(found), len(gates)
         visit(row.expression)
         if operands is not None:
-            # A select item is one value: a read that picks, gates or weighs one aggregate in it
-            # (a CASE condition, NULLIF, a division by a count) counts for each aggregate it shows.
-            shown = _shown_measures(row.expression, config)
+            # A select item is one value: a CASE condition, NULLIF or a division by a count in it
+            # decides whether another aggregate's value appears.
+            shown = frozenset(_shown_measures(row.expression, config))
             found.extend(
-                (measure, field)
-                for owner, field in found[start:]
-                if owner is not None
-                for measure in shown
+                (shown.difference([owner]), field)
+                for owner, field in [*found[start:], *gates[gated:]]
+                if owner is not None and shown.difference([owner])
             )
     for metric_filter in query.metric_filters:
         visit(metric_filter.expression, whole_query=True)
@@ -1877,7 +1897,7 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
 
 
 def _governed_inline_fields(
-    filters: list[tuple[str | None, str | _Undeclared]],
+    filters: list[_Read],
     bound: Callable[[], BoundQuery],
     object_id: str,
     *,
@@ -1888,7 +1908,8 @@ def _governed_inline_fields(
     A filter is owned by the query's root leaves over its measure, and counts by the rule
     that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
     governed measure itself (a conditional aggregate's own reads, when it is that measure), under
-    a package-wide constraint, or marked whole-query (``measure=None``) always counts.
+    a package-wide constraint, or marked whole-query (``measure=None``) always counts. A read
+    owned by the ids one select item shows counts for those ids alone.
     """
 
     def owners(measure: str) -> frozenset[str]:
@@ -1902,7 +1923,11 @@ def _governed_inline_fields(
         if package_wide
         or measure is None
         or measure == object_id
-        or bound().cut_counts(object_id, owners(measure))
+        or (
+            object_id in measure
+            if isinstance(measure, frozenset)
+            else bound().cut_counts(object_id, owners(measure))
+        )
     ]
     return list(dict.fromkeys(out))
 
