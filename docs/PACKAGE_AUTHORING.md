@@ -774,13 +774,13 @@ kind names must match exactly.
   `where`, temporal role, `having` and entity filters.
   **Under `allowed_where`, a call reads a governed number only in these shapes.** Each
   select item and predicate input that reads a measure or metric the constraint governs
-  (directly, through a metric, or through an `aggregate_if` over a column a governed
-  measure reads) must be one of:
-  - the measure or metric by id;
+  (directly, through a metric, through a predicate inside it, or through an
+  `aggregate_if` over a column a governed measure reads) must be one of:
+  - the measure or metric by id, a measure with its own statistic;
   - an `aggregate` (or `semi_additive`) whose `filter` uses only dimensions the
     constraint lists, with no window and no predicate;
-  - an `aggregate_if` whose condition compares only listed dimensions' columns with
-    values (`and`, `or`, `not`, `in`) and whose value is nothing (a count), the column
+  - an `aggregate_if` whose condition reads only listed dimensions' columns
+    (comparisons, `in`, `and`, `or`, `not`) and whose value is nothing (a count), the column
     each governing measure is with no expression around it, or, when each governing
     measure counts, a one-column key it counts; `count_distinct` counts only a whole
     one-column key;
@@ -791,7 +791,8 @@ kind names must match exactly.
   period, in a joined call too; a predicate inside another predicate's input reads only
   an id; and `where` uses only listed dimensions. Anything else is refused with
   `POLICY_DENIED` and a `disallowed_expression` violation that names the part and these
-  shapes: `case`, `nullif`, `coalesce` and other calls, `share`, `total`, `rolling`,
+  shapes: a measure with another statistic, `case`, `nullif`, `coalesce` and other calls,
+  `share`, `total`, `rolling`,
   `cumulative` and other window kinds, `scoped_aggregate`, `having` on an inline
   aggregate or another measure, a count of a column that is no key, and a sum of
   `order_total_cents` under revenue, which divides it. When a filter inside an expression
