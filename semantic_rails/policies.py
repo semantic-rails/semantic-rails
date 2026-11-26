@@ -1276,6 +1276,18 @@ _ALLOWED_SHAPES = (
 )
 
 
+def case_twins(names: Iterable[str]) -> str:
+    """Two of a call's output names that differ only in case, as a refusal says it, or "": a
+    warehouse that reads quoted names in any case (DuckDB) orders, filters or shows one by the
+    other, so a check that reads the name as written would read the wrong column."""
+    seen: dict[str, str] = {}
+    for name in filter(None, names):
+        other = seen.setdefault(name.casefold(), name)
+        if other != name:
+            return f"the output names '{other}' and '{name}' differ only in case"
+    return ""
+
+
 def row_capped(payload: Mapping[str, Any] | None) -> bool:
     """Whether the request caps the rows it returns (``limits.max_rows``, which every MCP
     ``execute`` passes): the cap keeps the first rows in the call's order, as a limit does."""
@@ -1410,6 +1422,9 @@ def _shape_refusal(
         inner = (item(row, depth + 1) for row in _predicate_inputs(expr))
         return (shape(expr) if covered(expr) else "") or next((why for why in inner if why), "")
 
+    names = [*query.group_by, time_output_alias(query.time), *(row.as_ for row in query.select)]
+    if twins := case_twins(names):
+        return {"kind": _SHAPE, "read": twins}
     for row in query.select:
         if why := item(row.expression, 0):
             return {"kind": _SHAPE, "read": f"select item '{row.as_}' holds {why}"}

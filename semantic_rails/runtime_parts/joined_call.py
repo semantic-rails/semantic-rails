@@ -47,7 +47,7 @@ from ..db_parts.base import QueryRows
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import MeasureRefExpr, MetricRecipeRefExpr
-from ..policies import enforce_query_policies, row_capped
+from ..policies import case_twins, enforce_query_policies, row_capped
 from ..query_call import in_part, refusal
 from ..request_context import policy_identity
 from ..top_n import limit_order
@@ -313,7 +313,7 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
     _refuse_over_select_limit(config, [part.statement for part in parts], keys)
     _check_order(payload.get("order_by") or [], keys, parts)
-    _refuse_inline_rank(payload, parts)
+    _refuse_inline_rank(payload, parts, keys)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
     statement = joined_statement(
@@ -467,8 +467,9 @@ def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: lis
             )
 
 
-def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
-    """Under any metric constraint on a part, a joined call keeps every part's keys (``keep``
+def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part], keys: list[JoinKey]) -> None:
+    """Under any metric constraint on a part, a joined call names each column once in any case
+    (``policies.case_twins``), keeps every part's keys (``keep``
     would pick the rows that appear by a part's own filters), and a limit or a row cap keeps the
     joined rows its order picks, so the order names a key or, in a part with no where or having
     of its own, a measure or metric by id with no statistic written (``policies._shape_refusal``
@@ -479,6 +480,15 @@ def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
         for effect in part.policy_effects
     ):
         return
+    names = [key.name for key in keys] + [name for part in parts for name in part.statement.outputs]
+    if twins := case_twins(names):
+        raise refusal(
+            "parts",
+            f"{twins}, and under a metric constraint a joined call names each column once in any "
+            "case",
+            fix='Name one of them another way with "as".',
+            code="POLICY_DENIED",
+        )
     if payload["join"]["keep"] != "all":
         raise refusal(
             "join.keep",

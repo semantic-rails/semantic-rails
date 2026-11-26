@@ -2916,3 +2916,86 @@ def test_a_condition_inside_an_expression_on_a_field_with_unknown_values_is_refu
     )
     assert without_unknown_values["ok"], without_unknown_values["errors"]
     assert by_where["ok"], by_where["errors"]
+
+
+# The orders of one customer, who ordered at one store only, beside every store's order count:
+# two output names that differ only in case, which DuckDB reads as one in the statement's own
+# common table expressions, so a rank, a filter or a shown column by one could read the other.
+PICKS = {
+    "Pick": ONE_CUSTOMERS_ORDERS,
+    "pick": {"kind": "measure", "measure": ORDERS},
+}
+TWINS = "the output names 'Pick' and 'pick' differ only in case"
+
+
+@pytest.mark.parametrize("totals", [False, True], ids=["plain", "totals"])
+def test_output_names_that_differ_only_in_case_are_refused(bare, monkeypatch, totals):
+    """Ordered by 'pick' (every store's orders) under a limit, the store kept could be picked by
+    'Pick' (one customer's orders, a filter the constraint doesn't allow). Under a constraint the
+    call is refused whatever its order; with no constraint, and with names that differ in more
+    than case, it answers."""
+    select = [{"expression": REVENUE, "as": "revenue"}]
+    select += [{"expression": expression, "as": alias} for alias, expression in PICKS.items()]
+    query = {
+        "select": select,
+        "group_by": [STORE_NAME],
+        "order_by": [{"field": "pick", "direction": "desc"}],
+        "limit": 1,
+        **({"totals": [STORE_NAME]} if totals else {}),
+    }
+    _compiles(bare, query)
+    apart = {**query, "select": [*select[:2], {**select[2], "as": "every_order"}]}
+    apart["order_by"] = [{"field": "every_order", "direction": "desc"}]
+    engine = _constrained(bare, STORE_ONLY, REVENUE)
+    try:
+        answered = engine.validate(apart)
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
+    finally:
+        engine.close()
+    assert answered["ok"], answered["errors"]
+    assert violations == [{"kind": "disallowed_expression", "read": TWINS}]
+    assert message == (
+        f"{REVENUE} can't be read this way: {TWINS}. Under its constraint, "
+        f"{policies._ALLOWED_SHAPES}."
+    )
+
+
+def test_a_joined_call_whose_output_names_differ_only_in_case_is_refused(config):
+    """One customer's order count as 'Pick' in a part with its own where, every store's as 'pick'
+    beside revenue in another, ranked by 'pick' under a limit: refused under a constraint on
+    revenue, and answered with no constraint."""
+    one = [{"field": ORDER_CUSTOMER_ID, "op": "is", "value": THE_CUSTOMER}]
+    query = {
+        "parts": [
+            {
+                "select": [{"expression": {"kind": "measure", "measure": ORDERS}, "as": "Pick"}],
+                "group_by": [STORE_NAME],
+                "where": one,
+            },
+            {
+                "select": [
+                    {"expression": REVENUE_MEASURE, "as": "revenue"},
+                    {"expression": {"kind": "measure", "measure": ORDERS}, "as": "pick"},
+                ],
+                "group_by": [STORE_NAME],
+            },
+        ],
+        "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": "all"},
+        "order_by": [{"field": "pick", "direction": "desc"}],
+        "limit": 1,
+    }
+    engine = _constrained(config, {"allow_metric_filters": False}, REVENUE)
+    free = Runtime.from_config(config, source_path=PACKAGE)
+    try:
+        refused = engine.validate(query)
+        unconstrained = free.validate(query)
+    finally:
+        engine.close()
+        free.close()
+    assert refused["errors"][0]["code"] == "POLICY_DENIED"
+    assert refused["errors"][0]["message"] == (
+        f"parts: {TWINS}, and under a metric constraint a joined call names each column once in "
+        "any case"
+    )
+    assert unconstrained["ok"], unconstrained["errors"]
