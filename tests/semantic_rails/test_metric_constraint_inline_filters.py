@@ -1017,47 +1017,6 @@ def test_a_dimension_over_a_relation_of_the_same_name_allows_nothing(config, mon
     ]
 
 
-@pytest.mark.parametrize(
-    ("warehouse", "allowed"), [("duckdb", True), ("postgres", True), ("clickhouse", False)]
-)
-def test_a_relation_spelled_in_another_case_is_the_same_relation(
-    config, monkeypatch, warehouse, allowed
-):
-    """Two entities over the orders, named ``main.jaffle_order`` and ``MAIN.JAFFLE_ORDER``: one
-    table wherever unquoted names fold (every warehouse but ClickHouse), so the order's customer
-    id dimension, allowed here, allows the other entity's column."""
-    twin = "entity.test_upper_order"
-    order = next(row for row in config.entities if row.id == ORDER)
-    package = replace(
-        config,
-        package=replace(config.package, warehouse=warehouse),
-        entities=[
-            *(row for row in config.entities if row.id != ORDER),
-            replace(order, table="main.jaffle_order"),
-            replace(order, id=twin, table="MAIN.JAFFLE_ORDER"),
-        ],
-    )
-    customer = {"kind": "column", "entity": twin, "column": "customer_id"}
-    query = _select(_counted("count_distinct", customer))
-    engine = _constrained(package, {"allowed_where": [STORE_NAME, ORDER_CUSTOMER_ID]}, ORDERS)
-    try:
-        if allowed:
-            result = engine.validate(query)
-            assert result["ok"], result["errors"]
-            return
-        violations = _assert_denied_before_output(engine, monkeypatch, query)
-    finally:
-        engine.close()
-    assert violations == [
-        {
-            "kind": "disallowed_where",
-            "disallowed": [f"{twin}.customer_id"],
-            "allowed": [ORDER_CUSTOMER_ID, STORE_NAME],
-            "source": "inline_expression",
-        }
-    ]
-
-
 @pytest.mark.parametrize("named", [False, True], ids=["unnamed", "named_by_a_dimension"])
 @pytest.mark.parametrize(
     "expression",

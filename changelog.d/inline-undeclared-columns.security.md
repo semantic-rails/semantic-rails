@@ -11,8 +11,7 @@
   over `coalesce(customer_id, 'guest')` or `order_total_cents / 100.0` exempts nothing. Each
   aggregate is held only by the constraints on the measures that govern it, so two averages
   that answer alone also answer together, under one constraint or one each. A dimension allows
-  a column on another entity only over the same relation, named in full, each part read as the
-  warehouse reads it. A column meets a dimension only when the SQL reads it as that dimension:
-  a quoted name in another case reads none of the dimension's unknown values, so it is refused
-  as a column no dimension declares. Callers no constraint applies to get the same answers as
-  before.
+  a column on another entity only over the same relation, named in full. A column meets a
+  dimension only when the SQL reads it as that dimension: a quoted name in another case reads
+  none of the dimension's unknown values, so it is refused as a column no dimension declares.
+  Callers no constraint applies to get the same answers as before.

@@ -1600,7 +1600,7 @@ def _condition_fields(
     returned column other than one of its operands picks the rows where it has a value, a column
     the SQL binds to a dimension meets its dimensions as the warehouse reads names
     (``_dimensions_over``), and another entity's dimension grants a column only over the same
-    relation, named in full (each part as the warehouse reads it).
+    relation, named in full.
     ``filterable: false``, which every caller meets and which only refuses, passes none and reads
     columns as it always has: no count rule, the spelling as written, relations matched by their
     last name part, and no value column that no dimension declares."""
@@ -1613,12 +1613,9 @@ def _condition_fields(
     relations = {row.id: row.table for row in config.entities}
 
     def relation(entity_id: str) -> str:
-        # A dimension over ``live.orders`` grants nothing on ``archive.orders``; each part of
-        # the name is read as the warehouse reads it (``main.orders`` is ``MAIN.ORDERS``).
-        parts = relations.get(entity_id, "").split(".")
-        if governed:
-            return ".".join(_column_key(part, config) for part in parts)
-        return parts[-1].strip('"`[]').casefold()
+        # A dimension over ``live.orders`` grants nothing on ``archive.orders``.
+        table = relations.get(entity_id, "")
+        return table if governed else table.split(".")[-1].strip('"`[]').casefold()
 
     def picks(ref: ColumnRefExpr, returned: bool) -> bool:
         if not returned:
@@ -1789,7 +1786,8 @@ def _inline_filters(
                 if isinstance(item.get("input"), dict)
             )
         elif isinstance(expr, ConditionalAggregateExpr):
-            # Under a constraint, a read is owned by the binder's measure for this aggregate.
+            # Under a constraint, a read outside a predicate input, metric filter or conversion
+            # operand is owned by the binder's measure for this aggregate.
             owner: str | None = None
             if not whole_query:
                 owner = "" if operands is None else _synthetic_conditional_measure(expr, config)[0]

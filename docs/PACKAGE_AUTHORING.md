@@ -835,8 +835,7 @@ kind names must match exactly.
   - **A column the value computes with** (arithmetic or a call, 0 for every customer
     but one) counts as the dimensions over it, on its entity or, when it declares none,
     on another entity over the same relation, named in full (a dimension over
-    `live.orders` allows nothing on `archive.orders`, while `main.orders` is
-    `MAIN.ORDERS` wherever unquoted names fold). With revenue limited to store
+    `live.orders` allows nothing on `archive.orders`). With revenue limited to store
     filters, a `sum` of `case when customer_id = '…' then order_total_cents else 0 end`
     by store is refused as its condition form is: "measure.jaffle.revenue_usd can't be
     filtered by dimension.jaffle_order_customer_id inside an expression".
