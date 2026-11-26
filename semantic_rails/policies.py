@@ -43,16 +43,24 @@ from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
+    ArithmeticExpr,
+    BooleanExpr,
+    CallExpr,
     CaseExpr,
     ColumnRefExpr,
+    ComparisonExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
+    InExpr,
+    LiteralExpr,
     MeasureRefExpr,
     MetricPredicateExpr,
     MetricRecipeRefExpr,
+    RatioExpr,
     ScopedAggregateExpr,
     ShareExpr,
     collect_column_refs,
+    expr_kind,
     parse_semantic_expression,
     resolve_filter_dimension,
 )
@@ -122,8 +130,10 @@ def query_policy_effects(
         lambda: binding if binding is not None else bind_query(config, None, dict(query or {}))
     )
     metric_filter_refs = cache(lambda object_id: _metric_filter_refs(config, bound(), object_id))
-    # Each constraint's inline filters, read once per request (the policies outlive it).
+    # Each constraint's inline filters and shape refusal, read once per request (the policies
+    # outlive it).
     inline_reads: dict[int, list[_Read]] = {}
+    refusals: dict[int, dict[str, Any] | None] = {}
 
     def inline_filters(policy: SemanticPolicyConfig) -> list[_Read]:
         if id(policy) not in inline_reads:
@@ -131,6 +141,12 @@ def query_policy_effects(
             operands = _counted_operands(policy, bound())
             inline_reads[id(policy)] = _inline_filters(normalized, bound().config, operands)
         return inline_reads[id(policy)]
+
+    def shape_refusal(policy: SemanticPolicyConfig) -> dict[str, Any] | None:
+        if id(policy) not in refusals:
+            normalized = normalize_query(dict(query or {}))
+            refusals[id(policy)] = _shape_refusal(policy, normalized, bound())
+        return refusals[id(policy)]
 
     for object_id in list(dict.fromkeys(str(item) for item in object_ids if str(item).strip())):
         for policy in config.semantic_policies:
@@ -148,7 +164,13 @@ def query_policy_effects(
             if policy.kind == "metric_constraint" and query is not None:
                 effects.append(
                     _metric_constraint_effect(
-                        policy, query, metric_filter_refs, bound, object_id, inline_filters
+                        policy,
+                        query,
+                        metric_filter_refs,
+                        bound,
+                        object_id,
+                        inline_filters,
+                        shape_refusal,
                     )
                 )
             else:
@@ -179,7 +201,13 @@ def query_policy_effects(
                 if sources.intersection(policy.object_ids):
                     effects.append(
                         _metric_constraint_effect(
-                            policy, query, metric_filter_refs, bound, synthetic_id, inline_filters
+                            policy,
+                            query,
+                            metric_filter_refs,
+                            bound,
+                            synthetic_id,
+                            inline_filters,
+                            shape_refusal,
                         )
                     )
     # Dedupe by (policy_id, kind, action). Package-wide policies — e.g.
@@ -210,6 +238,11 @@ def query_policy_effects(
                 existing_violations.append(violation)
         if existing_violations:
             deduped[key]["violations"] = existing_violations
+    for effect in deduped.values():
+        # A shape refusal stands aside for an inline check's refusal, which names the field.
+        rows = list(effect.get("violations") or [])
+        if any(row.get("source") == "inline_expression" for row in rows):
+            effect["violations"] = [row for row in rows if row.get("kind") != _SHAPE]
     return list(deduped.values())
 
 
@@ -430,6 +463,14 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
             f"can only be read where {said}",
             f"Add {json.dumps(conditions)} to where.",
             {"where": conditions},
+        )
+    if kind == _SHAPE:
+        return (
+            f"can't be read this way: {violation.get('read')}. Under its constraint, "
+            f"{_ALLOWED_SHAPES}",
+            "Write that part of the call in one of these shapes, or ask the package author for "
+            "a measure that answers it.",
+            {},
         )
     if kind == "required_where_outside_entity_filter":
         fields = _listed(spec["field"] for spec in violation.get("missing") or [])
@@ -997,9 +1038,10 @@ def _metric_constraint_effect(
     bound: Callable[[], BoundQuery],
     object_id: str,
     inline_filters: Callable[[SemanticPolicyConfig], list[_Read]],
+    shape_refusal: Callable[[SemanticPolicyConfig], dict[str, Any] | None],
 ) -> dict[str, Any]:
     violations = _metric_constraint_violations(
-        policy, query_payload, metric_filter_refs, bound, object_id, inline_filters
+        policy, query_payload, metric_filter_refs, bound, object_id, inline_filters, shape_refusal
     )
     effect = _base_policy_effect(policy, action="deny" if violations else "constrain")
     if violations:
@@ -1048,10 +1090,13 @@ def _metric_constraint_violations(
     bound: Callable[[], BoundQuery],
     object_id: str,
     inline_filters: Callable[[SemanticPolicyConfig], list[_Read]],
+    shape_refusal: Callable[[SemanticPolicyConfig], dict[str, Any] | None],
 ) -> list[dict[str, Any]]:
     policy_config = policy.config
     query = normalize_query(dict(query_payload or {}))
     violations: list[dict[str, Any]] = []
+    # The allow-list (``_shape_refusal``) decides first; the checks below stay as a second line.
+    refused = shape_refusal(policy) if "allowed_where" in policy_config else None
 
     if "required_group_by" in policy_config:
         required = _config_str_list(policy_config, "required_group_by")
@@ -1224,7 +1269,155 @@ def _metric_constraint_violations(
                 violations.append(violation)
     if "required_group_by" in policy_config:
         violations.extend(_share_violations(policy_config, query_payload, query, bound, object_id))
-    return violations
+    return [refused, *violations] if refused is not None else violations
+
+
+_BY_ID = (MeasureRefExpr, MetricRecipeRefExpr)
+_SHAPE = "disallowed_expression"
+_COUNTS = frozenset({"count", "count_distinct"})
+# How a call may read a number a constraint with allowed_where governs (``_shape_refusal``).
+_ALLOWED_SHAPES = (
+    "a call reads it only by id, as an aggregate filtered by allowed fields, as an aggregate_if "
+    "with a condition on allowed fields that counts a whole key or aggregates its measure's "
+    "own column, or as a ratio or + - * / of these and numbers; having and entity filters "
+    "read only what the constraint governs, by id; and with a limit, order_by names only an "
+    "id, a dimension or the period"
+)
+
+
+def _shape_refusal(
+    policy: SemanticPolicyConfig, query: NormalizedQuery, binding: BoundQuery
+) -> dict[str, Any] | None:
+    """The first part of the call off ``policy``'s allow-list (``_ALLOWED_SHAPES``), as a
+    violation, or None. A select item or predicate input is held to it when it reads a measure
+    or metric the policy governs, a conditional aggregate ``_synthetic_constraint_sources``
+    matches to one, or one it can't match. An aggregate_if's value is nothing (a count) or a
+    column: one each governing measure is as it is, or, when each counts, a one-column key
+    (count_distinct counts only such a key). A predicate inside a predicate's input reads an
+    id. ``where`` is the allowed_where field check's alone."""
+    config = binding.config
+    allowed = set(_config_str_list(policy.config, "allowed_where"))
+    allowed &= {row.id for row in config.dimensions}
+    synthetic = binding.plan.synthetic_measures
+    measures = {row.id: row for row in config.measures if row.id not in synthetic}
+    sources = _synthetic_constraint_sources(config, binding, set(policy.object_ids or measures))
+    known = {*measures, *synthetic, *(row.id for row in config.metric_recipes)}
+    ids = set(policy.object_ids or known - set(synthetic))
+    ids |= {key for key, owners in sources.items() if owners}
+    keys = {
+        (row.id, _column_key(row.key_columns[0], config))
+        for row in config.entities
+        if len(row.key_columns) == 1
+    }
+
+    def reads(expr: Any) -> bool:
+        return any(item in ids or item not in known for item in _shown_measures(expr, config))
+
+    def column(ref: ColumnRefExpr, row: MeasureConfig | None = None) -> tuple[str, str]:
+        entity = (
+            _resolve_expr_entity(ref, row, config) if row else _resolve_column_entity(ref, config)
+        )
+        return entity, _column_key(ref.column, config)
+
+    def condition(node: Any) -> bool:
+        if isinstance(node, ColumnRefExpr):
+            entity = _resolve_column_entity(node, config)
+            over = {row.id for row in _dimensions_over(entity, node.column, config)}
+            return bool(over) and over <= allowed
+        if isinstance(node, (ComparisonExpr, BooleanExpr, InExpr)):
+            return all(condition(child) for child in _child_exprs(node))
+        return isinstance(node, LiteralExpr)
+
+    def counted(expr: ConditionalAggregateExpr) -> bool:
+        aggregation, value = expr.aggregation.lower(), expr.value
+        read = column(value) if isinstance(value, ColumnRefExpr) else None
+        if (value is not None and read is None) or aggregation == "percentile":
+            return False
+        if aggregation == "count_distinct" and read not in keys:
+            return False
+        for owner in sources.get(_synthetic_conditional_measure(expr, config)[0], ()):
+            row = measures[owner]
+            own = row.expr if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from else None
+            key = aggregation in _COUNTS and row.default_aggregation in _COUNTS
+            if not ((own and read == column(own, row)) or (key and read in {*keys, None})):
+                return False
+        return True
+
+    def field(clause: Mapping[str, Any]) -> str:
+        try:
+            return resolve_filter_dimension(str(clause.get("field") or ""), config)
+        except SemanticLayerError:
+            return ""
+
+    def shape(expr: Any) -> str:
+        """What in ``expr`` is off the list, or "" for nothing."""
+        if isinstance(expr, (*_BY_ID, LiteralExpr)):
+            return ""
+        if isinstance(expr, (RatioExpr, ArithmeticExpr)):
+            return next((why for child in _child_exprs(expr) if (why := shape(child))), "")
+        if isinstance(expr, AggregateExpr) and expr.window:
+            return "an aggregate with a window"
+        if isinstance(expr, AggregateExpr):
+            fine = all(field(clause) in allowed for clause in expr.filter.get("all", []))
+            return "" if fine else "an aggregate filtered by something other than allowed fields"
+        if isinstance(expr, ConditionalAggregateExpr):
+            if expr.condition is not None and not condition(expr.condition):
+                return "an aggregate_if whose condition reads more than allowed fields"
+            fine = counted(expr)
+            return "" if fine else "an aggregate_if of neither its measure's own column nor a key"
+        return f"a {expr.name.lower() if isinstance(expr, CallExpr) else expr_kind(expr)}"
+
+    def item(expr: Any, depth: int) -> str:
+        if depth > 1 and not isinstance(expr, _BY_ID):
+            return "a predicate inside another predicate's input"
+        why = shape(expr) if reads(expr) else ""
+        inner = (item(row, depth + 1) for row in _predicate_inputs(expr))
+        return why or next((why for why in inner if why), "")
+
+    def refusal(read: str) -> dict[str, Any]:
+        return {"kind": _SHAPE, "read": read}
+
+    for row in query.select:
+        if why := item(row.expression, 0):
+            return refusal(f"select item '{row.as_}' holds {why}")
+    for cut in query.metric_filters:
+        entity = isinstance(cut.expression, MetricPredicateExpr)
+        read = (
+            cut.expression.input
+            if isinstance(cut.expression, MetricPredicateExpr)
+            else cut.expression
+        )
+        if not (isinstance(read, _BY_ID) and reads(read)):
+            return refusal(f"{'an entity filter' if entity else 'having'} reads another number")
+    shown = {row.as_: row.expression for row in query.select}
+    for order in query.order_by if query.limit is not None else ():
+        if order.field in shown and not isinstance(shown[order.field], _BY_ID):
+            return refusal(f"order_by on '{order.field}' picks the rows the limit keeps")
+    return None
+
+
+def _predicate_inputs(expr: Any) -> list[Any]:
+    """The inputs of the predicates in ``expr`` (an entity filter's, an aggregate filter's or a
+    scoped aggregate's), not those of the predicates inside them."""
+    found: list[Any] = []
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, MetricPredicateExpr):
+            found.append(node.input)
+            continue
+        if isinstance(node, AggregateExpr):
+            payloads = [
+                row["expression"] for row in node.filter.get("all", []) if "expression" in row
+            ]
+            stack.extend(parse_semantic_expression(dict(row), context="query") for row in payloads)
+        elif isinstance(node, ScopedAggregateExpr):
+            payloads = [
+                row["input"] for row in node.predicates if isinstance(row.get("input"), dict)
+            ]
+            found.extend(parse_semantic_expression(dict(row), context="query") for row in payloads)
+        stack.extend(_child_exprs(node))
+    return found
 
 
 def _cuts(field: str, config: PackageConfig) -> set[str]:
