@@ -187,6 +187,57 @@ BYPASSES = {
         ],
         "group_by": [STORE],
     },
+    # The total's average, read by an entity filter inside another (each over the stock).
+    "conditional_raw_nested": {
+        "select": [
+            {
+                "expression": {
+                    "kind": "scoped_aggregate",
+                    "measure": "measure.jaffle.order_count",
+                    "predicates": [
+                        {
+                            "entity": "entity.jaffle_store",
+                            "input": {
+                                "kind": "ratio",
+                                "numerator": {
+                                    "kind": "scoped_aggregate",
+                                    "measure": "measure.jaffle.inventory_on_hand_sop",
+                                    "aggregation": "sum",
+                                    "predicates": [
+                                        {
+                                            "entity": "entity.jaffle_store",
+                                            "input": {
+                                                "kind": "aggregate_if",
+                                                "aggregation": "avg",
+                                                "value": {
+                                                    "kind": "column",
+                                                    "entity": "entity.jaffle_order",
+                                                    "column": "order_total_cents",
+                                                },
+                                            },
+                                            "op": "gt",
+                                            "value": 0,
+                                            "over": "all_time",
+                                        }
+                                    ],
+                                },
+                                "denominator": {
+                                    "kind": "scoped_aggregate",
+                                    "measure": "measure.jaffle.inventory_on_hand_sop",
+                                    "aggregation": "sum",
+                                },
+                            },
+                            "op": "gt",
+                            "value": 0,
+                            "over": "all_time",
+                        }
+                    ],
+                },
+                "as": "r",
+            }
+        ],
+        "group_by": [STORE],
+    },
     "restricted_dimension_filter": {
         "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
         "where": [{"field": RESTRICTED_DIMENSION, "op": "is", "value": True}],

@@ -1265,6 +1265,119 @@ def test_nested_filter_counts_for_the_governed_outer_measure(config, monkeypatch
     ]
 
 
+STORE = "entity.jaffle_store"
+STOCK_SOP = "measure.jaffle.inventory_on_hand_sop"
+STOCK = {"kind": "column", "entity": INVENTORY_SNAPSHOT, "column": "inventory_on_hand"}
+
+
+def _stores_where(expression):
+    return {"entity": STORE, "input": expression, "op": "gt", "value": 0, "over": "all_time"}
+
+
+def _filters_deep(expression, depth):
+    """``expression`` read ``depth`` entity filters deep, each keeping the stores where the stock
+    read under the next one, over all their stock, is above 0. An entity filter reads a caller's
+    aggregate only inside an expression of measures like this ratio."""
+    for _ in range(depth):
+        stock = {"kind": "scoped_aggregate", "measure": STOCK_SOP, "aggregation": "sum"}
+        filtered = {**stock, "predicates": [_stores_where(expression)]}
+        expression = {"kind": "ratio", "numerator": filtered, "denominator": stock}
+    return expression
+
+
+# Each reads an aggregate inside an entity filter that is itself inside the filter of an order
+# count: a scoped aggregate's (two or three filters deep), an aggregate's, and a whole-query one.
+NESTED_FILTERS = {
+    "scoped": lambda value: _select(
+        {"kind": "scoped_aggregate", "measure": ORDERS, "predicates": [_stores_where(value)]}
+    ),
+    "scoped_three_deep": lambda value: _select(
+        {
+            "kind": "scoped_aggregate",
+            "measure": ORDERS,
+            "predicates": [_stores_where(_filters_deep(value, 1))],
+        }
+    ),
+    "aggregate": lambda value: _select(
+        {
+            "kind": "aggregate",
+            "measure": ORDERS,
+            "filter": {
+                "all": [{"expression": {"kind": "metric_predicate", **_stores_where(value)}}]
+            },
+        }
+    ),
+    "metric_filter": lambda value: _select(
+        {"measure": ORDERS},
+        metric_filters=[
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": STORE,
+                    "input": value,
+                    "op": ">",
+                    "value": 0,
+                    **ALL_TIME,
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    ),
+}
+
+
+def _nested(placement, aggregate):
+    return NESTED_FILTERS[placement](_filters_deep(aggregate, 1))
+
+
+def _checked(engine, query):
+    internal = "metric_filters" in query
+    return (engine.validate_internal if internal else engine.validate)(query)
+
+
+@pytest.mark.parametrize("placement", sorted(NESTED_FILTERS))
+def test_an_aggregate_in_a_nested_entity_filter_is_refused_as_in_the_select(
+    config, monkeypatch, placement
+):
+    """Revenue divides the order total, so an average of the total picks the orders that have
+    one, however deep the entity filter that reads it."""
+    query = _nested(placement, _counted("avg", TOTAL))
+    _compiles(config, query)
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = _checked(engine, query)["errors"][0]["message"]
+        selected = engine.validate(_select(_counted("avg", TOTAL)))
+    finally:
+        engine.close()
+    assert violations == selected["policy_effects"][0]["violations"]
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [UNDECLARED_TOTAL],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+    assert message == selected["errors"][0]["message"]
+
+
+@pytest.mark.parametrize("placement", sorted(NESTED_FILTERS))
+@pytest.mark.parametrize("read", ["order_total", "stock"])
+def test_an_aggregate_in_a_nested_entity_filter_counts_by_its_own_measures(bare, placement, read):
+    """The order-total measure sums the total as it is, and every measure over the stock reads it
+    as it is: an average of either answers in a nested entity filter as in the select."""
+    value, governed = (TOTAL, [TOTAL_CENTS, STOCK_SOP]) if read == "order_total" else (STOCK, None)
+    engine = _constrained(bare, {"allowed_where": [STORE_NAME]}, governed)
+    try:
+        for query in [_select(_counted("avg", value)), _nested(placement, _counted("avg", value))]:
+            result = _checked(engine, query)
+            assert result["ok"], (query, result["errors"])
+    finally:
+        engine.close()
+
+
 def test_an_inline_filter_on_an_allowed_field_still_answers(tmp_path):
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
     config = replace(load_package_config(str(package)), semantic_policies=[])
