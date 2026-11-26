@@ -971,6 +971,105 @@ def test_rows_before_the_window_never_make_a_stale_feed_read_zero(
     assert months() == expected
 
 
+TICKETS_OPENED = {"kind": "measure", "measure": "measure.shop.tickets_opened"}
+TICKET_MINUTES = {"kind": "measure", "measure": "measure.shop.ticket_minutes"}
+TICKETS_BY_LAST_ROW = {"kind": "measure", "measure": "measure.shop.tickets_by_last_row"}
+
+
+@pytest.mark.parametrize(
+    ("time", "expected"),
+    [
+        ({"grain": "week", "start": "2024-10-01"}, [("2024-10-07", None, None, 1)]),
+        (
+            {"grain": "week", "start": "2024-09-01"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+        (
+            {"grain": "week", "end": "2024-10-21"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+        (
+            {"grain": "week"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+    ],
+    ids=["since_october", "since_september", "until_october_21", "every_week"],
+)
+def test_a_week_past_the_load_log_reads_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], expected: list
+) -> None:
+    """The load log says tickets are loaded through September 29. Ticket 4 (October 9) came in
+    after that, and the same table read with no load log shows its week. Tickets opened and
+    their minutes read NULL that week, never 0, on every warehouse that reads coverage, as on
+    DuckDB: neither the tickets before the window nor those inside it say that week is loaded.
+    The answer says why, with NO_DATA_YET."""
+
+    def weeks() -> tuple[list[tuple[Any, ...]], list[Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(
+                        opened=TICKETS_OPENED, minutes=TICKET_MINUTES, rows=TICKETS_BY_LAST_ROW
+                    ),
+                    "time": {"temporal_role": "temporal_role.shop_ticket_opened_at", **time},
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        rows = [
+            (row["period"].strftime("%Y-%m-%d"), row["opened"], row["minutes"], row["rows"])
+            for row in typed_rows(response)
+        ]
+        return rows, [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")]
+
+    answer = (expected, [["opened", "minutes"]])
+    assert weeks() == answer
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert weeks() == answer
+
+
+def test_months_before_the_first_ticket_read_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest
+) -> None:
+    """Orders show every month from November 2023; the first ticket opened in September 2024.
+    Before it, tickets opened read NULL, not 0, on every warehouse that reads coverage, as on
+    DuckDB: a load log says how far the tickets are loaded, not where they start."""
+
+    def opened() -> list[tuple[str, Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(opened=TICKETS_OPENED, orders=SHOP_ORDERS),
+                    "time": {
+                        "temporal_role": "temporal_role.shop_ticket_opened_at",
+                        "grain": "month",
+                    },
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        return [(row["period"].strftime("%Y-%m"), row["opened"]) for row in typed_rows(response)]
+
+    before = [
+        "2023-11",
+        "2023-12",
+        "2024-01",
+        "2024-03",
+        "2024-05",
+        "2024-06",
+        "2024-07",
+        "2024-08",
+    ]
+    expected = [*((month, None) for month in before), ("2024-09", 3)]
+    assert opened() == expected
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert opened() == expected
+
+
 def test_a_window_total_without_coverage_reads_only_its_window(
     shop_package: Path, coverage_for_named_windows_only: None
 ) -> None:
