@@ -12,6 +12,7 @@ from semantic_rails import compiler, policies
 from semantic_rails.compiler_parts import bind
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import CallExpr, ColumnRefExpr, LiteralExpr
 from semantic_rails.query_call import read_call
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -23,6 +24,7 @@ ORDERS = "measure.jaffle.order_count"
 INVENTORY = "measure.jaffle.inventory_on_hand_eop"
 INVENTORY_DAY = "temporal_role.jaffle_inventory_day"
 INVENTORY_STORE = "dimension.jaffle_store_inventory_snapshot_store_id"
+INVENTORY_SNAPSHOT = "entity.jaffle_store_inventory_snapshot"
 STORE_NAME = "dimension.jaffle_store_name"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
 CUSTOMER_ID = "dimension.jaffle_customer_id"
@@ -518,15 +520,11 @@ def test_a_column_computed_with_through_another_entity_of_its_table_is_its_dimen
 
 
 # A value that picks rows only by an allowed field, or returns a column as it is (what is
-# aggregated, by a count only its governed measure's own column or a key), filters by nothing
-# else.
+# aggregated, by a count only a key or the column its governed measure is as it is), filters by
+# nothing else.
 VALUE_NEIGHBOURS = {
     "case_on_an_allowed_field": (REVENUE, _summed(_case(IS_LARGE, TOTAL, ZERO))),
     "returned_total": (REVENUE, _summed(TOTAL)),
-    "average_of_the_governed_column": (
-        REVENUE,
-        {"kind": "aggregate_if", "aggregation": "avg", "value": TOTAL},
-    ),
     "count_of_the_key": (
         ORDERS,
         {
@@ -782,17 +780,56 @@ def test_a_count_of_a_column_filters_by_its_presence(config, monkeypatch, shape,
     assert message == line
 
 
-def test_a_count_of_a_governed_column_is_held_by_every_measure_that_governs_it(config, monkeypatch):
-    """Revenue sums the order total, so a count of it counts revenue's own rows; the order count
-    counts every order, so for it the same count is the orders with a total."""
-    query = _select(_counted("count", TOTAL), group_by=[STORE_NAME])
-    engine = _constrained(config, BY_STORE_OR_SIZE, REVENUE)
+TOTAL_CENTS = "measure.test.order_total_cents"
+TAX_CENTS = "measure.test.tax_paid_cents"
+GUESTS = "measure.test.customers_with_guests"
+TAX = {"kind": "column", "entity": ORDER, "column": "tax_paid_cents"}
+
+
+@pytest.fixture(scope="module")
+def bare(config):
+    """The orders with two measures that sum a column as it is (the order total and the tax, in
+    cents), and a customer count that counts each order with no customer as one guest."""
+    measures = {row.id: row for row in config.measures}
+
+    def measure(source, measure_id, expr):
+        name = measure_id.removeprefix("measure.")
+        return replace(
+            measures[source], id=measure_id, name=name, label=name, aliases=[], expr=expr
+        )
+
+    guest = CallExpr("COALESCE", [ColumnRefExpr("customer_id"), LiteralExpr("guest")])
+    added = [
+        measure(REVENUE, TOTAL_CENTS, ColumnRefExpr("order_total_cents")),
+        measure("measure.jaffle.tax_paid_usd", TAX_CENTS, ColumnRefExpr("tax_paid_cents")),
+        measure("measure.jaffle.ordering_customer_count", GUESTS, guest),
+    ]
+    return replace(config, measures=[*config.measures, *added])
+
+
+def _validated(package, constraint, governed, *expressions):
+    query = {
+        "select": [
+            {"expression": expression, "as": f"value_{index}"}
+            for index, expression in enumerate(expressions)
+        ],
+        "group_by": [STORE_NAME],
+    }
+    engine = _constrained(package, constraint, governed)
     try:
-        result = engine.validate(query)
+        return engine.validate(query)
     finally:
         engine.close()
+
+
+def test_a_count_of_a_governed_column_is_held_by_every_measure_that_governs_it(bare, monkeypatch):
+    """The order-total measure sums the total as it is, so a count of it counts that measure's own
+    rows; the order count counts every order, so for it the same count is the orders with a
+    total."""
+    query = _select(_counted("count", TOTAL), group_by=[STORE_NAME])
+    result = _validated(bare, BY_STORE_OR_SIZE, TOTAL_CENTS, _counted("count", TOTAL))
     assert result["ok"], result["errors"]
-    engine = _constrained(config, BY_STORE_OR_SIZE, [REVENUE, ORDERS])
+    engine = _constrained(bare, BY_STORE_OR_SIZE, [TOTAL_CENTS, ORDERS])
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
     finally:
@@ -807,6 +844,98 @@ def test_a_count_of_a_governed_column_is_held_by_every_measure_that_governs_it(c
     ]
 
 
+# Each counts or averages a column its governed measure reads inside an expression: the guest
+# count counts orders with no customer id, which a count of the id leaves out, and revenue
+# divides the total. Only a key, or the column the measure is as it is, counts freely.
+WRAPPED_COLUMNS = {
+    "customer_ids_beside_guests": (
+        GUESTS,
+        _counted("count_distinct", ORDER_CUSTOMER),
+        ORDER_CUSTOMER_ID,
+    ),
+    "orders_with_a_customer_beside_guests": (
+        GUESTS,
+        _counted("count", ORDER_CUSTOMER),
+        ORDER_CUSTOMER_ID,
+    ),
+    "average_total_under_revenue": (REVENUE, _counted("avg", TOTAL), UNDECLARED_TOTAL),
+    "orders_with_a_total_under_revenue": (REVENUE, _counted("count", TOTAL), UNDECLARED_TOTAL),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(WRAPPED_COLUMNS))
+def test_a_count_of_a_column_its_governed_measure_wraps_is_a_filter(bare, monkeypatch, shape):
+    governed, expression, disallowed = WRAPPED_COLUMNS[shape]
+    query = _select(expression, group_by=[STORE_NAME])
+    _compiles(bare, query)
+    engine = _constrained(bare, BY_STORE_OR_SIZE, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [disallowed],
+            "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+    line = f"{governed} can't be filtered by {disallowed} inside an expression; {ONLY}"
+    assert message.startswith(line)
+
+
+def test_each_aggregate_counts_freely_only_by_its_own_governed_measure(bare):
+    """One constraint on the order total and the tax, both summed as they are: each average
+    reads its own measure's column, alone or side by side on one dashboard."""
+    averages = [_counted("avg", TOTAL), _counted("avg", TAX)]
+    for expressions in [averages[:1], averages[1:], averages]:
+        result = _validated(bare, BY_STORE_OR_SIZE, [TOTAL_CENTS, TAX_CENTS], *expressions)
+        assert result["ok"], (expressions, result["errors"])
+
+
+def test_a_package_wide_constraint_reads_an_average_by_its_own_measures(config):
+    """Every object a package-wide constraint meets, the store dimension included, holds the
+    average stock to the measures over its column, which read it as it is."""
+    stock = {"kind": "column", "entity": INVENTORY_SNAPSHOT, "column": "inventory_on_hand"}
+    query = _select(_counted("avg", stock), group_by=[INVENTORY_STORE])
+    engine = _constrained(config, {"allowed_where": [INVENTORY_STORE]}, None)
+    try:
+        result = engine.validate(query)
+    finally:
+        engine.close()
+    assert result["ok"], result["errors"]
+
+
+@pytest.mark.parametrize("read", ["counted", "computed"])
+def test_a_dimension_over_a_relation_of_the_same_name_allows_nothing(config, monkeypatch, read):
+    """An archive of the orders in another schema declares no dimension: the live orders'
+    customer id dimension, allowed here, doesn't allow the archive's column."""
+    archive = "entity.test_archive_order"
+    order = next(row for row in config.entities if row.id == ORDER)
+    copy = replace(order, id=archive, table="archive.jaffle_order")
+    package = replace(config, entities=[*config.entities, copy])
+    customer = {"kind": "column", "entity": archive, "column": "customer_id"}
+    value = customer if read == "counted" else {"kind": "call", "name": "LOWER", "args": [customer]}
+    query = _select(_counted("count_distinct", value))
+    _compiles(package, query)
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, ORDER_CUSTOMER_ID]}, ORDERS)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [f"{archive}.customer_id"],
+            "allowed": [ORDER_CUSTOMER_ID, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["unnamed", "named_by_a_dimension"])
 @pytest.mark.parametrize(
     "expression",
     [
@@ -820,23 +949,40 @@ def test_a_count_of_a_governed_column_is_held_by_every_measure_that_governs_it(c
     ids=["counted", "condition"],
 )
 def test_a_list_naming_a_column_no_dimension_declares_does_not_allow_it(
-    config, monkeypatch, expression
+    config, monkeypatch, expression, named
 ):
-    """``<entity>.<column>`` names the column in a refusal; listing it allows nothing."""
+    """``<entity>.<column>`` names the column in a refusal; listing it allows nothing, even when
+    a dimension over another column has that id. The refusal lists only the dimensions that
+    allow a filter inside an expression."""
+    package = config
+    if named:
+        store = next(
+            row for row in config.dimensions if row.id == "dimension.jaffle_order_store_id"
+        )
+        alias = replace(store, id=UNDECLARED_SUBTOTAL, name="test_subtotal", aliases=[])
+        package = replace(config, dimensions=[*config.dimensions, alias])
     query = _select(expression, group_by=[STORE_NAME])
-    engine = _constrained(config, {"allowed_where": [STORE_NAME, UNDECLARED_SUBTOTAL]}, ORDERS)
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, UNDECLARED_SUBTOTAL]}, ORDERS)
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
+        message = engine.validate(query)["errors"][0]["message"]
     finally:
         engine.close()
+    allowed = [STORE_NAME, UNDECLARED_SUBTOTAL] if named else [STORE_NAME]
     assert violations == [
         {
             "kind": "disallowed_where",
             "disallowed": [UNDECLARED_SUBTOTAL],
-            "allowed": [STORE_NAME, UNDECLARED_SUBTOTAL],
+            "allowed": allowed,
             "source": "inline_expression",
         }
     ]
+    if not named:
+        assert message == (
+            f"{ORDERS} can't be filtered by {UNDECLARED_SUBTOTAL} inside an expression; it can "
+            f"be filtered only by {STORE_NAME}. No dimension declares {UNDECLARED_SUBTOTAL}, "
+            f"{ONE_UNDECLARED}"
+        )
 
 
 def test_every_dimension_over_one_column_meets_each_spelling(config, monkeypatch):
@@ -865,23 +1011,21 @@ def test_every_dimension_over_one_column_meets_each_spelling(config, monkeypatch
         ], column
 
 
-def test_a_count_exemption_meets_each_governed_spelling_of_its_column(config):
-    """Two governed measures read the order total in two cases: one DuckDB column, which a count
-    of it counts as each measure's own."""
-    revenue = next(row for row in config.measures if row.id == REVENUE)
+def test_a_count_exemption_meets_each_governed_spelling_of_its_column(bare):
+    """Two governed measures are the order total as it is, spelled in two cases: one DuckDB
+    column, which a count of it counts as each measure's own."""
+    total = next(row for row in bare.measures if row.id == TOTAL_CENTS)
     upper = replace(
-        revenue,
-        id="measure.test.upper_revenue",
-        name="upper_revenue",
-        expr=replace(revenue.expr, left=replace(revenue.expr.left, column="ORDER_TOTAL_CENTS")),
+        total,
+        id="measure.test.upper_total",
+        name="test.upper_total",
+        label="test.upper_total",
+        expr=ColumnRefExpr("ORDER_TOTAL_CENTS"),
     )
-    package = replace(config, measures=[*config.measures, upper])
-    query = _select(_counted("count", TOTAL), group_by=[STORE_NAME])
-    engine = _constrained(package, BY_STORE_OR_SIZE, [REVENUE, upper.id])
-    try:
-        result = engine.validate(query)
-    finally:
-        engine.close()
+    package = replace(bare, measures=[*bare.measures, upper])
+    result = _validated(
+        package, BY_STORE_OR_SIZE, [TOTAL_CENTS, upper.id], _counted("count", TOTAL)
+    )
     assert result["ok"], result["errors"]
 
 

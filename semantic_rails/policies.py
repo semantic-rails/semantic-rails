@@ -15,7 +15,7 @@ import string
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
-from typing import Any
+from typing import Any, NamedTuple
 
 from . import operators
 from .ast import (
@@ -32,6 +32,7 @@ from .compiler_parts.bind import (
     _resolve_column_entity,
     _resolve_expr_entity,
     _scoped_predicate_expr_payload,
+    _synthetic_conditional_measure,
     measure_column_ref,
 )
 from .compiler_parts.lowering_common import _stock_row_key
@@ -552,7 +553,7 @@ def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> N
     }
     fields = [
         *(item.field for item in every_filter(query.where)),
-        *(field for _, field in _inline_filters(query, config)),
+        *(field for _, field in _inline_filters(query, config) if isinstance(field, str)),
     ]
     refused = [field for field in dict.fromkeys(fields) if field in unfilterable]
     if refused:
@@ -1081,7 +1082,9 @@ def _metric_constraint_violations(
     # for the governed object, including whole-query attribution for nested filters.
     inline = cache(
         lambda: _governed_inline_fields(
-            _inline_filters(query, bound().config, _counted_operands(policy, bound(), object_id)),
+            _inline_filters(
+                query, bound().config, lambda expr: _counted_operands(policy, bound(), expr)
+            ),
             bound,
             object_id,
             package_wide=not policy.object_ids,
@@ -1125,17 +1128,20 @@ def _metric_constraint_violations(
             violations.append(
                 {"kind": "disallowed_where", "disallowed": disallowed, "allowed": sorted(allowed)}
             )
-        # A column no dimension declares (``<entity>.<column>``) is allowed by no list.
-        dimensions = {row.id for row in bound().config.dimensions}
+        # A column no dimension declares is allowed by no list, whatever its name; inside an
+        # expression only a dimension id can allow a field.
         disallowed = [
-            field for field in inline() if field not in allowed or field not in dimensions
+            str(field)
+            for field in inline()
+            if isinstance(field, _Undeclared) or field not in allowed
         ]
         if disallowed:
+            dimensions = {row.id for row in bound().config.dimensions}
             violations.append(
                 {
                     "kind": "disallowed_where",
                     "disallowed": disallowed,
-                    "allowed": sorted(allowed),
+                    "allowed": sorted(allowed & dimensions),
                     "source": "inline_expression",
                 }
             )
@@ -1568,22 +1574,26 @@ _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 def _condition_fields(
     expr: ConditionalAggregateExpr,
     config: PackageConfig,
-    operands: frozenset[tuple[str, str]] | None = None,
-) -> list[str]:
+    operands: Callable[[ConditionalAggregateExpr], frozenset[tuple[str, str]]] | None = None,
+) -> list[str | _Undeclared]:
     """The fields a conditional aggregate reads to pick rows: each column of its condition and
     of each CASE condition in its value, and each column the value computes with (0 for every
     customer but one), as the dimensions over it (a computed column's on its entity or, when it
-    declares none, on another entity over the same table), or ``<entity>.<column>`` for a column
+    declares none, on another entity over the same relation), or as ``_Undeclared`` for a column
     no dimension declares, which no allowed_where lists. A column the value returns as it is (the
     whole value, or what a CASE branch returns) is what is aggregated. A constraint passes
     ``operands`` (``_counted_operands``): then a count or an average of a returned column other
-    than an operand picks the rows where it has a value, and a column meets its dimensions as the
-    warehouse reads names (``_dimensions_over``). ``filterable: false``, which every caller
-    meets, passes none and reads neither."""
+    than one of its operands picks the rows where it has a value, and a column meets its
+    dimensions as the warehouse reads names (``_dimensions_over``). ``filterable: false``, which
+    every caller meets, passes none and reads neither."""
     whens, columns = _value_reads(expr.value)
     conditions = [expr.condition, *whens] if expr.condition is not None else whens
-    counted = operands if expr.aggregation.lower() in _COUNTING else None
+    counting = expr.aggregation.lower() in _COUNTING
+    counted = operands(expr) if operands is not None and counting else None
     lookup = dimensions_over_column if operands is None else _dimensions_over
+    # Granting a column another entity's dimension takes the same relation, named in full: a
+    # dimension over ``live.orders`` allows nothing on ``archive.orders``.
+    relations = {row.id: row.table for row in config.entities}
 
     def picks(ref: ColumnRefExpr, returned: bool) -> bool:
         if not returned:
@@ -1591,12 +1601,7 @@ def _condition_fields(
         column = (_resolve_column_entity(ref, config), _column_key(ref.column, config))
         return counted is not None and column not in counted
 
-    def table(entity_id: str) -> str:
-        # Matched as governed sources are (``_synthetic_constraint_sources``).
-        relation = next((row.table for row in config.entities if row.id == entity_id), "")
-        return relation.split(".")[-1].strip('"`[]').casefold()
-
-    out: list[str] = []
+    out: list[str | _Undeclared] = []
     for ref, in_value in [
         *((ref, False) for condition in conditions for ref in collect_column_refs(condition)),
         *((ref, True) for ref, returned in columns if picks(ref, returned)),
@@ -1607,11 +1612,22 @@ def _condition_fields(
             over = [
                 row.id
                 for other in config.entities
-                if other.id != entity and table(other.id) == table(entity)
+                if other.id != entity and other.table == relations.get(entity)
                 for row in lookup(other.id, ref.column, config)
             ]
-        out.extend(over or [f"{entity}.{ref.column}"])
+        out.extend(over or [_Undeclared(entity, ref.column)])
     return out
+
+
+class _Undeclared(NamedTuple):
+    """A column no dimension declares, kept apart from dimension ids so that no list allows it
+    (a dimension whose id reads ``<entity>.<column>`` included). A refusal names it that way."""
+
+    entity: str
+    column: str
+
+    def __str__(self) -> str:
+        return f"{self.entity}.{self.column}"
 
 
 def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]]]:
@@ -1634,34 +1650,33 @@ def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]
 
 
 def _counted_operands(
-    policy: SemanticPolicyConfig, binding: BoundQuery, object_id: str
+    policy: SemanticPolicyConfig, binding: BoundQuery, expr: ConditionalAggregateExpr
 ) -> frozenset[tuple[str, str]]:
-    """The columns a count may count for ``object_id`` under ``policy`` without picking rows, as
-    ``(entity, _column_key)``: each entity's key, and each column the governed measure's value reads
-    outside its CASE conditions. A caller's aggregate is governed by each measure the policy
-    governs (every one, package-wide) that it reads (``_synthetic_constraint_sources``): the
-    columns all of them read."""
+    """The columns a count or an average ``expr`` may count under ``policy`` without picking
+    rows, as ``(entity, _column_key)``: each entity's key, and the column of the measures the
+    policy governs that govern ``expr`` (``_synthetic_constraint_sources``, every measure
+    package-wide) when each of them is that one column as it is. A measure that wraps its column
+    (``COALESCE(customer_id, 'guest')``, a division) counts rows where the column has no value,
+    so it adds none. Each aggregate takes its own, so a sibling's never moves it."""
     config = binding.config
-    measures = {
-        row.id: row
-        for row in config.measures
-        if not row.lookup_from and row.id not in binding.plan.synthetic_measures
-    }
-    owners = {object_id} & set(measures)
-    if object_id in binding.plan.synthetic_measures:
-        governed = set(policy.object_ids or measures) & set(measures)
-        owners = _synthetic_constraint_sources(config, binding, governed).get(object_id, set())
-    reads = [
-        {
-            (_resolve_expr_entity(ref, measures[owner], config), _column_key(ref.column, config))
-            for ref, _ in _value_reads(measures[owner].expr)[1]
-        }
-        for owner in sorted(owners)
-    ]
     keys = {
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
     }
-    return frozenset(keys.union(set.intersection(*reads) if reads else set()))
+    measures = {row.id: row for row in config.measures}
+    governed = set(policy.object_ids or measures) - set(binding.plan.synthetic_measures)
+    sources = _synthetic_constraint_sources(config, binding, governed & set(measures))
+    owners = sources.get(_synthetic_conditional_measure(expr, config)[0], set())
+    own = {
+        (
+            (_resolve_expr_entity(row.expr, row, config), _column_key(row.expr.column, config))
+            if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from
+            else None
+        )
+        for row in (measures[owner] for owner in owners)
+    }
+    if len(own) == 1 and None not in own:
+        keys.update(item for item in own if item is not None)
+    return frozenset(keys)
 
 
 def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[Any]:
@@ -1699,8 +1714,8 @@ def _child_exprs(expr: Any) -> Iterator[Any]:
 def _inline_filters(
     query: NormalizedQuery,
     config: PackageConfig,
-    operands: frozenset[tuple[str, str]] | None = None,
-) -> list[tuple[str | None, str]]:
+    operands: Callable[[ConditionalAggregateExpr], frozenset[tuple[str, str]]] | None = None,
+) -> list[tuple[str | None, str | _Undeclared]]:
     """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
     expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
     predicate inputs included. A conditional aggregate's condition has no declared measure:
@@ -1708,7 +1723,7 @@ def _inline_filters(
     ``measure=None`` marks whole-query attribution under predicates, metric filters and
     conversion operands. Recipes are not read here.
     """
-    found: list[tuple[str | None, str]] = []
+    found: list[tuple[str | None, str | _Undeclared]] = []
 
     def field_id(clause: Mapping[str, Any]) -> str:
         # The id a name or alias binds to, so a renamed field meets the same lists.
@@ -1793,12 +1808,12 @@ def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[s
 
 
 def _governed_inline_fields(
-    filters: list[tuple[str | None, str]],
+    filters: list[tuple[str | None, str | _Undeclared]],
     bound: Callable[[], BoundQuery],
     object_id: str,
     *,
     package_wide: bool,
-) -> list[str]:
+) -> list[str | _Undeclared]:
     """The fields of the inline filters that cut ``object_id``.
 
     A filter is owned by the query's root leaves over its measure, and counts by the rule
