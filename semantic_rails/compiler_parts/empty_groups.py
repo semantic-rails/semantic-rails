@@ -522,7 +522,9 @@ def guard_empty_groups(
                     if bounded_probe:
                         found = SqlBinary(found, "AND", _loaded_bucket(probe_key, covered(scope)))
                     seen = SqlBinary(seen, "OR", found)
-                if gated:
+                # Ungated, a declared edge still bounds the series: the table's last row, or a
+                # value elsewhere in the answer, never makes a period its edge doesn't certify 0.
+                if gated or (probe_key and scope.edge is not None):
                     name = covered(scope)
                     if scope.edge is None:
                         seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
@@ -534,7 +536,8 @@ def guard_empty_groups(
                             edge = edges[repr(scope.edge)] = f"edge_{len(edges) + 1}"
                             ctes.extend(_edge_ctes(edge, scope.edge))
                             joins.append(SqlJoin("CROSS", SqlTableRef(name=edge)))
-                        seen = SqlBinary(seen, "AND", _certified_bucket(time_key, name, edge))
+                        key = time_key or probe_key
+                        seen = SqlBinary(seen, "AND", _certified_bucket(key, name, edge))
             if (
                 aggregation not in _COUNTING
                 and not earlier_settlement_applies()

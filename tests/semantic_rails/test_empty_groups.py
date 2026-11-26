@@ -971,6 +971,58 @@ def test_rows_before_the_window_never_make_a_stale_feed_read_zero(
     assert months() == expected
 
 
+TICKETS_OPENED = {"kind": "measure", "measure": "measure.shop.tickets_opened"}
+TICKET_MINUTES = {"kind": "measure", "measure": "measure.shop.ticket_minutes"}
+TICKETS_BY_LAST_ROW = {"kind": "measure", "measure": "measure.shop.tickets_by_last_row"}
+
+
+@pytest.mark.parametrize(
+    ("time", "expected"),
+    [
+        ({"grain": "week", "start": "2024-10-01"}, [("2024-10-07", None, None, 1)]),
+        (
+            {"grain": "week", "start": "2024-09-01"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+        (
+            {"grain": "week", "end": "2024-10-21"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+    ],
+    ids=["since_october", "since_september", "until_october_21"],
+)
+def test_a_week_past_the_load_log_reads_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], expected: list
+) -> None:
+    """The load log says tickets are loaded through September 29. Ticket 4 (October 9) came in
+    after that, and the same table read with no load log shows its week. Tickets opened and
+    their minutes read NULL that week, never 0, on every warehouse that reads coverage, as on
+    DuckDB: neither the tickets before the window nor those inside it say that week is loaded."""
+
+    def weeks() -> list[tuple[Any, ...]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(
+                        opened=TICKETS_OPENED, minutes=TICKET_MINUTES, rows=TICKETS_BY_LAST_ROW
+                    ),
+                    "time": {"temporal_role": "temporal_role.shop_ticket_opened_at", **time},
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        return [
+            (row["period"].strftime("%Y-%m-%d"), row["opened"], row["minutes"], row["rows"])
+            for row in typed_rows(response)
+        ]
+
+    assert weeks() == expected
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert weeks() == expected
+
+
 def test_a_window_total_without_coverage_reads_only_its_window(
     shop_package: Path, coverage_for_named_windows_only: None
 ) -> None:
