@@ -772,6 +772,33 @@ kind names must match exactly.
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
   `where`, temporal role, `having` and entity filters.
+  **Under `allowed_where`, a call reads a governed number only in these shapes.** Each
+  select item and predicate input that reads a measure or metric the constraint governs
+  (directly, through a metric, through a predicate inside it, or through an
+  `aggregate_if` over a column a governed measure reads) must be one of:
+  - the measure or metric by id, a measure with its own statistic;
+  - an `aggregate` (or `semi_additive`) whose `filter` uses only dimensions the
+    constraint lists, with no window and no predicate;
+  - an `aggregate_if` whose condition reads only listed dimensions' columns
+    (comparisons, `in`, `and`, `or`, `not`) and whose value is nothing (a count), the column
+    each governing measure is with no expression around it, or, when each governing
+    measure counts, a one-column key it counts; `count_distinct` counts only a whole
+    one-column key;
+  - a `ratio`, or `arithmetic` (`+ - * /`), of these and numbers.
+
+  `having` and entity filters read only a measure or metric the constraint governs, by
+  id; with a `limit`, `order_by` names only a measure or metric by id, a dimension or the
+  period, in a joined call too; a predicate inside another predicate's input reads only
+  an id; and `where` uses only listed dimensions. Anything else is refused with
+  `POLICY_DENIED` and a `disallowed_expression` violation that names the part and these
+  shapes: a measure with another statistic, `case`, `nullif`, `coalesce` and other calls,
+  `share`, `total`, `rolling`,
+  `cumulative` and other window kinds, `scoped_aggregate`, `having` on an inline
+  aggregate or another measure, a count of a column that is no key, and a sum of
+  `order_total_cents` under revenue, which divides it. When a filter inside an expression
+  also uses a field the constraint doesn't list, the refusal names that field instead (the
+  checks below). A constraint with no `allowed_where`, and a caller no constraint applies
+  to, read calls as before.
   A package metric's own `filter:` is the package author's governed definition and is
   trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
   caller adds (its `where`, the conditions in its entity filters, and the filters inside
@@ -853,11 +880,13 @@ kind names must match exactly.
     `count_distinct` of the order's customer id answers under a constraint on the
     ordering-customer count (that column, with no expression) but not under one on the
     order count or a package-wide one, where it counts only the orders with a customer.
-    Each aggregate is held to the measures that govern it, so two averages that answer
-    alone also answer side by side.
-  - **A spelling** in another ASCII case meets every dimension over the column wherever
-    the warehouse reads it as that column: when the SQL leaves it unquoted (every
-    warehouse but ClickHouse), or quotes it on DuckDB, BigQuery, Databricks or Athena.
+  - **A spelling.** A column meets a dimension only when the SQL reads it as that
+    dimension, with the dimension's unknown values: spelled as the dimension spells it
+    or, for a name the SQL leaves unquoted, in another ASCII case (every warehouse but
+    ClickHouse). It then meets every dimension over the same warehouse column. A quoted
+    name in another case, `"CUSTOMER REF"` for a dimension over `"Customer Ref"`, reads
+    as a column no dimension declares, even on a warehouse that reads both spellings as
+    one column.
   - **A column no dimension declares** is named `<entity>.<column>` and no policy can
     allow it: listing that name allows nothing, even when a dimension's id reads the
     same. Any use of it inside an expression other than returning it as it is is
@@ -866,7 +895,19 @@ kind names must match exactly.
     author can declare a dimension over the column and list it in `allowed_where` if the
     role may use it, and lists only the dimensions that can allow a filter there.
 
-  A caller no constraint applies to reads such columns as before, and a constraint with
+  Each aggregate is held only by the constraints on the measures that govern it. Two
+  averages that answer alone also answer side by side, under one constraint or one each,
+  and another aggregate's condition beside a governed one counts for it only when it cuts
+  the whole query (in `having`, say). Inside one select item it counts for every aggregate
+  the item shows, since it can decide whether a value appears: with revenue limited to
+  store filters, `case when <count of large orders> > 0 then <order total> end` by store
+  is refused, as are `nullif` and a division by such a count. Once an `aggregate_if`'s
+  value decides what else appears (beside another aggregate in its select item, in
+  `having` or in a predicate's input), each column it aggregates counts as a filter too,
+  but a key it counts: `case when max(is_large_order) = true then <revenue> end` is
+  refused. The same aggregates as separate select items answer, and a measure in place of
+  the `aggregate_if` reads no column. A caller no constraint applies to reads such
+  columns as before, and a constraint with
   `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so it
   refuses none of them. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated

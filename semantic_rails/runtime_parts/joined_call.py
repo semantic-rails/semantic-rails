@@ -25,7 +25,7 @@ from ..answer import (
     finish,
     minimal_route,
 )
-from ..ast import PERIOD_PARTIAL, TIME_AXIS
+from ..ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
 from ..compiler import _prepare, compile_query
 from ..compiler_parts.joined_parts import (
     IN,
@@ -46,6 +46,7 @@ from ..compiler_parts.part_domain import PRESENT, reading_part_domain
 from ..db_parts.base import QueryRows
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
+from ..expressions import MeasureRefExpr, MetricRecipeRefExpr
 from ..policies import enforce_query_policies
 from ..query_call import in_part, refusal
 from ..request_context import policy_identity
@@ -312,6 +313,7 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
     _refuse_over_select_limit(config, [part.statement for part in parts], keys)
     _check_order(payload.get("order_by") or [], keys, parts)
+    _refuse_inline_rank(payload, parts)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
     statement = joined_statement(
@@ -462,6 +464,34 @@ def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: lis
                 f"names '{item['field']}', which is no column of the joined answer",
                 fix=f"Name one of {names}.",
                 code="INVALID_ORDER_BY",
+            )
+
+
+def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
+    """Under a metric constraint with allowed_where, a limit keeps the joined rows its order picks,
+    so the order names a key or a part's measure or metric by id with no statistic written, as a
+    call's does (``policies._shape_refusal``, which also takes a measure's own statistic)."""
+    constrained = any(
+        effect.get("kind") == "metric_constraint" and "allowed_where" in effect["constraints"]
+        for part in parts
+        for effect in part.policy_effects
+    )
+    if payload.get("limit") is None or not constrained:
+        return
+    # Each part's select items under the names its answer gives them (a key or a dimension is none).
+    shown = {
+        row.as_: row.expression for part in parts for row in normalize_query(part.payload).select
+    }
+    for index, item in enumerate(payload.get("order_by") or []):
+        expression = shown.get(item["field"])
+        measure = isinstance(expression, MeasureRefExpr) and not expression.aggregation
+        if item["field"] in shown and not (measure or isinstance(expression, MetricRecipeRefExpr)):
+            raise refusal(
+                f"order_by[{index}].field",
+                f"'{item['field']}' picks the rows the limit keeps, and under a metric constraint "
+                "a joined call ranks only by a key or by a measure or metric by id",
+                fix="Order by a key or by a measure or metric by its id, or remove the limit.",
+                code="POLICY_DENIED",
             )
 
 
