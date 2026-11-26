@@ -953,6 +953,87 @@ def test_two_averages_each_under_its_own_constraint_answer_side_by_side(bare, mo
     ]
 
 
+LARGE_ORDERS = {"kind": "aggregate_if", "aggregation": "count", "condition": IS_LARGE}
+ONE_CUSTOMERS_ORDERS = {"kind": "aggregate_if", "aggregation": "count", "condition": ONE_CUSTOMER}
+RETURNING_ORDERS = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}}
+REVENUE_MEASURE = {"kind": "measure", "measure": REVENUE}
+
+
+def _more_than(value, count):
+    return {
+        "kind": "comparison",
+        "op": ">",
+        "left": count,
+        "right": {"kind": "literal", "value": value},
+    }
+
+
+# Each shows the order total or revenue by store only where a count over a field revenue's
+# constraint doesn't allow says so, inside one select item.
+GATED_TOTALS = {
+    "large_order_case": (_case(_more_than(0, LARGE_ORDERS), _summed(TOTAL)), LARGE_ORDER),
+    "customer_cohort_case": (
+        _case(_more_than(2, ONE_CUSTOMERS_ORDERS), _summed(TOTAL)),
+        ORDER_CUSTOMER_ID,
+    ),
+    "cohort_case_on_the_measure": (
+        _case(_more_than(2, ONE_CUSTOMERS_ORDERS), REVENUE_MEASURE),
+        ORDER_CUSTOMER_ID,
+    ),
+    "cohort_case_on_a_metric": (
+        _case(_more_than(2, ONE_CUSTOMERS_ORDERS), AOV),
+        ORDER_CUSTOMER_ID,
+    ),
+    "filtered_count_case": (_case(_more_than(0, RETURNING_ORDERS), REVENUE_MEASURE), CUSTOMER_TYPE),
+    "nullif": (
+        {
+            "kind": "call",
+            "name": "NULLIF",
+            "args": [REVENUE_MEASURE, _times(ONE_CUSTOMERS_ORDERS, ZERO)],
+        },
+        ORDER_CUSTOMER_ID,
+    ),
+    "division": (
+        _times(
+            REVENUE_MEASURE,
+            {
+                "kind": "arithmetic",
+                "op": "/",
+                "left": ONE_CUSTOMERS_ORDERS,
+                "right": ONE_CUSTOMERS_ORDERS,
+            },
+        ),
+        ORDER_CUSTOMER_ID,
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(GATED_TOTALS))
+def test_a_condition_that_gates_a_governed_value_counts_for_it(config, monkeypatch, shape):
+    """With revenue limited to store filters, a count's condition that decides whether the order
+    total appears in its select item cuts the total. The same count beside the total, as its own
+    select item, cuts only its own rows and answers."""
+    gated, disallowed = GATED_TOTALS[shape]
+    count = gated["whens"][0]["when"]["left"] if "whens" in gated else ONE_CUSTOMERS_ORDERS
+    result = _validated(config, {"allowed_where": [STORE_NAME]}, REVENUE, _summed(TOTAL), count)
+    assert result["ok"], result["errors"]
+    query = _select(gated, group_by=[STORE_NAME])
+    _compiles(config, query)
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [disallowed],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
 def test_a_constraint_matches_governed_sources_once_per_request(bare, monkeypatch):
     """The check holds each count to its own governed measures, matched once for the request:
     a dashboard of many counts matches them as often as one count does."""

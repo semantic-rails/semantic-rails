@@ -1798,10 +1798,43 @@ def _inline_filters(
             visit(child, whole_query=whole_query)
 
     for row in query.select:
+        start = len(found)
         visit(row.expression)
+        if operands is not None:
+            # A select item is one value: a read that picks, gates or weighs one aggregate in it
+            # (a CASE condition, NULLIF, a division by a count) counts for each aggregate it shows.
+            shown = _shown_measures(row.expression, config)
+            found.extend(
+                (measure, field)
+                for owner, field in found[start:]
+                if owner is not None
+                for measure in shown
+            )
     for metric_filter in query.metric_filters:
         visit(metric_filter.expression, whole_query=True)
     return found
+
+
+def _shown_measures(
+    expr: Any, config: PackageConfig, seen: frozenset[str] = frozenset()
+) -> set[str]:
+    """The measures and metrics whose values ``expr`` computes, a metric's measures included,
+    with the binder's measure for a conditional aggregate (``_synthetic_conditional_measure``)."""
+    if isinstance(expr, ConditionalAggregateExpr):
+        return {_synthetic_conditional_measure(expr, config)[0]}
+    shown = (
+        {expr.measure}
+        if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr))
+        else set()
+    )
+    if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
+        shown.add(expr.metric_recipe)
+        for recipe in config.metric_recipes:
+            if recipe.id == expr.metric_recipe:
+                shown |= _shown_measures(recipe.expression, config, seen | {recipe.id})
+    for child in _child_exprs(expr):
+        shown |= _shown_measures(child, config, seen)
+    return shown
 
 
 def _entity_scoped_reads(query: NormalizedQuery, config: PackageConfig) -> set[str]:

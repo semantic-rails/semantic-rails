@@ -869,8 +869,11 @@ kind names must match exactly.
   Each aggregate is held only by the constraints on the measures that govern it. Two
   averages that answer alone also answer side by side, under one constraint or one each,
   and another aggregate's condition beside a governed one counts for it only when it cuts
-  the whole query (in `having`, say). A caller no constraint applies to reads such
-  columns as before, and a constraint with
+  the whole query (in `having`, say). Inside one select item it counts for every aggregate
+  the item shows, since it can decide whether a value appears: with revenue limited to
+  store filters, `case when <count of large orders> > 0 then <order total> end` by store
+  is refused, as are `nullif` and a division by such a count. A caller no constraint
+  applies to reads such columns as before, and a constraint with
   `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so it
   refuses none of them. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
