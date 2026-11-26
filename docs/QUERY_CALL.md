@@ -711,6 +711,9 @@ A result threshold filters result rows; to filter which entities count toward a 
 | `"start"` alone / `"end"` alone | since (up to `now`, partial) / until | `{"start": "2017-06-01", "grain": "month"}` |
 | no window | all time | `{"grain": "year"}` |
 
+For “as of March 31, 2024” or “through March 31, 2024”, set the exclusive `time.end` to
+`2024-04-01`.
+
 - Units and grains: `day`, `week`, `month`, `quarter`, `year`. Weeks start on Monday (ISO).
   Bounds are ISO dates or date-times; a date-time bound may cut inside a day.
 - `grain` gives one row per period in a `period` column, an ISO date (the period's first day).

@@ -28,11 +28,10 @@ from semantic_rails.mcp import (
 from semantic_rails.mcp_server import handle_jsonrpc_message
 
 PLAN = re.compile(r"\bplan\b", re.IGNORECASE)
-# sha256 of the default surface as it was before the option existed; the tools' since execute's
-# description says when to give a time role.
+# Fingerprints for the default instructions, tools and prompts.
 DEFAULT_SURFACE_SHA256 = {
     "instructions": "2ef8432647e908ff17b12d32cef623189a35fdb39e0be2a69c272e73773e92b8",
-    "tools": "d3efc93617cbf6925011139ac62e639aff5a5c281f3856417e7fcf7f14ce4644",
+    "tools": "1c3f8a9f9c650d77ede888246be44d6f1430d3ce42c8f131852880737687250d",
     "prompts": "bb6cabd6d00e3b2b7f8367522fdfd3dcf4efe0d0c04cf999dd1436053fd4cdae",
     "prompt_text": "6458d5136efb7a93d1fc66c2486627688010b38939af5ec85a8555f9cabcd6f0",
 }
