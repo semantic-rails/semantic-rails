@@ -361,8 +361,11 @@ def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     the base's loaded range (``_reads_coverage``).
     Branches are counted unrouted, so the answer never depends on routing.
     """
-    if not plan.time or not _reads_coverage(plan, config):
-        return False
+    return bool(plan.time) and _reads_coverage(plan, config) and _shows_unread_periods(plan, config)
+
+
+def _shows_unread_periods(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """Whether a period can show where a leaf read no row (``_emits_time_coverage``)."""
     if plan.time.get("window_total"):
         return True
     if _query_requires_dense_series(plan, config) or _retained_filtered_series(plan, config):
@@ -376,8 +379,10 @@ def _series_probe_reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bo
     for a named window (``reads_coverage`` without ``has_time_coverage``), and so bounds that
     probe by each measure's own loaded coverage (``guard_empty_groups``' ``probe_key``), as
     DuckDB and Postgres bound every settled period. A measure's declared edge bounds its
-    periods there too, with or without a window. A window total, or a joined call's part,
-    whose periods can come from another part's clock, keeps the in-window test there."""
+    periods there too, with or without a window, and so does its own loaded range wherever
+    another measure's rows or a fill can show a period (``_shows_unread_periods``). A window
+    total, or a joined call's part, whose periods can come from another part's clock, keeps
+    the in-window test there."""
     time = plan.time or {}
     dialect = _dialect(config)
     declared = any(
@@ -385,14 +390,23 @@ def _series_probe_reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bo
         for row in plan.measure_plans
     )
     return bool(
-        (time.get("start") or time.get("end") or declared)
-        and time.get("grain")
+        time.get("grain")
         and not time.get("window_total")
         and dialect.reads_coverage
         and not dialect.has_time_coverage
         and not _emits_time_coverage(plan, config)
         and part_domain() is None
+        and (
+            time.get("start") or time.get("end") or declared or _shows_unread_periods(plan, config)
+        )
     )
+
+
+def _gates_by_own_range(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """Whether a series' guard there bounds every settled period by each measure's own loaded
+    range (``guard_empty_groups``' ``own_range``), as DuckDB and Postgres do, so that, as
+    there, its leaves read the base, never a rollup (``coverage_base_plan``)."""
+    return _series_probe_reads_coverage(plan, config) and _shows_unread_periods(plan, config)
 
 
 def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
