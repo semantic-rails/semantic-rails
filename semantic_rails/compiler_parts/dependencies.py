@@ -53,6 +53,8 @@ class InnerCall:
 class BindingDependencies:
     object_ids: set[str] = field(default_factory=set)
     inner_calls: list[InnerCall] = field(default_factory=list)
+    # The caller's aggregates over columns each nested compile planned, by synthetic measure id.
+    synthetic_measures: dict[str, MeasureConfig] = field(default_factory=dict)
     indexes: dict[tuple[int, int], Any] = field(default_factory=dict)
     cuts: list[Cut] = field(default_factory=list)
     temporal_roles: dict[str, set[str]] = field(default_factory=dict)
@@ -369,6 +371,15 @@ def record_inner_call(
                 _cut_owners.get() if owned else frozenset(),
             )
         )
+
+
+def record_synthetic_measures(plan: LogicalPlan) -> None:
+    """Record the caller's aggregates over columns a nested compile planned, so the policy
+    check reads an entity filter's input, at any depth, as it reads the call's own."""
+    dependencies = _active.get()
+    if dependencies is not None:
+        for measure_id, measure in plan.synthetic_measures.items():
+            dependencies.synthetic_measures.setdefault(measure_id, measure)
 
 
 @contextmanager

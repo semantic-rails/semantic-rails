@@ -220,7 +220,7 @@ def enforce_query_policies(
     unchecked = (
         query is not None
         if binding is None
-        else any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
+        else any(collect_column_refs(row.expr) for row in binding.synthetic_measures.values())
     )
     # Something is hidden exactly when a visibility policy lists an object for this caller.
     scope: dict[str, Any] = {"environment": environment, "audience": audience, "roles": roles}
@@ -906,7 +906,7 @@ def _synthetic_constraint_sources(
     Only measures named by constraints need inspection. Resolution errors propagate:
     uncertainty about a governed source can never authorize an anonymous aggregate.
     """
-    if not binding.plan.synthetic_measures:
+    if not binding.synthetic_measures:
         return {}
 
     measures = {row.id: row for row in config.measures}
@@ -955,7 +955,7 @@ def _synthetic_constraint_sources(
     reads = {row.id: columns(row) for row in config.measures if row.id in governed}
     synthetic_reads = {
         synthetic_id: columns(row) | (set() if reads_values(row) else {rows(row)})
-        for synthetic_id, row in binding.plan.synthetic_measures.items()
+        for synthetic_id, row in binding.synthetic_measures.items()
     }
     return {
         synthetic_id: {measure_id for measure_id, read in reads.items() if read & synthetic_read}
@@ -1253,7 +1253,7 @@ def _row_statistics(
     has no aggregation of its own (it returns rows' values when its value reads a column); a
     package metric's are its author's definition."""
     config = binding.config
-    synthetic = binding.plan.synthetic_measures.get(object_id)
+    synthetic = binding.synthetic_measures.get(object_id)
     measure = synthetic or next((row for row in config.measures if row.id == object_id), None)
     if measure is None:
         return []
@@ -1342,7 +1342,7 @@ def _share_violations(
     config = binding.config
     recipes = {row.id: row for row in config.metric_recipes}
     checked = {alias for kind, alias, _ in coarser_calls(config, payload) if kind == "share"}
-    synthetic = object_id in binding.plan.synthetic_measures
+    synthetic = object_id in binding.synthetic_measures
     required = _config_str_list(policy_config, "required_group_by")
 
     def reads(expr: Any, seen: frozenset[str] = frozenset()) -> bool:
@@ -1423,7 +1423,7 @@ def _inner_call_violations(
     recipes = {row.id for row in config.metric_recipes}
     if not (
         object_id in recipes
-        or object_id in binding.plan.synthetic_measures
+        or object_id in binding.synthetic_measures
         or any(row.id == object_id for row in config.measures)
     ):
         return []
@@ -1447,7 +1447,7 @@ def _inner_call_violations(
         if not escaped and any(_where_spec_matches(row, spec) for row in own_where)
     ]
     # A caller's aggregate over columns is named by the measures whose columns it reads.
-    named = {} if object_id in binding.plan.synthetic_measures else {"object": object_id}
+    named = {} if object_id in binding.synthetic_measures else {"object": object_id}
     found: list[dict[str, Any]] = []
     # A listed name that labels an entity's rows allows grouping one row per entity: its key.
     cuts = allowed | {key for field in allowed if (key := display_key(config, field))}
@@ -1673,7 +1673,7 @@ def _counted_operands(
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
     }
     measures = {
-        row.id: row for row in config.measures if row.id not in binding.plan.synthetic_measures
+        row.id: row for row in config.measures if row.id not in binding.synthetic_measures
     }
     governed = set(policy.object_ids or measures) & set(measures)
     sources = _synthetic_constraint_sources(config, binding, governed)
@@ -1841,7 +1841,7 @@ def _governed_inline_fields(
 
     # The normalized request has no id for a conditional aggregate's own condition.
     # Every such synthetic measure has those cuts, even if the compiler recorded none.
-    synthetic = object_id in bound().plan.synthetic_measures
+    synthetic = object_id in bound().synthetic_measures
     out = [
         field
         for measure, field in filters

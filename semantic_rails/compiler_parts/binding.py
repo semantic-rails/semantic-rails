@@ -5,7 +5,7 @@ for the policy check and the answer's disclosures.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
 from ..acceleration.routing import (
@@ -185,6 +185,9 @@ class BoundQuery:
     # Every query compiled inside this one, with how it groups what it reads (the policy
     # check holds each grouping to the constraints on what it reads).
     inner_calls: tuple[InnerCall, ...] = ()
+    # Every caller aggregate over columns the SQL reads, by synthetic measure id: the plan's own
+    # and each nested compile's (an entity filter's input, at any depth).
+    synthetic_measures: dict[str, Any] = field(default_factory=dict)
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """The cuts the caller added that count for ``object_id``: whole-query cuts plus the
@@ -724,4 +727,5 @@ def _bind_query(
         closing_reads=closing_reads_by_output(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
         inner_calls=tuple(dependencies.inner_calls),
+        synthetic_measures={**dependencies.synthetic_measures, **plan.synthetic_measures},
     )
