@@ -28,7 +28,12 @@ INSTALLS = "measure.dl.installs"
 KNOWN = "CASE WHEN country IN ('', 'XX') THEN NULL ELSE country END"
 
 
-def _package(root: Path, country: dict[str, Any], defaults: dict[str, Any] | None = None) -> Path:
+def _package(
+    root: Path,
+    country: dict[str, Any],
+    defaults: dict[str, Any] | None = None,
+    others: dict[str, Any] | None = None,
+) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
@@ -44,7 +49,7 @@ def _package(root: Path, country: dict[str, Any], defaults: dict[str, Any] | Non
     }}})  # fmt: skip
     put("models/downloads.yml", {"model": {
         "id": "downloads", "relation": "downloads", "entities": {"download": {}},
-        "dimensions": {"country": {"kind": "categorical", **country}},
+        "dimensions": {"country": {"kind": "categorical", **country}, **(others or {})},
         "measures": {"installs": {"kind": "aggregate", "expr": "installs", "value_type": "count"}},
     }})  # fmt: skip
     with duckdb.connect(str(root / "dl.duckdb")) as connection:
@@ -127,3 +132,123 @@ def test_unknown_values_is_a_list_declared_per_dimension(tmp_path, country, defa
     with pytest.raises(SemanticLayerError) as raised:
         load_package_config(str(tmp_path))
     assert message in str(raised.value) + str(raised.value.details)
+
+
+# A reference code in one column, "Ref Code": two downloads record an unknown code as 'UNKNOWN'
+# and two leave it NULL. DuckDB reads "Ref Code" and "REF CODE" as that one column.
+REFERENCES = """
+ALTER TABLE downloads ADD COLUMN "Ref Code" VARCHAR;
+UPDATE downloads SET "Ref Code" = CASE download_id
+  WHEN 1 THEN 'R1' WHEN 2 THEN 'UNKNOWN' WHEN 4 THEN 'UNKNOWN' WHEN 6 THEN 'R6' END;
+"""
+SENTINEL = {"unknown_values": ["UNKNOWN"]}
+
+
+def _references(root: Path, spellings: dict[str, dict[str, Any]]) -> Runtime:
+    """The downloads package with one dimension over each spelling of the reference column."""
+    others = {
+        f"ref_{index}": {"kind": "categorical", "column": column, **declared}
+        for index, (column, declared) in enumerate(spellings.items())
+    }
+    _package(root, {}, others=others)
+    with duckdb.connect(str(root / "dl.duckdb")) as connection:
+        connection.execute(REFERENCES)
+    return Runtime.from_path(str(root))
+
+
+def _installs_where(column: str, op: str, value: Any) -> dict[str, Any]:
+    ref = {"kind": "column", "entity": "entity.dl_download", "column": column}
+    condition = {
+        "kind": "comparison",
+        "op": op,
+        "left": ref,
+        "right": {"kind": "literal", "value": value},
+    }
+    value_ref = {"kind": "column", "entity": "entity.dl_download", "column": "installs"}
+    expression = {
+        "kind": "aggregate_if",
+        "aggregation": "sum",
+        "value": value_ref,
+        "condition": condition,
+    }
+    return {"select": [{"expression": expression, "as": "total"}]}
+
+
+def _gold_references(where: str) -> int:
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(SEED + REFERENCES)
+        [[total]] = connection.execute(
+            f"SELECT SUM(installs) FROM downloads WHERE {where}"
+        ).fetchall()
+    return int(total)
+
+
+@pytest.mark.parametrize("spelling", ["Ref Code", "REF CODE"])
+@pytest.mark.parametrize(
+    ("op", "value", "message"),
+    [
+        ("missing", True, "whose dimensions declare different unknown values"),
+        ("is", "R1", "whose dimensions declare different unknown values"),
+        ("contains", "R", "is the column of several dimensions"),
+    ],
+)
+def test_a_column_read_whose_spellings_declare_different_unknown_values_is_refused(
+    tmp_path, spelling, op, value, message
+):
+    # Without the refusal each spelling read only its own dimension: missing summed 10 in the
+    # sentinel's spelling and 5 in the other, two answers for one column.
+    runtime = _references(tmp_path, {"Ref Code": SENTINEL, "REF CODE": {}})
+    try:
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.query(_installs_where(spelling, op, value))
+    finally:
+        runtime.close()
+    error = raised.value
+    assert error.code == "INVALID_QUERY"
+    assert message in str(error)
+    assert sorted(error.details["dimensions"]) == [
+        "dimension.dl_download_ref_0",
+        "dimension.dl_download_ref_1",
+    ]
+    assert '"op": "' + op + '"' in error.details["recovery_hints"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    ("declared", "where"),
+    [
+        (SENTINEL, '"Ref Code" IS NULL OR "Ref Code" = \'UNKNOWN\''),
+        ({}, '"Ref Code" IS NULL'),
+    ],
+)
+def test_spellings_whose_dimensions_agree_give_one_answer(tmp_path, declared, where):
+    runtime = _references(tmp_path, {"Ref Code": declared, "REF CODE": declared})
+    try:
+        totals = {
+            spelling: [
+                int(row["total"])
+                for row in runtime.query(_installs_where(spelling, "missing", True))["rows"]
+            ]
+            for spelling in ["Ref Code", "REF CODE"]
+        }
+    finally:
+        runtime.close()
+    assert totals == {"Ref Code": [_gold_references(where)], "REF CODE": [_gold_references(where)]}
+
+
+def test_one_dimension_over_its_exact_spelling_reads_its_unknown_values(tmp_path):
+    runtime = _references(tmp_path, {"Ref Code": SENTINEL})
+    try:
+        missing = runtime.query(_installs_where("Ref Code", "missing", True))["rows"]
+        contains = runtime.query(_installs_where("Ref Code", "contains", "R"))["rows"]
+    finally:
+        runtime.close()
+    assert (
+        [int(row["total"]) for row in missing]
+        == [_gold_references('"Ref Code" IS NULL OR "Ref Code" = \'UNKNOWN\'')]
+        == [10]
+    )
+    assert (
+        [int(row["total"]) for row in contains]
+        == [_gold_references("\"Ref Code\" LIKE '%R%' AND \"Ref Code\" <> 'UNKNOWN'")]
+        == [15]
+    )
