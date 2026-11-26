@@ -895,6 +895,64 @@ def test_each_aggregate_counts_freely_only_by_its_own_governed_measure(bare):
         assert result["ok"], (expressions, result["errors"])
 
 
+def test_two_averages_each_under_its_own_constraint_answer_side_by_side(bare, monkeypatch):
+    """The average order total and the average tax by store, each governed by its own
+    constraint allowing store filters: each answers alone and both answer on one dashboard. Each
+    constraint holds only its own measure's average, so a filter of the tax average beside the
+    order total is refused by the tax constraint alone."""
+    averages = [_counted("avg", TOTAL), _counted("avg", TAX)]
+    policies = [
+        SemanticPolicyConfig(
+            id=f"policy.test.{name}",
+            kind="metric_constraint",
+            object_ids=[governed],
+            config={"allowed_where": [STORE_NAME]},
+        )
+        for name, governed in [("total", TOTAL_CENTS), ("tax", TAX_CENTS)]
+    ]
+    engine = Runtime.from_config(replace(bare, semantic_policies=policies), source_path=PACKAGE)
+    returning_tax = _counted("avg", _case(ONE_CUSTOMER, TAX))
+    try:
+        for expressions in [averages[:1], averages[1:], averages]:
+            query = {
+                "select": [
+                    {"expression": expression, "as": f"value_{index}"}
+                    for index, expression in enumerate(expressions)
+                ],
+                "group_by": [STORE_NAME],
+            }
+            result = engine.validate(query)
+            assert result["ok"], (expressions, result["errors"])
+        query = {
+            "select": [
+                {"expression": averages[0], "as": "total"},
+                {"expression": returning_tax, "as": "tax"},
+            ],
+            "group_by": [STORE_NAME],
+        }
+        _assert_denied_before_output(engine, monkeypatch, query)
+        denied = [
+            (effect["policy_id"], effect["violations"])
+            for effect in engine.validate(query)["policy_effects"]
+            if effect["action"] == "deny"
+        ]
+    finally:
+        engine.close()
+    assert denied == [
+        (
+            "policy.test.tax",
+            [
+                {
+                    "kind": "disallowed_where",
+                    "disallowed": [ORDER_CUSTOMER_ID],
+                    "allowed": [STORE_NAME],
+                    "source": "inline_expression",
+                }
+            ],
+        )
+    ]
+
+
 def test_a_package_wide_constraint_reads_an_average_by_its_own_measures(config):
     """Every object a package-wide constraint meets, the store dimension included, holds the
     average stock to the measures over its column, which read it as it is."""
@@ -1114,12 +1172,11 @@ def _spelled(column):
     }
 
 
-@pytest.mark.parametrize("column", ["Customer Ref", "customer ref", "CUSTOMER REF"])
 @pytest.mark.parametrize("read", ["condition", "computed", "counted"])
-def test_a_quoted_column_in_another_case_is_its_dimension(quoted, monkeypatch, read, column):
-    """DuckDB reads a quoted name in any ASCII case as one column: the spelling meets the
-    dimension over it, refused or allowed as the dimension's own spelling is."""
-    governed, expression = _spelled(column)[read]
+def test_a_quoted_column_in_its_own_spelling_is_its_dimension(quoted, monkeypatch, read):
+    """The dimension's own spelling of a quoted name is allowed when the dimension is listed and
+    refused naming it when it isn't."""
+    governed, expression = _spelled("Customer Ref")[read]
     query = _select(expression, group_by=[STORE_NAME])
     _compiles(quoted, query)
     engine = _constrained(quoted, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, governed)
@@ -1138,6 +1195,98 @@ def test_a_quoted_column_in_another_case_is_its_dimension(quoted, monkeypatch, r
             "kind": "disallowed_where",
             "disallowed": [CUSTOMER_REF],
             "allowed": [LARGE_ORDER, STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+@pytest.mark.parametrize("column", ["customer ref", "CUSTOMER REF"])
+@pytest.mark.parametrize("read", ["condition", "computed", "counted"])
+def test_a_quoted_column_in_another_case_is_no_dimension(quoted, monkeypatch, read, column):
+    """DuckDB reads "CUSTOMER REF" as the column "Customer Ref", but the SQL binds that spelling
+    to no dimension, so it reads none of the dimension's unknown values: listing the dimension
+    allows nothing."""
+    governed, expression = _spelled(column)[read]
+    query = _select(expression, group_by=[STORE_NAME])
+    _compiles(quoted, query)
+    engine = _constrained(quoted, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [f"{ORDER}.{column}"],
+            "allowed": [STORE_NAME, CUSTOMER_REF],
+            "source": "inline_expression",
+        }
+    ]
+
+
+def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypatch):
+    """Revenue by store for the orders with no customer reference, where the dimension over the
+    reference reads UNKNOWN as no value. Its own spelling counts the UNKNOWN orders; another case,
+    which the SQL reads as the bare column, is refused rather than leaving them out."""
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
+    missing = 'CASE WHEN o."Customer Ref" IS NULL OR o."Customer Ref" = \'UNKNOWN\''
+    with duckdb.connect(str(package / "jaffle_shop.duckdb")) as connection:
+        connection.execute('ALTER TABLE jaffle_order ADD COLUMN "Customer Ref" VARCHAR')
+        connection.execute(
+            """
+            UPDATE jaffle_order SET "Customer Ref" = CASE hash(order_id) % 3
+                WHEN 0 THEN 'UNKNOWN' WHEN 1 THEN NULL ELSE 'C-' || order_id END
+            """
+        )
+        reference, nulls_only = (
+            dict(
+                connection.execute(
+                    f"""
+                    SELECT s.store_name, SUM({condition} THEN o.order_total_cents END)
+                    FROM jaffle_order o JOIN jaffle_store s USING (store_id) GROUP BY 1
+                    """
+                ).fetchall()
+            )
+            for condition in (missing, 'CASE WHEN o."Customer Ref" IS NULL')
+        )
+    assert reference != nulls_only
+    loaded = replace(load_package_config(str(package)), semantic_policies=[])
+    customer = next(row for row in loaded.dimensions if row.id == ORDER_CUSTOMER_ID)
+    dimension = replace(
+        customer,
+        id=CUSTOMER_REF,
+        column="Customer Ref",
+        name="customer_ref",
+        aliases=[],
+        unknown_values=["UNKNOWN"],
+    )
+    package_config = replace(loaded, dimensions=[*loaded.dimensions, dimension])
+
+    def revenue_with_no(column):
+        ref = {"kind": "column", "entity": ORDER, "column": column}
+        yes = {"kind": "literal", "value": True}
+        no_value = {"kind": "comparison", "op": "missing", "left": ref, "right": yes}
+        return _select(_summed(TOTAL, no_value), group_by=[STORE_NAME])
+
+    engine = _constrained(
+        package_config,
+        {"allowed_where": [STORE_NAME, CUSTOMER_REF]},
+        REVENUE,
+        source_path=str(package),
+    )
+    try:
+        rows = engine.query(revenue_with_no("Customer Ref"))["rows"]
+        violations = _assert_denied_before_output(
+            engine, monkeypatch, revenue_with_no("CUSTOMER REF")
+        )
+    finally:
+        engine.close()
+    assert {row[STORE_NAME]: row["value"] for row in rows} == reference
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [f"{ORDER}.CUSTOMER REF"],
+            "allowed": [STORE_NAME, CUSTOMER_REF],
             "source": "inline_expression",
         }
     ]

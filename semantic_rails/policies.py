@@ -1586,8 +1586,9 @@ def _condition_fields(
 
     A constraint passes ``operands`` (``_counted_operands``): then a count or an average of a
     returned column other than one of its operands picks the rows where it has a value, a column
-    meets its dimensions as the warehouse reads names (``_dimensions_over``), and another
-    entity's dimension grants a column only over the same relation, named in full.
+    the SQL binds to a dimension meets its dimensions as the warehouse reads names
+    (``_dimensions_over``), and another entity's dimension grants a column only over the same
+    relation, named in full.
     ``filterable: false``, which every caller meets and which only refuses, passes none and reads
     columns as it always has: no count rule, the spelling as written, relations matched by their
     last name part, and no value column that no dimension declares."""
@@ -1693,7 +1694,11 @@ def _counted_operands(
 
 def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[Any]:
     """The dimensions of ``entity`` over every spelling of ``column`` the warehouse reads as that
-    column (``_column_key``), so each spelling meets the same ones."""
+    column (``_column_key``), so each spelling meets the same ones; none for a spelling the SQL
+    binds to no dimension (``dimensions_over_column``), since binding reads it without any
+    dimension's unknown values."""
+    if not dimensions_over_column(entity, column, config):
+        return []
     key = _column_key(column, config)
     return [
         row
@@ -1730,8 +1735,9 @@ def _inline_filters(
 ) -> list[tuple[str | None, str | _Undeclared]]:
     """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
     expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
-    predicate inputs included. A conditional aggregate's condition has no declared measure:
-    each field it reads is ``("", field)`` (``_condition_fields``, given ``operands``).
+    predicate inputs included. A conditional aggregate has no declared measure: each field it
+    reads (``_condition_fields``, given ``operands``) is owned by the measure the binder makes
+    of it (``_synthetic_conditional_measure``), or by ``""`` with no ``operands``.
     ``measure=None`` marks whole-query attribution under predicates, metric filters and
     conversion operands. Recipes are not read here.
     """
@@ -1764,10 +1770,11 @@ def _inline_filters(
                 if isinstance(item.get("input"), dict)
             )
         elif isinstance(expr, ConditionalAggregateExpr):
-            found.extend(
-                (None if whole_query else "", field)
-                for field in _condition_fields(expr, config, operands)
-            )
+            # Under a constraint, a read is owned by the binder's measure for this aggregate.
+            owner: str | None = None
+            if not whole_query:
+                owner = "" if operands is None else _synthetic_conditional_measure(expr, config)[0]
+            found.extend((owner, field) for field in _condition_fields(expr, config, operands))
         for payload in nested:
             visit(parse_semantic_expression(payload, context="query"), whole_query=True)
         for child in _child_exprs(expr):
@@ -1830,8 +1837,8 @@ def _governed_inline_fields(
 
     A filter is owned by the query's root leaves over its measure, and counts by the rule
     that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
-    governed measure itself, under a package-wide constraint, or marked whole-query
-    (``measure=None``) always counts.
+    governed measure itself (a conditional aggregate's own reads, when it is that measure), under
+    a package-wide constraint, or marked whole-query (``measure=None``) always counts.
     """
 
     def owners(measure: str) -> frozenset[str]:
@@ -1839,16 +1846,12 @@ def _governed_inline_fields(
             row.alias for row in bound().plan.bound_measures if row.measure_id == measure
         )
 
-    # The normalized request has no id for a conditional aggregate's own condition.
-    # Every such synthetic measure has those cuts, even if the compiler recorded none.
-    synthetic = object_id in bound().plan.synthetic_measures
     out = [
         field
         for measure, field in filters
         if package_wide
         or measure is None
         or measure == object_id
-        or (measure == "" and synthetic)
         or bound().cut_counts(object_id, owners(measure))
     ]
     return list(dict.fromkeys(out))
