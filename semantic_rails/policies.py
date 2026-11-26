@@ -1343,8 +1343,8 @@ def _shape_refusal(
         if isinstance(expr, ConditionalAggregateExpr):
             if expr.condition is not None and not condition(expr.condition):
                 return "an aggregate_if whose condition reads more than allowed fields"
-            fine = counted(expr)
-            return "" if fine else "an aggregate_if of neither its measure's own column nor a key"
+            why = "an aggregate_if whose value isn't its measure's own column or a key it counts"
+            return "" if counted(expr) else why
         return f"a {expr.name.lower() if isinstance(expr, CallExpr) else expr_kind(expr)}"
 
     def item(expr: Any, depth: int) -> str:

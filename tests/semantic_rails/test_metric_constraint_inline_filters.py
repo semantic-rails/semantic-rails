@@ -569,12 +569,36 @@ VALUE_NEIGHBOURS = {
 }
 
 
+# Now refused (by design): each value is off the allow-list, a case, a column revenue divides or
+# a count doesn't count, or a distinct count of a column that is no whole key.
+OFF_THE_LIST_NEIGHBOURS = {
+    "case_on_an_allowed_field",
+    "returned_total",
+    "sum_under_a_count_constraint",
+    "returned_key",
+    "returned_by_a_case_branch",
+    "returned_by_an_else_branch",
+}
+OFF_THE_LIST_VALUE = "an aggregate_if whose value isn't its measure's own column or a key it counts"
+
+
+def _off_the_list(holds, alias="value"):
+    """The allow-list's refusal of select item ``alias``, which holds ``holds``."""
+    return {"kind": "disallowed_expression", "read": f"select item '{alias}' holds {holds}"}
+
+
 @pytest.mark.parametrize("shape", sorted(VALUE_NEIGHBOURS))
-def test_a_conditional_aggregate_value_that_filters_by_nothing_disallowed_answers(config, shape):
+def test_a_conditional_aggregate_value_that_filters_by_nothing_disallowed_answers(
+    config, monkeypatch, shape
+):
     governed, expression = VALUE_NEIGHBOURS[shape]
     query = _select(expression, group_by=[STORE_NAME])
     engine = _constrained(config, BY_STORE_OR_SIZE, governed)
     try:
+        if shape in OFF_THE_LIST_NEIGHBOURS:
+            violations = _assert_denied_before_output(engine, monkeypatch, query)
+            assert violations == [_off_the_list(OFF_THE_LIST_VALUE)]
+            return
         result = engine.validate(query)
         assert result["ok"], result["errors"]
         assert engine.compile(query)["rendered_sql"]
@@ -582,20 +606,26 @@ def test_a_conditional_aggregate_value_that_filters_by_nothing_disallowed_answer
         engine.close()
 
 
-def test_a_case_on_an_allowed_field_in_a_value_returns_its_revenue(tmp_path):
+def test_a_case_on_an_allowed_field_in_a_value_returns_its_revenue(tmp_path, monkeypatch):
+    """The large orders' total by store: as a case in the value it is off the allow-list and
+    refused (by design); as the condition of the total, which a measure sums as it is, it answers
+    with the warehouse's numbers."""
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
-    config = replace(load_package_config(str(package)), semantic_policies=[])
-    query = _select(_summed(_case(IS_LARGE, TOTAL, ZERO)), group_by=[STORE_NAME])
-    engine = _constrained(config, BY_STORE_OR_SIZE, REVENUE, source_path=str(package))
+    config = _with_bare_measures(replace(load_package_config(str(package)), semantic_policies=[]))
+    in_a_case = _select(_summed(_case(IS_LARGE, TOTAL, ZERO)), group_by=[STORE_NAME])
+    query = _select(_summed(TOTAL, IS_LARGE), group_by=[STORE_NAME])
+    engine = _constrained(config, BY_STORE_OR_SIZE, TOTAL_CENTS, source_path=str(package))
     try:
         rows = engine.query(query)["rows"]
         db_path = engine.db_path
+        violations = _assert_denied_before_output(engine, monkeypatch, in_a_case)
     finally:
         engine.close()
+    assert violations == [_off_the_list(OFF_THE_LIST_VALUE)]
     with duckdb.connect(db_path, read_only=True) as connection:
         reference = connection.execute(
             """
-            SELECT s.store_name, SUM(CASE WHEN o.is_large_order THEN o.order_total_cents ELSE 0 END)
+            SELECT s.store_name, SUM(CASE WHEN o.is_large_order THEN o.order_total_cents END)
             FROM jaffle_order o JOIN jaffle_store s USING (store_id)
             GROUP BY 1
             """
@@ -1056,12 +1086,19 @@ GATED_TOTALS = {
 @pytest.mark.parametrize("shape", sorted(GATED_TOTALS))
 def test_a_condition_that_gates_a_governed_value_counts_for_it(config, monkeypatch, shape):
     """With revenue limited to store filters, a count's condition that decides whether the order
-    total appears in its select item cuts the total. The same count beside the total, as its own
-    select item, cuts only its own rows and answers."""
+    total appears in its select item cuts the total. The same count beside revenue, as its own
+    select item, cuts only its own rows and answers. Beside the order total's own sum it is now
+    refused (by design): revenue divides the total, so that sum is off the allow-list."""
     gated, disallowed = GATED_TOTALS[shape]
     count = gated["whens"][0]["when"]["left"] if "whens" in gated else ONE_CUSTOMERS_ORDERS
-    result = _validated(config, {"allowed_where": [STORE_NAME]}, REVENUE, _summed(TOTAL), count)
-    assert result["ok"], result["errors"]
+    beside = {"allowed_where": [STORE_NAME]}, REVENUE
+    result = _validated(config, *beside, _summed(TOTAL), count)
+    assert result["policy_effects"][0]["violations"] == [
+        _off_the_list(OFF_THE_LIST_VALUE, "value_0")
+    ]
+    if count != _summed(TOTAL):
+        result = _validated(config, *beside, REVENUE_MEASURE, count)
+        assert result["ok"], result["errors"]
     query = _select(gated, group_by=[STORE_NAME])
     _compiles(config, query)
     engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
@@ -1110,13 +1147,13 @@ DECIDING_VALUES = {
 def test_a_value_that_decides_what_appears_reads_the_columns_it_aggregates(
     config, monkeypatch, shape
 ):
-    """Each column it aggregates is a filter. A count of the orders' key gates as the order
-    count does and answers."""
+    """Each column it aggregates is a filter. A gate on a count of the orders' key gates as the
+    order count does, but a case is off the allow-list: now refused (by design)."""
     governed, query, disallowed = DECIDING_VALUES[shape]
     key = {"kind": "column", "entity": ORDER, "column": "order_id"}
     orders_gate = _case(_more_than(5, _counted("count", key)), REVENUE_MEASURE)
     result = _validated(config, {"allowed_where": [STORE_NAME]}, REVENUE, orders_gate)
-    assert result["ok"], result["errors"]
+    assert result["policy_effects"][0]["violations"] == [_off_the_list("a case", "value_0")]
     _compiles(config, query)
     engine = _constrained(config, {"allowed_where": [STORE_NAME]}, governed)
     try:
@@ -1171,10 +1208,16 @@ def test_a_constraint_matches_governed_sources_once_per_request(bare, monkeypatc
         return match(*args)
 
     monkeypatch.setattr(policies, "_synthetic_constraint_sources", counted)
-    counts = [
-        _counted("count", _case(IS_LARGE, {"kind": "literal", "value": index}))
-        for index in range(6)
+    # Six counts on the allow-list, each under its own condition on an allowed field.
+    flag, literal = (
+        IS_LARGE["left"],
+        [{"kind": "literal", "value": value} for value in (True, False)],
+    )
+    conditions = [
+        *({**IS_LARGE, "op": op, "right": right} for op in ("=", "!=") for right in literal),
+        *({"kind": "in", "expr": flag, "values": [right]} for right in literal),
     ]
+    counts = [{"kind": "aggregate_if", "aggregation": "count", "condition": c} for c in conditions]
     matched = []
     for expressions in [counts[:1], counts]:
         calls.clear()
@@ -1391,8 +1434,8 @@ def quoted(config):
 
 
 def _spelled(column):
-    """A read of the customer reference spelled ``column``: in a condition, computed with, and
-    counted."""
+    """A read of the customer reference spelled ``column``: in a case condition, computed with,
+    counted, and in the condition of a count of the orders."""
     ref = {"kind": "column", "entity": ORDER, "column": column}
     one = {"kind": "comparison", "op": "=", "left": ref, "right": {"kind": "literal", "value": "x"}}
     lower = {"kind": "call", "name": "LOWER", "args": [ref]}
@@ -1400,13 +1443,21 @@ def _spelled(column):
         "condition": (REVENUE, _summed(_case(one, TOTAL, ZERO))),
         "computed": (ORDERS, _counted("count_distinct", lower)),
         "counted": (ORDERS, _counted("count", ref)),
+        "count_condition": (
+            ORDERS,
+            {"kind": "aggregate_if", "aggregation": "count", "condition": one},
+        ),
     }
 
 
-@pytest.mark.parametrize("read", ["condition", "computed", "counted"])
+READS = ["condition", "computed", "counted", "count_condition"]
+
+
+@pytest.mark.parametrize("read", READS)
 def test_a_quoted_column_in_its_own_spelling_is_its_dimension(quoted, monkeypatch, read):
     """The dimension's own spelling of a quoted name is allowed when the dimension is listed and
-    refused naming it when it isn't."""
+    refused naming it when it isn't. Of these reads only the count's condition is on the
+    allow-list; with the dimension listed, the other three are now refused (by design)."""
     governed, expression = _spelled("Customer Ref")[read]
     query = _select(expression, group_by=[STORE_NAME])
     _compiles(quoted, query)
@@ -1415,7 +1466,10 @@ def test_a_quoted_column_in_its_own_spelling_is_its_dimension(quoted, monkeypatc
         result = engine.validate(query)
     finally:
         engine.close()
-    assert result["ok"], result["errors"]
+    if read == "count_condition":
+        assert result["ok"], result["errors"]
+    else:
+        assert result["policy_effects"][0]["violations"] == [_off_the_list(OFF_THE_LIST_VALUE)]
     engine = _constrained(quoted, BY_STORE_OR_SIZE, governed)
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
@@ -1432,7 +1486,7 @@ def test_a_quoted_column_in_its_own_spelling_is_its_dimension(quoted, monkeypatc
 
 
 @pytest.mark.parametrize("column", ["customer ref", "CUSTOMER REF"])
-@pytest.mark.parametrize("read", ["condition", "computed", "counted"])
+@pytest.mark.parametrize("read", READS)
 def test_a_quoted_column_in_another_case_is_no_dimension(quoted, monkeypatch, read, column):
     """DuckDB reads "CUSTOMER REF" as the column "Customer Ref", but the SQL binds that spelling
     to no dimension, so it reads none of the dimension's unknown values: listing the dimension
@@ -1456,7 +1510,7 @@ def test_a_quoted_column_in_another_case_is_no_dimension(quoted, monkeypatch, re
 
 
 def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypatch):
-    """Revenue by store for the orders with no customer reference, where the dimension over the
+    """The order total by store for the orders with no customer reference, where the dimension over the
     reference reads UNKNOWN as no value. Its own spelling counts the UNKNOWN orders; another case,
     which the SQL reads as the bare column, is refused rather than leaving them out."""
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
@@ -1491,7 +1545,11 @@ def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypa
         aliases=[],
         unknown_values=["UNKNOWN"],
     )
-    package_config = replace(loaded, dimensions=[*loaded.dimensions, dimension])
+    # The order total in cents, which a measure sums as it is: revenue divides it, so a sum of
+    # it under revenue's constraint is off the allow-list.
+    package_config = _with_bare_measures(
+        replace(loaded, dimensions=[*loaded.dimensions, dimension])
+    )
 
     def revenue_with_no(column):
         ref = {"kind": "column", "entity": ORDER, "column": column}
@@ -1502,7 +1560,7 @@ def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypa
     engine = _constrained(
         package_config,
         {"allowed_where": [STORE_NAME, CUSTOMER_REF]},
-        REVENUE,
+        TOTAL_CENTS,
         source_path=str(package),
     )
     try:
@@ -1583,9 +1641,10 @@ def test_an_inline_filter_on_a_sibling_counts_when_query_wide(config, monkeypatc
 def test_a_sibling_conditional_aggregate_counts_only_when_query_wide(
     config, monkeypatch, placement
 ):
-    """Revenue's constraint governs the order total's sum, not a count of one customer's orders
-    beside it: that count's condition cuts only its own rows, unless having on it cuts the
-    groups."""
+    """Revenue's constraint governs revenue, not a count of one customer's orders beside it: that
+    count's condition cuts only its own rows, unless having on it cuts the groups. Beside the
+    order total's own sum, which revenue divides, it is now refused (by design): that sum is
+    off the allow-list."""
     one_customers_orders = {
         "kind": "aggregate_if",
         "aggregation": "count",
@@ -1598,8 +1657,11 @@ def test_a_sibling_conditional_aggregate_counts_only_when_query_wide(
     engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
     try:
         if placement == "select":
-            result = engine.validate(query)
+            beside_revenue = {**query, "select": [REVENUE, *query["select"][1:]]}
+            result = engine.validate(beside_revenue)
             assert result["ok"], result["errors"]
+            violations = _assert_denied_before_output(engine, monkeypatch, query)
+            assert violations == [_off_the_list(OFF_THE_LIST_VALUE)]
             return
         violations = _assert_denied_before_output(engine, monkeypatch, query)
     finally:
@@ -1979,7 +2041,9 @@ def test_a_text_word_on_a_quoted_column_reads_only_its_own_spelling(quoted):
         }
         return _select(_summed(TOTAL, word), group_by=[STORE_NAME])
 
-    engine = _constrained(quoted, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, REVENUE)
+    # The order total in cents, which a measure sums as it is (a sum of it is off revenue's list).
+    package = _with_bare_measures(quoted)
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, TOTAL_CENTS)
     try:
         own = engine.validate(revenue_containing("Customer Ref"))
         other = engine.validate(revenue_containing("CUSTOMER REF"))
