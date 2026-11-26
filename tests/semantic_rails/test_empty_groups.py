@@ -1195,6 +1195,41 @@ def test_orders_per_ticket_past_the_last_order_read_null_on_every_warehouse(
     assert weeks() == answer
 
 
+def test_a_month_the_rollup_could_answer_reads_as_its_base_rows_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest
+) -> None:
+    """Orders and store b's orders, by month since August, at the start of September: store b
+    has orders before August and none in it, so August reads 0, on every warehouse that reads
+    coverage, as on DuckDB. The monthly rollup could answer the orders, and the answer doesn't
+    depend on whether it does."""
+
+    def months() -> list[tuple[Any, ...]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(
+                        orders=SHOP_ORDERS,
+                        b_orders=_only(
+                            SHOP_ORDERS, [{"field": SHOP_STORE, "op": "is", "value": "b"}]
+                        ),
+                    ),
+                    "time": {"temporal_role": SHOP_ROLE, "grain": "month", "start": "2024-08-01"},
+                },
+                now=SHOP_NOW,
+            )
+        finally:
+            rt.close()
+        return [
+            (row["period"].strftime("%Y-%m"), row["orders"], row["b_orders"])
+            for row in typed_rows(response)
+        ]
+
+    assert months() == [("2024-08", 1, 0)]
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert months() == [("2024-08", 1, 0)]
+
+
 def test_a_window_total_without_coverage_reads_only_its_window(
     shop_package: Path, coverage_for_named_windows_only: None
 ) -> None:

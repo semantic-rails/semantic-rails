@@ -108,7 +108,7 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
-from .part_domain import part_domain
+from .part_domain import in_joined_call, part_domain
 from .paths import (
     _apply_role_timezone,
     _column_ref,
@@ -399,15 +399,25 @@ def _series_probe_reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bo
         and not dialect.has_time_coverage
         and not _emits_time_coverage(plan, config)
         and part_domain() is None
-        and (time.get("start") or time.get("end") or declared or _combines_leaves(plan, config))
+        and (
+            time.get("start")
+            or time.get("end")
+            or declared
+            or (not in_joined_call() and _combines_leaves(plan, config))
+        )
     )
 
 
 def _gates_by_own_range(plan: LogicalPlan, config: PackageConfig) -> bool:
     """Whether a series' guard there bounds every settled period by each measure's own loaded
     range (``guard_empty_groups``' ``own_range``), as DuckDB and Postgres do, so that, as
-    there, its leaves read the base, never a rollup (``coverage_base_plan``)."""
-    return _series_probe_reads_coverage(plan, config) and _combines_leaves(plan, config)
+    there, its leaves read the base, never a rollup (``coverage_base_plan``). A joined call's
+    parts keep their reading, read the same way while planned and lowered."""
+    return (
+        not in_joined_call()
+        and _series_probe_reads_coverage(plan, config)
+        and _combines_leaves(plan, config)
+    )
 
 
 def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:

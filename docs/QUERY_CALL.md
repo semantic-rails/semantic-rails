@@ -1467,10 +1467,11 @@ apply before the per-entity aggregation.
 - `window` holds only the keys that apply: `start`/`end` as resolved (`last` becomes dates;
   `this` starts on a date and ends at `now`, stated with the clock zone's offset), `now` as
   used, `partial`, and `data_through` once loaded coverage has read the edge (DuckDB,
-  MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a named
-  window's series). `data_through_source` says where a declared edge comes from: the load log
-  as the package declares it (`export_runs.through_day`; `loaded` when the caller can't see
-  that model), or `now`; it is left out when the edge is the last row.
+  MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a series
+  whose empty periods it bounds, see [Empty groups](#empty-groups-null-or-0)).
+  `data_through_source` says where a declared edge comes from: the load log as the package
+  declares it (`export_runs.through_day`; `loaded` when the caller can't see that model), or
+  `now`; it is left out when the edge is the last row.
 - `read_from` comes first, before the rows, on a call that ran (not `validate` or `sql`). It
   lists, under each model's entity, the ids the answer read from it: each selected measure or
   metric (under each model a metric reads), and each `group_by` and `where` dimension. When the

@@ -208,7 +208,7 @@ def lower_to_sql(
             "row-based fan-out and parent-lookup rewrites cannot preserve that reading.",
             details=details,
         )
-    if _emits_time_coverage(plan, config) and any(
+    if (_emits_time_coverage(plan, config) or _gates_by_own_range(plan, config)) and any(
         row.aggregate_relation_id for row in plan.measure_plans
     ):
         raise SemanticLayerError(

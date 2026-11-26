@@ -6,4 +6,7 @@
   ticket read `0.0` there; both now read `NULL`. This holds with or without a window and with
   `fill`, and it fixes the known limit listed under 0.3.8. Empty periods between a measure's own
   first and last row still read `0`. To tell them apart, such a series now reads each measure's
-  own table on those warehouses, not a rollup, as DuckDB and Postgres do.
+  own table on those warehouses, not a rollup, as DuckDB and Postgres do. One number moves the
+  other way: in such a series over an open window, a measure the monthly rollup answered read
+  `NULL` in a month with none of its rows, even when it had rows before the window; it now reads
+  `0` there, as DuckDB and Postgres do and as it did when the rollup couldn't answer.
