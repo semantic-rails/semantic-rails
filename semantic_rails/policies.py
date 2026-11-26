@@ -1658,8 +1658,7 @@ class _Undeclared(NamedTuple):
         return f"{self.entity}.{self.column}"
 
 
-# ``(owner, field)``: the measure whose cut a read is, the ids one select item shows (each is cut),
-# or None for the whole query.
+# ``(owner, field)``: the measure a read cuts, the ids one select item shows, or None (every one).
 _Read = tuple[str | frozenset[str] | None, str | _Undeclared]
 
 
@@ -1688,9 +1687,7 @@ def _counted_operands(policy: SemanticPolicyConfig, binding: BoundQuery) -> _Ope
     governs the aggregate (``_synthetic_constraint_sources``, matched once per lookup; every
     measure, package-wide) is one column as it is, that column. A measure that wraps its column
     (``COALESCE(customer_id, 'guest')``, a division) reads rows where the column has no value, so
-    it exempts nothing. Each aggregate is read by its own measures, never by a sibling's. An
-    aggregate whose value gates others (``gating``) reads every column it returns but a key it
-    counts, since its value then picks rows by that column for them."""
+    it exempts nothing. Each aggregate is read by its own measures, never by a sibling's."""
     config = binding.config
     keys = frozenset(
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
@@ -1769,10 +1766,9 @@ def _inline_filters(
     ``measure=None`` marks whole-query attribution under predicates, metric filters and
     conversion operands. Recipes' own filters are not read here.
 
-    Given ``operands``, each read in a select item is also owned by the ids the item shows
-    (``_shown_measures``) but its own aggregate's, and so is each column a conditional aggregate
-    returns (``gating``): any of them can decide whether, or which, governed value appears.
-    Outside a select item, such a column counts for the whole query.
+    Given ``operands``, each read in a select item, and each column a conditional aggregate there
+    returns (``gating``), is also owned by the other ids the item shows (``_shown_measures``);
+    such a column read elsewhere counts for the whole query.
     """
     found: list[_Read] = []
     gates: list[_Read] = []
@@ -1842,11 +1838,8 @@ def _shown_measures(
     with the binder's measure for a conditional aggregate (``_synthetic_conditional_measure``)."""
     if isinstance(expr, ConditionalAggregateExpr):
         return {_synthetic_conditional_measure(expr, config)[0]}
-    shown = (
-        {expr.measure}
-        if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr))
-        else set()
-    )
+    measured = isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr))
+    shown = {expr.measure} if measured else set()
     if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
         shown.add(expr.metric_recipe)
         for recipe in config.metric_recipes:
@@ -1909,7 +1902,8 @@ def _governed_inline_fields(
     that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
     governed measure itself (a conditional aggregate's own reads, when it is that measure), under
     a package-wide constraint, or marked whole-query (``measure=None``) always counts. A read
-    owned by the ids one select item shows counts for those ids alone.
+    owned by the ids one select item shows counts for those ids, and for an object that sees
+    every cut.
     """
 
     def owners(measure: str) -> frozenset[str]:
@@ -1923,10 +1917,9 @@ def _governed_inline_fields(
         if package_wide
         or measure is None
         or measure == object_id
-        or (
-            object_id in measure
-            if isinstance(measure, frozenset)
-            else bound().cut_counts(object_id, owners(measure))
+        or (isinstance(measure, frozenset) and object_id in measure)
+        or bound().cut_counts(
+            object_id, frozenset() if isinstance(measure, frozenset) else owners(measure)
         )
     ]
     return list(dict.fromkeys(out))
