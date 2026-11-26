@@ -2108,7 +2108,8 @@ REFUSED_SHAPES = {
         _shown({"kind": "scoped_aggregate", "measure": REVENUE, "where": [IN_BROOKLYN["all"][0]]}),
         "a scoped_aggregate",
     ),
-    "nested_predicate": (
+    # Revenue's read makes the outer aggregate one the list holds.
+    "nested_predicate_on_it": (
         _shown(
             {
                 "kind": "scoped_aggregate",
@@ -2124,7 +2125,72 @@ REFUSED_SHAPES = {
                 ],
             }
         ),
+        "a scoped_aggregate",
+    ),
+    # Beside revenue, a predicate two inputs deep reads only an id, whatever it reads.
+    "nested_predicate_beside_it": (
+        _shown(
+            {
+                "kind": "scoped_aggregate",
+                "measure": ORDERS,
+                "predicates": [
+                    _predicate(
+                        {
+                            "kind": "scoped_aggregate",
+                            "measure": ORDERS,
+                            "predicates": [_predicate(BROOKLYN_ORDERS)],
+                        }
+                    )
+                ],
+            },
+            REVENUE,
+        ),
         "a predicate inside another predicate's input",
+    ),
+    "another_statistic": (
+        _shown({"kind": "measure", "measure": REVENUE, "aggregation": "max"}),
+        "a measure read with another statistic",
+    ),
+    "a_predicate_on_it_inside_another_aggregate": (
+        _shown(
+            {
+                "kind": "aggregate",
+                "measure": ORDERS,
+                "filter": {
+                    "all": [
+                        {
+                            "expression": {
+                                "kind": "metric_predicate",
+                                "entity": CUSTOMER,
+                                "input": REVENUE_MEASURE,
+                                "op": ">",
+                                "value": 100,
+                                "over": "all_time",
+                            }
+                        }
+                    ]
+                },
+            }
+        ),
+        "an aggregate filtered by something other than allowed fields",
+    ),
+    "a_predicate_shorthand_on_it_inside_another_aggregate": (
+        _shown(
+            {
+                "kind": "scoped_aggregate",
+                "measure": ORDERS,
+                "predicates": [
+                    {
+                        "entity": CUSTOMER,
+                        "measure": REVENUE,
+                        "op": "gt",
+                        "value": 100,
+                        "over": "all_time",
+                    }
+                ],
+            }
+        ),
+        "a scoped_aggregate",
     ),
     "distinct_count_of_no_key": (
         _shown(_counted("count_distinct", ORDER_CUSTOMER)),
@@ -2175,6 +2241,15 @@ REFUSED_CUTS = {
             ],
         ),
         ENTITY_FILTER,
+    ),
+    "order_by_another_statistic_with_a_limit": (
+        _shown(
+            REVENUE,
+            {"kind": "measure", "measure": "measure.jaffle.tax_paid_usd", "aggregation": "max"},
+            order_by=[{"field": "value_1"}],
+            limit=3,
+        ),
+        "order_by on 'value_1' picks the rows kept",
     ),
     "order_by_an_aggregate_with_a_limit": (
         _shown(REVENUE, BROOKLYN_ORDERS, order_by=[{"field": "value_1"}], limit=3),

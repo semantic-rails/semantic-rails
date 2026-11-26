@@ -229,7 +229,7 @@ def query_policy_effects(
         if existing_violations:
             deduped[key]["violations"] = existing_violations
     for effect in deduped.values():
-        # A shape refusal stands aside for an inline check's refusal, which names the field.
+        # A shape refusal stands aside for an inline check's refusal of the same call.
         rows = list(effect.get("violations") or [])
         if any(row.get("source") == "inline_expression" for row in rows):
             effect["violations"] = [row for row in rows if row.get("kind") != _SHAPE]
@@ -1260,7 +1260,6 @@ def _metric_constraint_violations(
     return [refused, *violations] if refused is not None else violations
 
 
-_BY_ID = (MeasureRefExpr, MetricRecipeRefExpr)
 _SHAPE = "disallowed_expression"
 _COUNTS = frozenset({"count", "count_distinct"})
 # How a call may read a number a constraint with allowed_where governs (``_shape_refusal``).
@@ -1315,8 +1314,10 @@ def _shape_refusal(
         read = column(value) if isinstance(value, ColumnRefExpr) else None
         if (value is not None and read is None) or aggregation == "percentile":
             return False
-        owners = sources.get(_synthetic_conditional_measure(expr, config)[0], set())
-        for row in [measures[owner] for owner in owners]:
+        synthetic_id = _synthetic_conditional_measure(expr, config)[0]
+        if synthetic_id not in synthetic:  # one the check can't match to its measures
+            return False
+        for row in [measures[owner] for owner in sources.get(synthetic_id, set())]:
             own = row.expr if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from else None
             key = aggregation in _COUNTS and row.default_aggregation in _COUNTS
             if not ((key and read in {*keys, None}) or (own and read == column(own, row))):
@@ -1325,14 +1326,29 @@ def _shape_refusal(
 
     def field(clause: Mapping[str, Any]) -> str:
         try:
-            return resolve_filter_dimension(str(clause.get("field") or ""), config)
+            return (
+                resolve_filter_dimension(str(clause["field"]), config)
+                if clause.get("field")
+                else ""
+            )
         except SemanticLayerError:
             return ""
 
+    def own_statistic(expr: MeasureRefExpr | AggregateExpr) -> bool:
+        row = measures.get(expr.measure)
+        return expr.aggregation.lower() in {"", row.default_aggregation.lower() if row else ""}
+
+    def by_id(expr: Any) -> bool:
+        """A metric, or a measure with its own statistic, by id."""
+        measure = isinstance(expr, MeasureRefExpr) and own_statistic(expr)
+        return measure or isinstance(expr, MetricRecipeRefExpr)
+
     def shape(expr: Any) -> str:
         """What in ``expr`` is off the list, or "" for nothing."""
-        if isinstance(expr, (*_BY_ID, LiteralExpr)):
+        if by_id(expr) or isinstance(expr, LiteralExpr):
             return ""
+        if isinstance(expr, (MeasureRefExpr, AggregateExpr)) and not own_statistic(expr):
+            return "a measure read with another statistic"
         if isinstance(expr, (RatioExpr, ArithmeticExpr)):
             return next((why for child in _child_exprs(expr) if (why := shape(child))), "")
         if isinstance(expr, AggregateExpr) and expr.window:
@@ -1347,44 +1363,54 @@ def _shape_refusal(
             return "" if counted(expr) else why
         return f"a {expr.name.lower() if isinstance(expr, CallExpr) else expr_kind(expr)}"
 
+    def covered(expr: Any) -> bool:
+        """Whether ``expr`` reads what the policy governs, in a predicate inside it too."""
+        return reads(expr) or any(map(covered, _predicate_inputs(expr)))
+
     def item(expr: Any, depth: int) -> str:
-        if depth > 1 and not isinstance(expr, _BY_ID):
+        if depth > 1 and not by_id(expr):
             return "a predicate inside another predicate's input"
         inner = (item(row, depth + 1) for row in _predicate_inputs(expr))
-        return (shape(expr) if reads(expr) else "") or next((why for why in inner if why), "")
+        return (shape(expr) if covered(expr) else "") or next((why for why in inner if why), "")
 
     for row in query.select:
         if why := item(row.expression, 0):
             return {"kind": _SHAPE, "read": f"select item '{row.as_}' holds {why}"}
     for cut in query.metric_filters:
-        expression = cut.expression
-        read = expression.input if isinstance(expression, MetricPredicateExpr) else expression
-        if not (isinstance(read, _BY_ID) and reads(read)):
-            what = "having" if read is expression else "an entity filter"
+        entity = isinstance(cut.expression, MetricPredicateExpr)
+        reads_by = _predicate_inputs(cut.expression) if entity else [cut.expression]
+        if not all(by_id(read) and reads(read) for read in reads_by):
+            what = "an entity filter" if entity else "having"
             return {"kind": _SHAPE, "read": f"{what} reads other than a number it governs, by id"}
     shown = {row.as_: row.expression for row in query.select}
     for order in query.order_by if query.limit is not None else ():
-        if order.field in shown and not isinstance(shown[order.field], _BY_ID):
+        if order.field in shown and not by_id(shown[order.field]):
             return {"kind": _SHAPE, "read": f"order_by on '{order.field}' picks the rows kept"}
     return None
 
 
 def _predicate_inputs(expr: Any) -> list[Any]:
-    """The inputs of the predicates in ``expr`` (an entity filter's, an aggregate filter's or a
-    scoped aggregate's), not those of the predicates inside them."""
+    """What the predicates in ``expr`` (an entity filter, an aggregate filter's or a scoped
+    aggregate's) read, in order: each input and percentile threshold's measure, not what the
+    predicates inside them read."""
     parse = partial(parse_semantic_expression, context="query")
     found: list[Any] = []
     stack = [expr]
     while stack:
         node = stack.pop()
         if isinstance(node, MetricPredicateExpr):
-            found.append(node.input)
+            threshold = node.value.get("measure") if isinstance(node.value, Mapping) else None
+            found += [node.input, *([MeasureRefExpr(str(threshold))] if threshold else [])]
             continue
         clauses = node.filter.get("all", []) if isinstance(node, AggregateExpr) else []
-        stack += [parse(row["expression"]) for row in clauses if "expression" in row]
         rows = node.predicates if isinstance(node, ScopedAggregateExpr) else []
-        found += [parse(row["input"]) for row in rows if isinstance(row.get("input"), dict)]
-        stack.extend(_child_exprs(node))
+        stack += reversed(
+            [
+                *(parse(row["expression"]) for row in clauses if "expression" in row),
+                *(parse(_scoped_predicate_expr_payload(dict(row))) for row in rows),
+                *_child_exprs(node),
+            ]
+        )
     return found
 
 

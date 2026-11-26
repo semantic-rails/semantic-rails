@@ -476,9 +476,16 @@ def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
     )
     if payload.get("limit") is None or not constrained:
         return
-    shown = {row["as"]: row["expression"] for part in parts for row in part.payload["select"]}
+    shown = {
+        row.get("as"): row.get("expression")
+        for part in parts
+        for row in part.payload.get("select") or []
+    }
     for index, item in enumerate(payload.get("order_by") or []):
-        if shown.get(item["field"], {"kind": "measure"}).get("kind") not in {"measure", "metric"}:
+        expression = shown.get(item["field"], {"kind": "measure"})
+        # A measure or metric by id with no statistic, as the call spells it.
+        by_id = isinstance(expression, dict) and set(expression) <= {"kind", "measure", "metric"}
+        if not by_id or expression.get("kind", "measure") not in {"measure", "metric"}:
             raise refusal(
                 f"order_by[{index}].field",
                 f"'{item['field']}' picks the rows the limit keeps, and under a metric constraint "
