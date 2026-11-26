@@ -4,7 +4,7 @@ for the policy check and the answer's disclosures.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 from typing import Any
@@ -685,7 +685,8 @@ def _caller_aggregates(
     """The caller's aggregates over columns, by synthetic measure id: the plan's own, and each
     nested compile's (an entity filter's input, at any depth) but one that only package
     metrics' definitions write. That one is its author's: the policy check holds the metric
-    and the objects its definition binds. One the caller also writes stays the caller's."""
+    and the objects its definition binds. Any other one, including one the caller also writes
+    or one the call carries for a segment, is the caller's."""
     if not nested.keys() - plan.synthetic_measures.keys():
         return dict(plan.synthetic_measures)
 
@@ -694,13 +695,15 @@ def _caller_aggregates(
         stack = list(roots)
         while stack:
             node = stack.pop()
-            if isinstance(node, list):
+            if isinstance(node, list | tuple):
                 stack.extend(node)
-            elif isinstance(node, dict):
-                stack.extend(node.values())
-                # One that can't be planned has no id, so no nested compile planned it.
-                if str(node.get("kind", "")).strip() == "aggregate_if":
-                    with suppress(SemanticLayerError):
+            elif isinstance(node, Mapping):
+                kind = str(node.get("kind", "")).strip()
+                # A literal's value is data, never an expression.
+                stack.extend(node.values() if kind != "literal" else ())
+                # One the engine can't identify adds no id: no nested compile planned it.
+                if kind == "aggregate_if":
+                    with suppress(SemanticLayerError, KeyError):
                         expr = parse_semantic_expression(node, context="query")
                         assert isinstance(expr, ConditionalAggregateExpr)
                         ids.add(_synthetic_conditional_measure(expr, config)[0])

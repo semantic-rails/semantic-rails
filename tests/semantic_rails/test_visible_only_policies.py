@@ -8,6 +8,7 @@ finance role gets the reference-SQL number.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections.abc import Callable, Iterable, Iterator
@@ -573,6 +574,16 @@ UNRELATED = {
         "config": {"allowed_where": [STORE]},
     },
 }
+
+
+def _copy_reading(read: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    """The cohort's definition as a caller writes it, its average read through ``read``."""
+    expression = copy.deepcopy(COHORT_EXPRESSION)
+    predicate = expression["predicates"][0]["input"]["numerator"]["predicates"][0]
+    predicate["input"] = read(predicate["input"])
+    return expression
+
+
 # placement -> (a call reading the cohort metric, the same call as the caller writes it)
 COHORT_CALLS = {
     "select": (
@@ -607,6 +618,20 @@ COHORT_CALLS = {
                     "value": True,
                 }
             ],
+        },
+    ),
+    # An in-process caller's copy whose average is a call's argument, held in a tuple.
+    "tuple_argument": (
+        {"select": [{"expression": COHORT, "as": "orders"}]},
+        {
+            "select": [
+                {
+                    "expression": _copy_reading(
+                        lambda average: {"kind": "call", "name": "abs", "args": (average,)}
+                    ),
+                    "as": "orders",
+                }
+            ]
         },
     ),
     # The caller's own copy of the definition beside the metric.
@@ -681,6 +706,28 @@ def test_a_metric_that_averages_columns_is_refused_when_its_definition_binds_a_h
             report = _checked(runtime, published)
             assert report["ok"] is False
             assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+    finally:
+        runtime.close()
+
+
+def test_a_metric_beside_a_literal_shaped_like_an_aggregate_answers(cohort_package):
+    """A literal's value is data: one shaped like an aggregate over columns is none."""
+    shaped = {
+        "kind": "aggregate_if",
+        "aggregation": "avg",
+        "value": {"kind": "column", "entity": "entity.unknown", "column": "x"},
+    }
+    literal = {"kind": "literal", "value": shaped}
+    plus = {"kind": "arithmetic", "op": "add", "left": ORDERS, "right": literal}
+    query = {
+        "select": [
+            {"expression": COHORT, "as": "orders"},
+            {"expression": plus, "as": "plus"},
+        ]
+    }
+    runtime = _engine(cohort_package, UNRELATED["hidden_tax"])
+    try:
+        assert _checked(runtime, query)["ok"] is True
     finally:
         runtime.close()
 
