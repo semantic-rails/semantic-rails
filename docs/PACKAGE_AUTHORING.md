@@ -872,8 +872,13 @@ kind names must match exactly.
   the whole query (in `having`, say). Inside one select item it counts for every aggregate
   the item shows, since it can decide whether a value appears: with revenue limited to
   store filters, `case when <count of large orders> > 0 then <order total> end` by store
-  is refused, as are `nullif` and a division by such a count. A caller no constraint
-  applies to reads such columns as before, and a constraint with
+  is refused, as are `nullif` and a division by such a count. Once an `aggregate_if`'s
+  value decides what else appears (beside another aggregate in its select item, in
+  `having` or in a predicate's input), each column it aggregates counts as a filter too,
+  but a key it counts: `case when max(is_large_order) = true then <revenue> end` is
+  refused. The same aggregates as separate select items answer, and a measure in place of
+  the `aggregate_if` reads no column. A caller no constraint applies to reads such
+  columns as before, and a constraint with
   `allowed_group_by` but no `allowed_where` lets a caller filter by any field, so it
   refuses none of them. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated

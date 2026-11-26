@@ -13,8 +13,11 @@
   that answer alone also answer together, under one constraint or one each. Inside one select
   item, every aggregate's filters count for each aggregate the item shows, so a `case`
   condition, `nullif` or a division by a count can't decide whether a governed value appears
-  under a filter its constraint doesn't allow. A dimension allows
-  a column on another entity only over the same relation, named in full. A column meets a
+  under a filter its constraint doesn't allow, and once an `aggregate_if`'s value decides what
+  else appears (there, in `having` or in a predicate's input), each column it aggregates but a
+  key it counts is such a filter: `case when max(is_large_order) = true then revenue end` is
+  refused. A dimension allows a column on another entity only over the same relation, named in
+  full. A column meets a
   dimension only when the SQL reads it as that dimension: a quoted name in another case reads
   none of the dimension's unknown values, so it is refused as a column no dimension declares.
   Callers no constraint applies to get the same answers as before.
