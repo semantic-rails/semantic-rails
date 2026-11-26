@@ -699,8 +699,10 @@ def _caller_aggregates(
                 stack.extend(node)
             elif isinstance(node, Mapping):
                 kind = str(node.get("kind", "")).strip()
-                # A literal's value is data, never an expression.
-                stack.extend(node.values() if kind != "literal" else ())
+                # A literal's value is data, never an expression. A mapping with any other
+                # key is read whatever its kind: a reader may ignore the tag (a case arm).
+                literal = kind == "literal" and not node.keys() - {"kind", "value"}
+                stack.extend(() if literal else node.values())
                 # One the engine can't identify adds no id: no nested compile planned it.
                 if kind == "aggregate_if":
                     with suppress(SemanticLayerError, KeyError):

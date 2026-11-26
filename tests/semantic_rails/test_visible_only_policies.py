@@ -634,6 +634,35 @@ COHORT_CALLS = {
             ]
         },
     ),
+    # A caller's copy whose average sits in a case arm tagged literal: the case reads the arm.
+    "case_arm_tagged_literal": (
+        {"select": [{"expression": COHORT, "as": "orders"}]},
+        {
+            "select": [
+                {
+                    "expression": _copy_reading(
+                        lambda average: {
+                            "kind": "case",
+                            "whens": [
+                                {
+                                    "kind": "literal",
+                                    "when": {
+                                        "kind": "comparison",
+                                        "op": ">",
+                                        "left": average,
+                                        "right": {"kind": "literal", "value": 0},
+                                    },
+                                    "then": average,
+                                }
+                            ],
+                            "else": {"kind": "literal", "value": 0},
+                        }
+                    ),
+                    "as": "orders",
+                }
+            ]
+        },
+    ),
     # The caller's own copy of the definition beside the metric.
     "beside_the_metric": (
         {"select": [{"expression": COHORT, "as": "orders"}]},
@@ -708,6 +737,28 @@ def test_a_metric_that_averages_columns_is_refused_when_its_definition_binds_a_h
             assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("policy", UNRELATED)
+def test_a_callers_copy_in_a_predicate_tagged_literal_is_refused(cohort_package, policy):
+    """An engine-form scoped aggregate's predicate is read whatever its kind, so a literal tag
+    on it leaves the caller's copy of the cohort's average the caller's."""
+    tagged = copy.deepcopy(COHORT_EXPRESSION)
+    tagged["predicates"][0]["input"]["numerator"]["predicates"][0]["kind"] = "literal"
+    query = {"select": [{"expression": tagged, "as": "orders"}]}
+    plain = _engine(cohort_package)
+    runtime = _engine(cohort_package, UNRELATED[policy])
+    try:
+        assert plain.validate_internal({**query, "policy_context": SUPPORT})["ok"] is True
+        refused = runtime.validate_internal({**query, "policy_context": SUPPORT})
+    finally:
+        plain.close()
+        runtime.close()
+    assert refused["ok"] is False
+    issue = refused["errors"][0]
+    assert issue["code"] == "POLICY_DENIED"
+    hidden = UNRELATED[policy]["kind"] == "object_visibility"
+    assert issue["details"]["blocked_objects"] == ([] if hidden else [REVENUE])
 
 
 def test_a_metric_beside_a_literal_shaped_like_an_aggregate_answers(cohort_package):
