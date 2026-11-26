@@ -8,6 +8,35 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.8 — 2026-11-26 — Empty periods past the load log read NULL on every warehouse
+
+**Upgrading from 0.3.7:** only Snowflake, BigQuery, Databricks and Athena answers change, and only
+in a series (a call with a `grain`) over a model whose `zero_through` names a load log. A period
+the load log doesn't cover yet, or one before the measure's first row, now reads `NULL` with
+`NO_DATA_YET` where 0.3.7 read `0`. DuckDB, Postgres and ClickHouse answers and SQL are unchanged,
+and so is every metric constraint. One derived number can move the other way: a ratio whose
+denominator wraps such a measure, for example orders per ticket with tickets as
+`COALESCE(tickets opened, all tickets)`, can now read `0` for a period past both the load log and
+the numerator's last row, where 0.3.7 read `NULL`. The `0` comes from the known limit below (the
+numerator), which 0.3.7 also had; 0.3.7's `NULL` came from its own wrong `0` in the denominator.
+
+**Known limit (0.3.6 and 0.3.7 too):** on Snowflake, BigQuery, Databricks and Athena, a measure
+with no declared edge (no `zero_through`) can read `0` for a period past its last row when another
+measure in the call has rows there; DuckDB and Postgres read `NULL`. It is fixed in the next
+release. Until then, declare `zero_through` on models whose data stops before today.
+
+### Fixed
+
+- On Snowflake, BigQuery, Databricks and Athena, a series over a model whose `zero_through`
+  names a load log (or `now`) now reads `NULL` with `NO_DATA_YET`, not `0`, in a period the
+  load log doesn't cover yet, as DuckDB and Postgres already did. Such a period read `0`
+  whenever another measure in the call had rows in it: "tickets opened and all tickets, by
+  week" read `0` tickets opened for a week after the last load because a late ticket from that
+  week was already in the table. 0.3.6 did this when the measure had rows elsewhere in the
+  answer, and 0.3.7 also when it had rows only before the window. This holds with `start` or
+  `end` alone and with no window. A period before the measure's first row now reads `NULL`
+  there too, as on DuckDB and Postgres; other periods the load log covers read as before.
+
 ## 0.3.7 — 2026-11-26 — Metric constraints hold every caller expression to a short list of shapes
 
 **Upgrading from 0.3.6:** under a metric constraint, some calls 0.3.6 answered are now refused
