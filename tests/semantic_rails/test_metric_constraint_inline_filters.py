@@ -2266,6 +2266,34 @@ def test_a_top_n_by_a_forbidden_count_is_refused(bare, monkeypatch, total):
     assert by_total["ok"] is (total == "by_id"), by_total["errors"]
 
 
+def test_a_joined_top_n_by_a_forbidden_count_is_refused(config):
+    """The same ranking as a joined call: revenue by store beside one customer's order count by
+    store, ordered by the count under a limit. Ranked by revenue, or with no limit, it answers."""
+    ranked = {
+        "parts": [
+            {"select": [REVENUE], "group_by": [STORE_NAME]},
+            _select(ONE_CUSTOMERS_ORDERS, group_by=[STORE_NAME]),
+        ],
+        "join": {"on": [[STORE_NAME, STORE_NAME]], "keep": "all"},
+        "order_by": [{"field": "value", "direction": "desc"}],
+        "limit": 5,
+    }
+    engine = _constrained(config, STORE_ONLY, REVENUE)
+    try:
+        refused = engine.validate(ranked)
+        by_revenue = engine.validate({**ranked, "order_by": [{"field": "revenue_usd"}]})
+        unlimited = engine.validate({key: ranked[key] for key in ranked if key != "limit"})
+    finally:
+        engine.close()
+    assert refused["errors"][0]["code"] == "POLICY_DENIED"
+    assert refused["errors"][0]["message"] == (
+        "order_by[0].field: 'value' picks the rows the limit keeps, and under a metric "
+        "constraint a joined call ranks only by a key or by a measure or metric by id"
+    )
+    assert by_revenue["ok"], by_revenue["errors"]
+    assert unlimited["ok"], unlimited["errors"]
+
+
 ITEM = "entity.jaffle_item"
 ITEM_REVENUE = "measure.jaffle.item_revenue_usd"
 PRODUCT = "dimension.jaffle_item_product_name"

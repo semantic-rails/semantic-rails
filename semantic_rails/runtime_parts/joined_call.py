@@ -312,6 +312,7 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
     _refuse_over_select_limit(config, [part.statement for part in parts], keys)
     _check_order(payload.get("order_by") or [], keys, parts)
+    _refuse_inline_rank(payload, parts)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
     statement = joined_statement(
@@ -462,6 +463,28 @@ def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: lis
                 f"names '{item['field']}', which is no column of the joined answer",
                 fix=f"Name one of {names}.",
                 code="INVALID_ORDER_BY",
+            )
+
+
+def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part]) -> None:
+    """Under a metric constraint with allowed_where, a limit keeps the joined rows its order picks,
+    so the order names a key or a part's measure or metric by id, as a call's does."""
+    constrained = any(
+        effect.get("kind") == "metric_constraint" and "allowed_where" in effect["constraints"]
+        for part in parts
+        for effect in part.policy_effects
+    )
+    if payload.get("limit") is None or not constrained:
+        return
+    shown = {row["as"]: row["expression"] for part in parts for row in part.payload["select"]}
+    for index, item in enumerate(payload.get("order_by") or []):
+        if shown.get(item["field"], {"kind": "measure"}).get("kind") not in {"measure", "metric"}:
+            raise refusal(
+                f"order_by[{index}].field",
+                f"'{item['field']}' picks the rows the limit keeps, and under a metric constraint "
+                "a joined call ranks only by a key or by a measure or metric by id",
+                fix="Order by a key or by a measure or metric by its id, or remove the limit.",
+                code="POLICY_DENIED",
             )
 
 
