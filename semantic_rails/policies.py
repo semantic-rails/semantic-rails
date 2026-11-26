@@ -1687,7 +1687,8 @@ def _counted_operands(policy: SemanticPolicyConfig, binding: BoundQuery) -> _Ope
     governs the aggregate (``_synthetic_constraint_sources``, matched once per lookup; every
     measure, package-wide) is one column as it is, that column. A measure that wraps its column
     (``COALESCE(customer_id, 'guest')``, a division) reads rows where the column has no value, so
-    it exempts nothing. Each aggregate is read by its own measures, never by a sibling's."""
+    it exempts nothing. Each aggregate is read by its own measures, never by a sibling's. With
+    ``gating`` only a key a count counts is exempt."""
     config = binding.config
     keys = frozenset(
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
@@ -1764,11 +1765,9 @@ def _inline_filters(
     reads (``_condition_fields``, given ``operands``) is owned by the measure the binder makes
     of it (``_synthetic_conditional_measure``), or by ``""`` with no ``operands``.
     ``measure=None`` marks whole-query attribution under predicates, metric filters and
-    conversion operands. Recipes' own filters are not read here.
-
-    Given ``operands``, each read in a select item, and each column a conditional aggregate there
-    returns (``gating``), is also owned by the other ids the item shows (``_shown_measures``);
-    such a column read elsewhere counts for the whole query.
+    conversion operands. Recipes' own filters are not read here. Given ``operands``, a select
+    item's other reads and the columns its conditional aggregates return (``gating``) are also
+    owned by the other ids it shows (``_shown_measures``).
     """
     found: list[_Read] = []
     gates: list[_Read] = []
@@ -1818,14 +1817,14 @@ def _inline_filters(
         start, gated = len(found), len(gates)
         visit(row.expression)
         if operands is not None:
-            # A select item is one value: a CASE condition, NULLIF or a division by a count in it
-            # decides whether another aggregate's value appears.
-            shown = frozenset(_shown_measures(row.expression, config))
-            found.extend(
-                (shown.difference([owner]), field)
-                for owner, field in [*found[start:], *gates[gated:]]
-                if owner is not None and shown.difference([owner])
-            )
+            # One value: a case condition, nullif or division in it decides what else appears.
+            shown = _shown_measures(row.expression, config)
+            for owner, field in [*found[start:], *gates[gated:]]:
+                # An aggregate shown twice (case when sum(x) > 100 then sum(x)) gates itself.
+                twice = sum(item == owner for item in shown) > 1
+                others = frozenset(item for item in shown if twice or item != owner)
+                if owner is not None and others:
+                    found.append((others, field))
     for metric_filter in query.metric_filters:
         visit(metric_filter.expression, whole_query=True)
     return found
@@ -1833,20 +1832,24 @@ def _inline_filters(
 
 def _shown_measures(
     expr: Any, config: PackageConfig, seen: frozenset[str] = frozenset()
-) -> set[str]:
-    """The measures and metrics whose values ``expr`` computes, a metric's measures included,
-    with the binder's measure for a conditional aggregate (``_synthetic_conditional_measure``)."""
+) -> list[str]:
+    """The measures and metrics whose values ``expr`` computes, once per occurrence, a metric's
+    measures and a lookup's source included, with the binder's measure for a conditional
+    aggregate (``_synthetic_conditional_measure``)."""
     if isinstance(expr, ConditionalAggregateExpr):
-        return {_synthetic_conditional_measure(expr, config)[0]}
+        return [_synthetic_conditional_measure(expr, config)[0]]
     measured = isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr))
-    shown = {expr.measure} if measured else set()
+    shown = [expr.measure] if measured else []
+    for row in config.measures if measured else ():
+        if row.id == expr.measure and row.lookup_from and row.lookup_from not in seen:
+            shown += _shown_measures(MeasureRefExpr(row.lookup_from), config, seen | {row.id})
     if isinstance(expr, MetricRecipeRefExpr) and expr.metric_recipe not in seen:
-        shown.add(expr.metric_recipe)
+        shown.append(expr.metric_recipe)
         for recipe in config.metric_recipes:
             if recipe.id == expr.metric_recipe:
-                shown |= _shown_measures(recipe.expression, config, seen | {recipe.id})
+                shown += _shown_measures(recipe.expression, config, seen | {recipe.id})
     for child in _child_exprs(expr):
-        shown |= _shown_measures(child, config, seen)
+        shown += _shown_measures(child, config, seen)
     return shown
 
 
@@ -1901,9 +1904,8 @@ def _governed_inline_fields(
     A filter is owned by the query's root leaves over its measure, and counts by the rule
     that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
     governed measure itself (a conditional aggregate's own reads, when it is that measure), under
-    a package-wide constraint, or marked whole-query (``measure=None``) always counts. A read
-    owned by the ids one select item shows counts for those ids, and for an object that sees
-    every cut.
+    a package-wide constraint, or marked whole-query (``measure=None``) always counts. A read a
+    select item's ids own counts for them, and for an object that sees every cut.
     """
 
     def owners(measure: str) -> frozenset[str]:

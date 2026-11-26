@@ -495,6 +495,43 @@ def test_access_to_the_source_and_its_relationship_is_required(
         assert raised.value.code == "POLICY_DENIED"
 
 
+def test_a_filter_beside_a_lookup_in_one_select_item_counts_for_its_source(
+    package_dir: Path, engine
+) -> None:
+    """A constraint on the premium holds the premium carried onto claims: a filter on the reserve
+    it is divided by, in one select item, decides where it appears. As two items, both answer."""
+    opened_late = {"all": [{"field": OPENED, "op": "gte", "value": "2026-04-01"}]}
+    reserve = {"kind": "aggregate", "measure": _measure("reserve"), "filter": opened_late}
+    config = _policy(
+        package_dir,
+        id="policy.test.premium_by_claim",
+        kind="metric_constraint",
+        object_ids=[_measure("premium_amount")],
+        config={"allowed_where": [CLAIM_KEY]},
+    )
+    constrained = engine(package_dir, config)
+    beside = {
+        "version": 1,
+        "select": [{"expression": CARRIED, "as": "v"}, {"expression": reserve, "as": "r"}],
+        "group_by": [CLAIM_KEY],
+    }
+    assert constrained.validate(beside)["ok"]
+    per_reserve = {"kind": "ratio", "numerator": CARRIED, "denominator": reserve}
+    query = {**beside, "select": [{"expression": per_reserve, "as": "v"}]}
+    result = constrained.validate(query)
+    assert result["errors"][0]["code"] == "POLICY_DENIED"
+    assert [row["violations"] for row in result["policy_effects"] if row["action"] == "deny"] == [
+        [
+            {
+                "kind": "disallowed_where",
+                "disallowed": [OPENED],
+                "allowed": [CLAIM_KEY],
+                "source": "inline_expression",
+            }
+        ]
+    ]
+
+
 # The query's filters and time select claims; the carried total never changes.
 def test_child_filters_select_claims_not_the_total(runtime: Runtime) -> None:
     every = _rows(runtime, _query())

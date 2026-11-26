@@ -1010,6 +1010,10 @@ GATED_TOTALS = {
         ),
         LARGE_ORDER,
     ),
+    "the_total_gating_itself": (
+        _case(_more_than(100, _summed(TOTAL)), _summed(TOTAL)),
+        UNDECLARED_TOTAL,
+    ),
     "filtered_count_case": (_case(_more_than(0, RETURNING_ORDERS), REVENUE_MEASURE), CUSTOMER_TYPE),
     "nullif": (
         {
