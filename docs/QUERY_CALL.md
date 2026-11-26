@@ -1855,9 +1855,19 @@ group's column is: "weekly revenue by customer region" (orders, then customers, 
 reads `0` in a week the orders' load log covers with no order and `NULL` before the first order
 and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
 read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
-not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
-empty period reads `0` only while the measure has data inside the window. Those warehouses
-read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
+not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery,
+Databricks and Athena, an empty period of a series whose periods come from its rows (an open
+window's, or a named window's grouped by a date or time dimension) reads `0` where the
+measure has data in scope, inside the window or outside it, and the period lies inside the
+measure's own loaded range, as on DuckDB and Postgres: "revenue and refunds until
+mid-November" reads `0` refunds in a month with none when refunds were recorded later, and
+their average `NULL`, since an average of nothing has no value. Past the measure's own last
+row the period reads `NULL` with `NO_DATA_YET`, however many rows came before: orders and
+shipment scans since July read `NULL` scans when the scans, on their own clock, stop in June.
+A window total there, and a part of a joined call (whose periods can come from another part's
+clock), read `0` only while the measure has data inside the window, as every empty period on
+ClickHouse does. These five warehouses read the stored
+timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 
 **No time window.** A call with no `time` reads one total over all of a table's rows that its
@@ -1875,9 +1885,13 @@ after the load log, as revenue beside it does.
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
 `prior_period`, ratio or rolling output never does, since it can be `NULL` while its measure
-has data, and neither does a truncated answer. An ungrouped distinct-population count over
-nothing reads `0` with no warning, a known limitation
-([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+has data, and neither does a truncated answer. A distinct-population count with no `group_by`
+and no `time` reads `NULL` with the warning when its filters keep no row ("customers" of a
+misspelled customer id), in either scope; a count reads `NULL` there only under
+`observation_scope: "query"`. One that read rows keeps its count, `0` included
+("repeat customers" among one-time customers), and one beside an entity filter counts the
+entities the filter keeps, which it judges one by one, with rows or none: `0` when it keeps
+none.
 
 **Zero-filled groups.** Two selected measures that the `group_by` joins answer a row for every
 group either one's rows hold, so a group can hold rows of one and none of the other. "Signups

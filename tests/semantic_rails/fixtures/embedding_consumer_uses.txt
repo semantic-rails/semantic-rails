@@ -51,7 +51,9 @@ SemanticLayerError(_, _, details=)
 SemanticLayerMCPAdapter()._tool_handlers
 SemanticLayerMCPAdapter().call_tool(_, _, request_context=)
 SemanticLayerMCPAdapter().close()
+SemanticLayerMCPAdapter().instructions
 SemanticLayerMCPAdapter(_, interface=)
+SemanticLayerMCPAdapter.from_path(_, hide_plan=)
 SnowflakeCliAdapter(_, options=)
 SnowflakeNativeAdapter(credential_provider=, options=)
 TrustedAttributes(_)

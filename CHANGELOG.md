@@ -8,6 +8,146 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.6 — 2026-11-25 — Metric constraints inside a call, and facts dated by a calendar key
+
+**Upgrading from 0.3.5:** 0.3.6 closes a gap in metric constraints. A measure limited to some
+cuts could still be read per customer or per order inside a call, because a distribution, an
+entity filter or one row's statistic grouped it more finely than the policy allows. Those calls
+are now refused with `POLICY_DENIED`. If you query as a role a metric constraint applies to,
+some calls 0.3.5 answered are refused. If no constraint applies to you, your calls answer as
+before, with the same SQL. No query answer changes: a call that still answers returns the rows
+0.3.5 returned. No contract field is removed or changes type, and no dependency range changes.
+Run `semantic-rails check` on each package with 0.3.6 before you deploy: an example, or a test
+that expects such a call to answer, fails there when it runs as a role the constraint applies
+to.
+
+- **Newly refused for a caller under a metric constraint**, where 0.3.5 answered from a
+  grouping the policy doesn't allow. The code is `POLICY_DENIED`; a caller under a resource
+  grant gets `RESOURCE_ACCESS_DENIED` ("Resource access is not permitted."), as for any policy
+  refusal. The first two examples use the `sales` role of the bundled jaffle_shop package,
+  which may group revenue only by store name.
+  - A `distribution` over an entity's values: the median revenue per customer by store read
+    `487.75` for Brooklyn and is now refused: "measure.jaffle.revenue_usd can't be grouped by
+    dimension.jaffle_customer_id, as the distribution over entity.jaffle_customer groups it; it
+    can be grouped only by dimension.jaffle_store_name." The hint says to remove the
+    distribution over entity.jaffle_customer from the call.
+  - A `min`, `max`, `median` or `percentile` asked in place of the measure's default
+    aggregation, also as an `aggregate_if` over the measure's columns: the largest order's
+    revenue by store
+    (`{"kind": "measure", "measure": "measure.jaffle.revenue_usd", "aggregation": "max"}`) read
+    `99.84` for Brooklyn and is now refused: "measure.jaffle.revenue_usd can't be grouped by
+    dimension.jaffle_order_id, as the max over entity.jaffle_order's rows groups it; …". The
+    hint says to read the measure with its default aggregation (`sum`) in place of `max`.
+    `sum`, `avg` and the measure's default still answer, and so does `count` where the measure
+    allows it.
+  - A lookup measure read from the measure ("as the lookup measure … groups it"), and, under a
+    constraint that allows metric filters, an entity filter, a scoped-aggregate predicate or an
+    aggregate's `filter` predicate on the measure, also through an `aggregate_if` over its
+    columns ("as the entity filter on entity.jaffle_customer groups it"). A package metric
+    that holds one of these is refused the same way, and so is a call that reads one inside a
+    package metric a constraint names. Each part of a joined call is held the same way.
+  - Under `required_group_by` or `required_where`, an inner read that drops the required
+    grouping or filter (`missing_required_group_by`, `missing_required_where`): an entity
+    filter over all time that reads each customer across stores when the measure must be
+    grouped by store, a package metric's own entity filter read without a required filter, a
+    conversion operand read without the call's filter on the other operand's side, a lookup
+    whose source is read without the required filter, and a share beside an entity filter,
+    under a route decision or inside a package metric.
+
+  To let a role read a per-customer statistic, add the entity's key
+  (`dimension.jaffle_customer_id`) to the measure's `allowed_group_by`. A listed name that
+  labels an entity's rows (its `display`) allows the inner grouping by that entity's key, such
+  as a distribution over it; a `group_by` on the key itself still needs the key listed.
+- **Refusals and offers that read differently.**
+  - A call 0.3.5 already refused can now be refused for the inner grouping, beside or in place
+    of what 0.3.5 named (another cut, a total's or a share's grouping, or another code such as
+    `EMPTY_GROUPS_UNSETTLED`), with a hint that says how to change the call. An entity filter
+    on revenue under the `sales` role adds "measure.jaffle.revenue_usd can't be grouped by
+    dimension.jaffle_customer_id, as the entity filter on entity.jaffle_customer groups it; …"
+    after the sentence 0.3.5 gave.
+  - What the engine offers a constrained caller is checked the same way. A clarification
+    (`AMBIGUOUS_CHILD_SCOPE`) with a reading that is now refused becomes `MIXED_GRAIN_INVALID`,
+    naming that reading. A `PATH_NOT_FOUND` no longer lists a same-named measure in
+    `details.lookalike_measures` when the call on it would be refused. `plan` checks its drafts
+    the same way, so a draft that would be refused is not offered ready to run (under a
+    resource grant, `plan` can answer `NO_AUTHORIZED_PLAN`), and segment previews and
+    explanations check the calls they make. `valid-values` reads its values with a call of its
+    own: it reads them through the next measure the policy allows, so its values and counts
+    can come from another measure, and it refuses with `POLICY_DENIED` when none is allowed.
+    The `UNKNOWN_ROWS_KEPT` warning, which the engine counts with a call of its own, is left
+    out when the policy refuses that call.
+  - `INCOMPATIBLE_TEMPORAL_ROLE` for a measure with no time role gives the line that dates it:
+    "'measure.shop.amount' has no time role declared, so it can't be placed on
+    'temporal_role.shop_day_day'. Its rows reach that clock by to-one links: if it dates them,
+    add `times: [temporal_role.shop_day_day]` to measure.shop.amount in model sales; or drop
+    `time` from the query." When its own model declares that clock, the message also offers
+    marking it `default: true`; when its rows reach no such clock, it says to link its model
+    first. The code is the same.
+- **Clients that read responses.** A violation from an inner grouping can add `inside` (the
+  inner read in the call's words, such as "the distribution over entity.jaffle_customer"),
+  `object` (the measure or package metric it holds), `aggregation` and `default_aggregation`
+  (for a statistic of single rows) and `share` (for a share's grouping).
+  `INCOMPATIBLE_TEMPORAL_ROLE` adds `details.declare` (`model`, `measure`, `times`) when the
+  measure's rows reach the clock asked for, and its hint carries the same. No field is
+  retyped.
+- **Package authors.** `suggest_model` with `project_path` dates a fact's measures through its
+  one calendar key (`order_date_key` into `dim_date`), and `time_roles` says when the choice is
+  yours. Validation and `promotion_check` warn `MEASURE_WITHOUT_TIME_ROLE` for a measure with no
+  time role whose rows reach a clock of its own model or a calendar's. It is a warning: the
+  package still loads.
+
+### Added
+
+- A package built with the Architect can answer by month when a fact keeps its date as a key into
+  a calendar. `suggest_model` with `project_path` dates the measures of a table that keeps its
+  date as one key into a calendar: the draft links the key and lists the calendar's role in each
+  measure's `times:`. With several such keys and none the package's model already links (also
+  one the calendar mostly lacks, a snapshot's day, or a key named for another date), one beside
+  a date column of the table's own, or one that is part of the table's grain (a daily inventory
+  by product, or by product and store, whose stock a sum by month would count once per day),
+  the draft dates none and `time_roles` says the choice is
+  yours; a table's own date columns are drafted as before. Only a calendar (`kind: time`, or
+  named for a day, date, week, month or calendar with one row per day) dates through a key,
+  never another entity's own date, and a calendar's
+  unknown-member rows (a NULL or pre-1901 date, a key that is not positive) don't hide it. An
+  `INCOMPATIBLE_TEMPORAL_ROLE` for a measure with no time role gives the line that dates it
+  (`details.declare`), and validation and `promotion_check` warn `MEASURE_WITHOUT_TIME_ROLE` for
+  such a measure whose rows reach a clock. See [suggest_model](docs/ARCHITECT_MCP.md).
+
+### Fixed
+
+- Project validation is faster on packages where many entities share dimensions. A validation
+  summary builds the route questions it displays, and the full report lists every option.
+
+### Security
+
+- A metric constraint now holds inside the call, not only in its own `group_by` and `where`. A
+  `distribution` over an entity's values, an entity filter or scoped-aggregate predicate whose
+  input is the measure, and a lookup measure read from it all group the measure by an entity's
+  keys; that grouping must be in the measure's `allowed_group_by`, must keep its
+  `required_group_by`, and must read it under its `required_where`, or the call is refused with
+  `POLICY_DENIED` and the usual violation kind (`disallowed_group_by`,
+  `missing_required_group_by`, `missing_required_where`), naming the measure, the grouping and
+  the cuts the policy allows. With revenue limited to store cuts, the median of revenue per
+  customer is refused: "measure.jaffle.revenue_usd can't be grouped by
+  dimension.jaffle_customer_id, as the distribution over entity.jaffle_customer groups it; it
+  can be grouped only by dimension.jaffle_store_name." The same holds for a conversion's
+  converted events (read without the call's filter on the base side), for a share beside an
+  entity filter or inside a package metric, and for a policy on a package metric's id. A
+  package metric with such an entity filter is refused the same way for a caller the constraint
+  applies to; add the entity's key to `allowed_group_by` where a per-entity statistic is meant
+  to be read.
+- A `min`, `max`, `median` or `percentile` the call asks of such a measure in place of its
+  default aggregation (in a `measure`, `aggregate` or `scoped_aggregate` read, or an
+  `aggregate_if` over its columns) returns single rows' values, so it is held the same way, as
+  a grouping by the measure's row key (a stock's series key): "measure.jaffle.revenue_usd can't
+  be grouped by dimension.jaffle_order_id, as the max over entity.jaffle_order's rows groups
+  it". `sum`, `avg` and `count` still answer, and so does the measure's own default.
+- A name that labels an entity's rows (its `display`) groups by the entity's key too, one row
+  per entity, so listing the name in `allowed_group_by` allows that grouping: a call grouped by
+  the name answers as before, and so does a distribution or entity filter over that entity.
+  Callers no constraint applies to get the same SQL as before.
+
 ## 0.3.5 — 2026-11-11 — Statistic fixes, deep and joined calls, and discover by model
 
 **Upgrading from 0.3.4:** 0.3.5 fixes four kinds of wrong answer, so some numbers move toward

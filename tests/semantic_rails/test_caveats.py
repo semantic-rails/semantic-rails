@@ -1,6 +1,6 @@
 """Package-authored caveats: which queries they surface on, that they never change an answer,
-that a caveat's so_what (what the reader should do) reaches its warning, and that a package test
-(``caveat_applies``) pins whether a call states a caveat."""
+that a caveat's so_what (what the reader should do) reaches its warning at every verbosity, and
+that a package test (``caveat_applies``) pins whether a call states a caveat."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import yaml
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import resolve_package_reference
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_snapshot import semantic_payload
 from semantic_rails.package_tools import (
     diff_package_report,
@@ -352,10 +353,36 @@ def test_compact_leaves_out_what_the_caveat_does_not_say(so_what_runtime: Runtim
     assert "owner" not in stated[UNSAID]
 
 
-def test_minimal_keeps_its_ids_only(so_what_runtime: Runtime) -> None:
+def test_minimal_carries_so_what_and_no_more(so_what_runtime: Runtime) -> None:
+    # Most agents read the smallest answer, so it says what to do; who to ask and what
+    # matched stay at compact.
     stated = _stated(so_what_runtime, "minimal")
-    assert "so_what" not in stated[SAID]
-    assert "owner" not in stated[SAID]
+    assert stated[SAID] == {
+        "kind": "business_event",
+        "caveat_id": SAID,
+        "match_reasons": ["semantic_object", "time_range_overlap"],
+        "agent_action": "mention_when_interpreting_results",
+        "so_what": SO_WHAT,
+    }
+    assert "so_what" not in stated[UNSAID]
+
+
+def test_the_query_mcp_execute_says_so_what_at_its_default(so_what_package: Path) -> None:
+    adapter = SemanticLayerMCPAdapter(opened(Runtime.from_path(str(so_what_package))))
+    try:
+        query = {"select": [REVENUE], "group_by": [STORE_NAME], "time": MARCH}
+        response = adapter.call_tool("execute", {"query": query})
+    finally:
+        adapter.close()
+    assert response["ok"] is True, response
+    [said] = [
+        row
+        for row in response["warnings"]
+        if row["code"] == "SEMANTIC_CAVEAT_APPLIED" and row["details"]["caveat_id"] == SAID
+    ]
+    assert said["message"] == "A March pricing event lowered revenue."
+    assert said["details"]["so_what"] == SO_WHAT
+    assert "owner" not in said["details"]
 
 
 def test_a_non_text_so_what_is_refused(tmp_path: Path) -> None:
