@@ -14,7 +14,7 @@ import json
 import string
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
-from functools import cache
+from functools import cache, partial
 from typing import Any, NamedTuple
 
 from . import operators
@@ -148,6 +148,8 @@ def query_policy_effects(
             refusals[id(policy)] = _shape_refusal(policy, normalized, bound())
         return refusals[id(policy)]
 
+    reads = _RequestReads(inline_filters, shape_refusal)
+
     for object_id in list(dict.fromkeys(str(item) for item in object_ids if str(item).strip())):
         for policy in config.semantic_policies:
             if not _policy_matches(
@@ -164,13 +166,7 @@ def query_policy_effects(
             if policy.kind == "metric_constraint" and query is not None:
                 effects.append(
                     _metric_constraint_effect(
-                        policy,
-                        query,
-                        metric_filter_refs,
-                        bound,
-                        object_id,
-                        inline_filters,
-                        shape_refusal,
+                        policy, query, metric_filter_refs, bound, object_id, reads
                     )
                 )
             else:
@@ -201,13 +197,7 @@ def query_policy_effects(
                 if sources.intersection(policy.object_ids):
                     effects.append(
                         _metric_constraint_effect(
-                            policy,
-                            query,
-                            metric_filter_refs,
-                            bound,
-                            synthetic_id,
-                            inline_filters,
-                            shape_refusal,
+                            policy, query, metric_filter_refs, bound, synthetic_id, reads
                         )
                     )
     # Dedupe by (policy_id, kind, action). Package-wide policies — e.g.
@@ -1037,11 +1027,10 @@ def _metric_constraint_effect(
     metric_filter_refs: Callable[[str], dict[str, list[str]]],
     bound: Callable[[], BoundQuery],
     object_id: str,
-    inline_filters: Callable[[SemanticPolicyConfig], list[_Read]],
-    shape_refusal: Callable[[SemanticPolicyConfig], dict[str, Any] | None],
+    reads: _RequestReads,
 ) -> dict[str, Any]:
     violations = _metric_constraint_violations(
-        policy, query_payload, metric_filter_refs, bound, object_id, inline_filters, shape_refusal
+        policy, query_payload, metric_filter_refs, bound, object_id, reads
     )
     effect = _base_policy_effect(policy, action="deny" if violations else "constrain")
     if violations:
@@ -1089,14 +1078,13 @@ def _metric_constraint_violations(
     metric_filter_refs: Callable[[str], dict[str, list[str]]],
     bound: Callable[[], BoundQuery],
     object_id: str,
-    inline_filters: Callable[[SemanticPolicyConfig], list[_Read]],
-    shape_refusal: Callable[[SemanticPolicyConfig], dict[str, Any] | None],
+    reads: _RequestReads,
 ) -> list[dict[str, Any]]:
     policy_config = policy.config
     query = normalize_query(dict(query_payload or {}))
     violations: list[dict[str, Any]] = []
     # The allow-list (``_shape_refusal``) decides first; the checks below stay as a second line.
-    refused = shape_refusal(policy) if "allowed_where" in policy_config else None
+    refused = reads.refusal(policy) if "allowed_where" in policy_config else None
 
     if "required_group_by" in policy_config:
         required = _config_str_list(policy_config, "required_group_by")
@@ -1142,7 +1130,7 @@ def _metric_constraint_violations(
     # for the governed object, including whole-query attribution for nested filters.
     inline = cache(
         lambda: _governed_inline_fields(
-            inline_filters(policy),
+            reads.inline(policy),
             bound,
             object_id,
             package_wide=not policy.object_ids,
@@ -1288,27 +1276,22 @@ _ALLOWED_SHAPES = (
 def _shape_refusal(
     policy: SemanticPolicyConfig, query: NormalizedQuery, binding: BoundQuery
 ) -> dict[str, Any] | None:
-    """The first part of the call off ``policy``'s allow-list (``_ALLOWED_SHAPES``), as a
-    violation, or None. A select item or predicate input is held to it when it reads a measure
-    or metric the policy governs, a conditional aggregate ``_synthetic_constraint_sources``
-    matches to one, or one it can't match. An aggregate_if's value is nothing (a count) or a
-    column: one each governing measure is as it is, or, when each counts, a one-column key
-    (count_distinct counts only such a key). A predicate inside a predicate's input reads an
-    id. ``where`` is the allowed_where field check's alone."""
-    config = binding.config
+    """The first part of the call off ``policy``'s allow-list (``_ALLOWED_SHAPES``) as a
+    violation, or None. It holds each select item and predicate input that reads what the policy
+    governs: an id, a conditional aggregate ``_synthetic_constraint_sources`` matches, or one it
+    can't match. An aggregate_if's value is nothing (a count) or a column that each governing
+    measure is as it is or, when each counts, a one-column key; count_distinct counts only such a
+    key. A predicate inside a predicate's input reads an id. ``where`` is allowed_where's own."""
+    config, synthetic = binding.config, binding.plan.synthetic_measures
     allowed = set(_config_str_list(policy.config, "allowed_where"))
     allowed &= {row.id for row in config.dimensions}
-    synthetic = binding.plan.synthetic_measures
     measures = {row.id: row for row in config.measures if row.id not in synthetic}
     sources = _synthetic_constraint_sources(config, binding, set(policy.object_ids or measures))
     known = {*measures, *synthetic, *(row.id for row in config.metric_recipes)}
     ids = set(policy.object_ids or known - set(synthetic))
     ids |= {key for key, owners in sources.items() if owners}
-    keys = {
-        (row.id, _column_key(row.key_columns[0], config))
-        for row in config.entities
-        if len(row.key_columns) == 1
-    }
+    single = [row for row in config.entities if len(row.key_columns) == 1]
+    keys = {(row.id, _column_key(row.key_columns[0], config)) for row in single}
 
     def reads(expr: Any) -> bool:
         return any(item in ids or item not in known for item in _shown_measures(expr, config))
@@ -1321,11 +1304,10 @@ def _shape_refusal(
 
     def condition(node: Any) -> bool:
         if isinstance(node, ColumnRefExpr):
-            entity = _resolve_column_entity(node, config)
-            over = {row.id for row in _dimensions_over(entity, node.column, config)}
+            over = {row.id for row in _dimensions_over(column(node)[0], node.column, config)}
             return bool(over) and over <= allowed
         if isinstance(node, (ComparisonExpr, BooleanExpr, InExpr)):
-            return all(condition(child) for child in _child_exprs(node))
+            return all(map(condition, _child_exprs(node)))
         return isinstance(node, LiteralExpr)
 
     def counted(expr: ConditionalAggregateExpr) -> bool:
@@ -1333,15 +1315,13 @@ def _shape_refusal(
         read = column(value) if isinstance(value, ColumnRefExpr) else None
         if (value is not None and read is None) or aggregation == "percentile":
             return False
-        if aggregation == "count_distinct" and read not in keys:
-            return False
-        for owner in sources.get(_synthetic_conditional_measure(expr, config)[0], ()):
-            row = measures[owner]
+        owners = sources.get(_synthetic_conditional_measure(expr, config)[0], set())
+        for row in [measures[owner] for owner in owners]:
             own = row.expr if isinstance(row.expr, ColumnRefExpr) and not row.lookup_from else None
             key = aggregation in _COUNTS and row.default_aggregation in _COUNTS
-            if not ((own and read == column(own, row)) or (key and read in {*keys, None})):
+            if not ((key and read in {*keys, None}) or (own and read == column(own, row))):
                 return False
-        return True
+        return aggregation != "count_distinct" or read in keys
 
     def field(clause: Mapping[str, Any]) -> str:
         try:
@@ -1370,35 +1350,29 @@ def _shape_refusal(
     def item(expr: Any, depth: int) -> str:
         if depth > 1 and not isinstance(expr, _BY_ID):
             return "a predicate inside another predicate's input"
-        why = shape(expr) if reads(expr) else ""
         inner = (item(row, depth + 1) for row in _predicate_inputs(expr))
-        return why or next((why for why in inner if why), "")
-
-    def refusal(read: str) -> dict[str, Any]:
-        return {"kind": _SHAPE, "read": read}
+        return (shape(expr) if reads(expr) else "") or next((why for why in inner if why), "")
 
     for row in query.select:
         if why := item(row.expression, 0):
-            return refusal(f"select item '{row.as_}' holds {why}")
+            return {"kind": _SHAPE, "read": f"select item '{row.as_}' holds {why}"}
     for cut in query.metric_filters:
-        entity = isinstance(cut.expression, MetricPredicateExpr)
-        read = (
-            cut.expression.input
-            if isinstance(cut.expression, MetricPredicateExpr)
-            else cut.expression
-        )
+        expression = cut.expression
+        read = expression.input if isinstance(expression, MetricPredicateExpr) else expression
         if not (isinstance(read, _BY_ID) and reads(read)):
-            return refusal(f"{'an entity filter' if entity else 'having'} reads another number")
+            what = "having" if read is expression else "an entity filter"
+            return {"kind": _SHAPE, "read": f"{what} reads other than a number it governs, by id"}
     shown = {row.as_: row.expression for row in query.select}
     for order in query.order_by if query.limit is not None else ():
         if order.field in shown and not isinstance(shown[order.field], _BY_ID):
-            return refusal(f"order_by on '{order.field}' picks the rows the limit keeps")
+            return {"kind": _SHAPE, "read": f"order_by on '{order.field}' picks the rows kept"}
     return None
 
 
 def _predicate_inputs(expr: Any) -> list[Any]:
     """The inputs of the predicates in ``expr`` (an entity filter's, an aggregate filter's or a
     scoped aggregate's), not those of the predicates inside them."""
+    parse = partial(parse_semantic_expression, context="query")
     found: list[Any] = []
     stack = [expr]
     while stack:
@@ -1406,16 +1380,10 @@ def _predicate_inputs(expr: Any) -> list[Any]:
         if isinstance(node, MetricPredicateExpr):
             found.append(node.input)
             continue
-        if isinstance(node, AggregateExpr):
-            payloads = [
-                row["expression"] for row in node.filter.get("all", []) if "expression" in row
-            ]
-            stack.extend(parse_semantic_expression(dict(row), context="query") for row in payloads)
-        elif isinstance(node, ScopedAggregateExpr):
-            payloads = [
-                row["input"] for row in node.predicates if isinstance(row.get("input"), dict)
-            ]
-            found.extend(parse_semantic_expression(dict(row), context="query") for row in payloads)
+        clauses = node.filter.get("all", []) if isinstance(node, AggregateExpr) else []
+        stack += [parse(row["expression"]) for row in clauses if "expression" in row]
+        rows = node.predicates if isinstance(node, ScopedAggregateExpr) else []
+        found += [parse(row["input"]) for row in rows if isinstance(row.get("input"), dict)]
         stack.extend(_child_exprs(node))
     return found
 
@@ -1853,6 +1821,13 @@ class _Undeclared(NamedTuple):
 
 # ``(owner, field)``: the measure a read cuts, the ids one select item shows, or None (every one).
 _Read = tuple[str | frozenset[str] | None, str | _Undeclared]
+
+
+class _RequestReads(NamedTuple):
+    """What a request reads for each constraint, once: its inline filters and its shape refusal."""
+
+    inline: Callable[[SemanticPolicyConfig], list[_Read]]
+    refusal: Callable[[SemanticPolicyConfig], dict[str, Any] | None]
 
 
 def _value_reads(value: Any) -> tuple[list[Any], list[tuple[ColumnRefExpr, bool]]]:
