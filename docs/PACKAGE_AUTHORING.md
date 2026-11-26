@@ -816,7 +816,9 @@ kind names must match exactly.
   can refuse a nested filter even when it affects only a sibling expression.
   Direct leaf filters retain the leaf rule above. A caller-created aggregate
   inherits every applicable constraint on any measure reading one of its source
-  columns, whether the column appears in its value or condition. Matching uses
+  columns, whether the column appears in its value or condition, and at any depth: one
+  an entity filter reads inside another entity filter is held as it is in `select`
+  (refused or answered alike). Matching uses
   the relation and column SQL actually reads, including measure relation overrides,
   joined columns, lookup sources and entities sharing a relation name. Identifier
   case and quoting differences count as the same source, and only the last part of
@@ -1098,7 +1100,8 @@ whole package, so hiding an object never removes or changes a `deny`,
   entities goes through a hidden entity or relationship, that pair has no route for the
   caller (`PATH_NOT_FOUND`); an ambiguous pair offers only its visible routes.
 - **Raw columns:** while anything is hidden from a caller, that caller cannot aggregate raw
-  columns (`POLICY_DENIED`, naming nothing).
+  columns anywhere in a call, inside an entity filter included (`POLICY_DENIED`, naming
+  nothing).
 - **Governance holds read the whole package:** a [building
   block](#building-block-measures) stays one when its metric is hidden, and `plan` still
   holds a draft over a measure that a metric narrows when that metric is hidden only because

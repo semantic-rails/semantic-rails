@@ -1672,9 +1672,7 @@ def _counted_operands(
     keys = {
         (row.id, _column_key(key, config)) for row in config.entities for key in row.key_columns
     }
-    measures = {
-        row.id: row for row in config.measures if row.id not in binding.synthetic_measures
-    }
+    measures = {row.id: row for row in config.measures if row.id not in binding.synthetic_measures}
     governed = set(policy.object_ids or measures) & set(measures)
     sources = _synthetic_constraint_sources(config, binding, governed)
     owners = sources.get(_synthetic_conditional_measure(expr, config)[0], set())
