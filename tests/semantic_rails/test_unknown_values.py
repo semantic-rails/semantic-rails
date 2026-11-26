@@ -151,6 +151,21 @@ def _references(root: Path, spellings: dict[str, dict[str, Any]]) -> Runtime:
         for index, (column, declared) in enumerate(spellings.items())
     }
     _package(root, {}, others=others)
+    model = root / "models" / "downloads.yml"
+    doc = yaml.safe_load(model.read_text(encoding="utf-8"))
+    # A declared measure that reads the column in its other spelling, through a CASE.
+    when = {
+        "kind": "comparison",
+        "op": "missing",
+        "left": {"kind": "column", "column": "REF CODE"},
+        "right": {"kind": "literal", "value": True},
+    }
+    doc["model"]["measures"]["unreferenced_installs"] = {
+        "kind": "aggregate", "expr": {"kind": "case", "whens": [
+            {"when": when, "then": {"kind": "column", "column": "installs"}}],
+            "else": {"kind": "literal", "value": 0}},
+    }  # fmt: skip
+    model.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     with duckdb.connect(str(root / "dl.duckdb")) as connection:
         connection.execute(REFERENCES)
     return Runtime.from_path(str(root))
@@ -213,6 +228,26 @@ def test_a_column_read_whose_spellings_declare_different_unknown_values_is_refus
     assert '"op": "' + op + '"' in error.details["recovery_hints"][0]["message"]
 
 
+def test_a_declared_measure_reading_a_spelling_whose_dimensions_disagree_is_refused(tmp_path):
+    # The call has no inline column to check: the compiler refuses the measure's own read.
+    runtime = _references(tmp_path, {"Ref Code": SENTINEL, "REF CODE": {}})
+    try:
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.query({"select": ["measure.dl.unreferenced_installs"]})
+    finally:
+        runtime.close()
+    error = raised.value
+    assert error.code == "INVALID_QUERY"
+    assert str(error).startswith(
+        "measure.dl.unreferenced_installs.left: 'missing' reads entity.dl_download.REF CODE, "
+        "whose dimensions declare different unknown values"
+    )
+    assert error.details["dimensions"] == [
+        "dimension.dl_download_ref_0",
+        "dimension.dl_download_ref_1",
+    ]
+
+
 @pytest.mark.parametrize(
     ("declared", "where"),
     [
@@ -230,9 +265,12 @@ def test_spellings_whose_dimensions_agree_give_one_answer(tmp_path, declared, wh
             ]
             for spelling in ["Ref Code", "REF CODE"]
         }
+        [declared_row] = runtime.query({"select": ["measure.dl.unreferenced_installs"]})["rows"]
     finally:
         runtime.close()
-    assert totals == {"Ref Code": [_gold_references(where)], "REF CODE": [_gold_references(where)]}
+    gold = _gold_references(where)
+    assert totals == {"Ref Code": [gold], "REF CODE": [gold]}
+    assert int(declared_row["unreferenced_installs"]) == gold
 
 
 def test_one_dimension_over_its_exact_spelling_reads_its_unknown_values(tmp_path):
