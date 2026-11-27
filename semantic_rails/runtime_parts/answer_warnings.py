@@ -704,7 +704,7 @@ def _guard_probe_names(compiled, prefix):
     """The probes (CTEs named ``prefix``...) each guarded column reads, by the guard's column
     (``by_alias``), and by the answer's output (``by_output``). A total's output reads its
     coarser call, whose own guard (``<cte>__guarded_base``) and probes stand at the top too."""
-    from ..sql_ast import SqlIdentifier, SqlTableRef
+    from ..sql_ast import SqlIdentifier
 
     ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
     projection = ctes["projected"].query if "projected" in ctes else call_rows(compiled["sql_ast"])
@@ -713,20 +713,14 @@ def _guard_probe_names(compiled, prefix):
         guard = ctes.get(guard_name)
         if guard is None:
             return {}
-        joined = {
-            join.table.name
-            for join in guard.query.joins
-            if isinstance(join.table, SqlTableRef)
-            and join.table.name.startswith(start)
-            and join.table.name in ctes
-        }
         return {
             field.alias: {
                 node.parts[0]
-                for node in sql_nodes(field.expression)
+                for node in sql_nodes(field.expression, descend_into_queries=False)
                 if isinstance(node, SqlIdentifier)
                 and len(node.parts) == 2
-                and node.parts[0] in joined
+                and node.parts[0].startswith(start)
+                and node.parts[0] in ctes
             }
             for field in guard.query.select
         }
