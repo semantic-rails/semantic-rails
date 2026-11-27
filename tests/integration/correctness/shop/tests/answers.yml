@@ -10832,3 +10832,15 @@ tests:
     context: *west
     query:
       group_by: [dimension.shop_tag_tag_name]
+  shop/scalar-date-range-before-first-row:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The first source day is July 1, so the sum for June 24–30 has no loaded data and reads NULL.
+    cites: [tests/integration/correctness/shop/models/clock_edges.yml#model.measures.day_amount, docs/QUERY_CALL.md#empty-groups-null-or-0]
+    query:
+      select: [measure.shop.day_amount]
+      where:
+        - {field: dimension.shop_clock_edge_source_day, op: gte, value: "2024-06-24"}
+        - {field: dimension.shop_clock_edge_source_day, op: lt, value: "2024-07-01"}
+    expected_rows: [{day_amount: null}]
+    reference_sql: SELECT SUM(amount) FROM clock_edges WHERE source_day >= DATE '2024-06-24' AND source_day < DATE '2024-07-01'

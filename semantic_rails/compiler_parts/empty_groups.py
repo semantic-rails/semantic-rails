@@ -359,6 +359,7 @@ def guard_empty_groups(
     rows: Mapping[str, str] | None = None,
     earlier: Collection[str] = (),
     time_key: str = "",
+    window_bucket: SqlLiteral | None = None,
     dialect: Any = None,
     observed: Mapping[str, LeafScope] | None = None,
     observed_buckets: Collection[str] = (),
@@ -375,7 +376,8 @@ def guard_empty_groups(
     ``rows`` names, for each sum, the source column counting the rows it read in the group:
     the sum reads 0 only where that count is NULL (the group has no row of the measure) or
     0, never where its rows' values are all NULL. A sum without one is refused, as are
-    scopes and ``time_key`` without a dialect with time coverage. Inside
+    scopes and ``time_key`` without a dialect with time coverage. A scalar range has a
+    constant ``window_bucket``. Inside
     ``earlier_settlement`` a NULL sum reads 0 wherever its measure has data in scope. Aliases
     in ``earlier`` use that same rule individually, for measures with a CASE below the root
     that can drop rows (``drops_rows_below_root``).
@@ -408,7 +410,9 @@ def guard_empty_groups(
     ``own_range`` (another leaf's rows can show a period, ``_combines_leaves``), every scope
     is: a period outside its own loaded range never reads 0.
     """
-    if (scopes or time_key or probe_key) and not (dialect is not None and dialect.reads_coverage):
+    if (scopes or time_key or probe_key or window_bucket is not None) and not (
+        dialect is not None and dialect.reads_coverage
+    ):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     rows = rows or {}
     measures = list(measures)
@@ -433,29 +437,34 @@ def guard_empty_groups(
         for node in sql_nodes([list((scopes or {}).values()), list(observed.values())])
         if isinstance(node, (SqlCte, SqlTableRef))
     }
-    coverage_index = 0
     edges: dict[str, str] = {}
     probes: dict[str, str] = {}
+
+    def available_name(prefix: str, index: int, *, with_rows: bool = False) -> str:
+        name = f"{prefix}_{index}"
+        while name in occupied or (with_rows and f"{name}_rows" in occupied):
+            index += 1
+            name = f"{prefix}_{index}"
+        occupied.add(name)
+        if with_rows:
+            occupied.add(f"{name}_rows")
+        return name
 
     def probed(probe: SqlSelect) -> SqlBinary:
         """Whether ``probe`` finds a row, read once through plain CTEs the guard cross-joins."""
         name = probes.get(repr(probe))
         if name is None:
-            name = probes[repr(probe)] = f"observed_{len(probes) + 1}"
+            name = probes[repr(probe)] = available_name("observed", len(probes) + 1, with_rows=True)
             ctes.extend(_dataset_probe_ctes(name, probe))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
 
     def covered(scope: LeafScope) -> str:
         """The coverage CTE of the scope's base relation and bucket, read once."""
-        nonlocal coverage_index
         loaded = repr((scope.from_table, scope.raw_time, scope.storage_zone, scope.bucket))
         name = coverage.get(loaded)
         if name is None:
-            coverage_index += 1
-            while (candidate := f"coverage_{coverage_index}") in occupied:
-                coverage_index += 1
-            name = coverage[loaded] = candidate
+            name = coverage[loaded] = available_name("coverage", len(coverage) + 1)
             ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return name
@@ -477,7 +486,11 @@ def guard_empty_groups(
                 SqlLiteral(0),
             )
             scope = (scopes or {}).get(alias)
-            gated = bool(time_key) and scope is not None and scope.bucket is not None
+            gated = (
+                (bool(time_key) or window_bucket is not None)
+                and scope is not None
+                and scope.bucket is not None
+            )
             # Source rows settle a never-matched condition only where the loaded-bucket check
             # below gates the output's bucket, or where the output has no time bucket.
             source_rows = gated or not bucketed
@@ -535,7 +548,10 @@ def guard_empty_groups(
                     # through plain CTEs instead.
                     found = outside if dialect.exists_in_select else probed(outside.query)
                     if bounded_probe:
-                        found = SqlBinary(found, "AND", _loaded_bucket(probe_key, covered(scope)))
+                        probe_bucket = SqlIdentifier(parts=["base", probe_key])
+                        found = SqlBinary(
+                            found, "AND", _loaded_bucket(probe_bucket, covered(scope))
+                        )
                     seen = SqlBinary(seen, "OR", found)
                 # Ungated, a declared edge still bounds the series, and so does the scope's own
                 # loaded range under ``own_range``: neither the table's last row nor a value
@@ -546,7 +562,7 @@ def guard_empty_groups(
                     or (own_range and scope.bucket is not None and known_zone(scope.storage_zone))
                 ):
                     name = covered(scope)
-                    key = time_key or probe_key
+                    key = window_bucket or SqlIdentifier(parts=["base", time_key or probe_key])
                     if scope.edge is None:
                         seen = SqlBinary(seen, "AND", _loaded_bucket(key, name))
                     else:
@@ -554,7 +570,9 @@ def guard_empty_groups(
                         # never share it.
                         edge = edges.get(repr(scope.edge))
                         if edge is None:
-                            edge = edges[repr(scope.edge)] = f"edge_{len(edges) + 1}"
+                            edge = edges[repr(scope.edge)] = available_name(
+                                "edge", len(edges) + 1, with_rows=scope.edge.rows is not None
+                            )
                             ctes.extend(_edge_ctes(edge, scope.edge))
                             joins.append(SqlJoin("CROSS", SqlTableRef(name=edge)))
                         seen = SqlBinary(seen, "AND", _certified_bucket(key, name, edge))
@@ -645,8 +663,7 @@ def _dataset_probe_ctes(name: str, probe: SqlSelect) -> list[SqlCte]:
     ]
 
 
-def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
-    bucket = SqlIdentifier(parts=["base", time_key])
+def _loaded_bucket(bucket: SqlIdentifier | SqlLiteral, coverage: str) -> SqlBinary:
     return SqlBinary(
         SqlBinary(bucket, ">=", SqlIdentifier(parts=[coverage, "loaded_from"])),
         "AND",
@@ -654,10 +671,9 @@ def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
     )
 
 
-def _certified_bucket(time_key: str, coverage: str, edge: str) -> SqlBinary:
+def _certified_bucket(bucket: SqlIdentifier | SqlLiteral, coverage: str, edge: str) -> SqlBinary:
     """From the base's first loaded bucket up to (not including) the edge's first uncertified
     one. A NULL mark certifies nothing."""
-    bucket = SqlIdentifier(parts=["base", time_key])
     return SqlBinary(
         SqlBinary(bucket, ">=", SqlIdentifier(parts=[coverage, "loaded_from"])),
         "AND",

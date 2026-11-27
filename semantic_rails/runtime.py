@@ -2213,6 +2213,7 @@ class Runtime:
         """The answer to a call whose statement ran (``rows``, ``hidden``), before ``finish``
         and verbosity: its rows, warnings and every field it states. ``call_warnings`` follow
         the call's own (how the statement ran)."""
+        from .compiler_parts.lowering_common import scalar_date_window
         from .runtime_parts.answer_warnings import (
             _compiled_warnings,
             _no_data_yet_warnings,
@@ -2236,9 +2237,17 @@ class Runtime:
             if compiled["logical_plan"].query.get("totals") is not None
             else rows
         )
-        coverage = _coverage_read(self, compiled, payload) if compiled["logical_plan"].time else {}
+        scalar = scalar_date_window(compiled["logical_plan"], self._config)
+        covered = {**compiled, "logical_plan": scalar} if scalar else compiled
+        coverage_zone = (_time_zone(self._config, covered) if scalar else zone) or "UTC"
+        coverage = _coverage_read(self, covered, payload) if covered["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
-            compiled, own_rows, payload, coverage, zone=zone or "UTC", excluded_outputs=withheld
+            covered,
+            own_rows,
+            {**payload, "time": scalar.time} if scalar else payload,
+            coverage,
+            zone=coverage_zone,
+            excluded_outputs=withheld,
         )
         coverage_outputs = [
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
@@ -2267,13 +2276,13 @@ class Runtime:
                 *coverage_warnings,
                 *_partial_data_warnings(compiled, own_rows, coverage, now=now, zone=zone or "UTC"),
                 *_zero_after_last_row_notes(
-                    compiled, coverage, now=now, zone=zone or "UTC", excluded_outputs=withheld
+                    covered, coverage, now=now, zone=coverage_zone, excluded_outputs=withheld
                 ),
                 *_no_data_in_scope_warnings(
                     compiled,
                     own_rows,
                     excluded_outputs=[*withheld, *coverage_outputs],
-                    dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
+                    dataset=observed_outside_filters(covered["logical_plan"].query, self._config),
                     runtime=self,
                     payload=payload,
                 ),

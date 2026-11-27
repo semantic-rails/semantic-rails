@@ -647,6 +647,8 @@ both coverage and rollup refusal, on DuckDB and Postgres only. On Snowflake, Big
 Databricks and Athena, a series' combined leaves read their own coverage and refuse rollups by
 one rule too (`_gates_by_own_range`). Populated values pass through; routed queries keep the
 window test and never scan a shadow raw leaf.
+A single-measure scalar with bounds on its own default DATE clock uses the window total's
+coverage bucket in the settlement guard. Its value scan uses the original filters.
 Coverage CTE names skip relation and CTE names already in use, compared case-insensitively.
 On those warehouses, plain filtered additive leaves on a local clock retain source buckets by
 evaluating authored dimension filters in conditional operands. One rule names the retained

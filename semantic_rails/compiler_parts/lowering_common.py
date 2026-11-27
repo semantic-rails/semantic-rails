@@ -10,7 +10,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,6 +23,7 @@ from ..ast import (
     refuse_child_groups,
     time_output_alias,
 )
+from ..clock import known_zone
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -338,6 +339,85 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
     return raw_expr
 
 
+def scalar_date_window(plan: LogicalPlan, config: PackageConfig) -> LogicalPlan | None:
+    """The window used to settle a scalar's bounds on its own default DATE clock."""
+    if (
+        plan.time
+        or plan.group_by
+        or not plan.query.get("where")
+        or len(plan.measure_plans) != 1
+        or not _dialect(config).reads_coverage
+    ):
+        return None
+    query = plan.query
+    (row,) = plan.measure_plans
+    bound = row.bound_measure
+    measure = _measure_index(config).get(bound.measure_id)
+    role = _temporal_role_index(config).get(bound.temporal_role)
+    if (
+        measure is None
+        or bound.measure_id in plan.synthetic_measures
+        or role is None
+        or role.id != measure.default_temporal_role
+        or row.rewrite_strategy not in {"direct", "aggregate_relation"}
+        or not resolves_to_zero(bound.aggregation, measure)
+        or query.get("totals")
+        or bound.filter_spec
+        or _query_metric_predicates(plan)
+    ):
+        return None
+    dim = _dimension_index(config)[role.dimension]
+    if (
+        dim.entity != measure.entity
+        or dim.data_type != "date"
+        or dim.unknown_values
+        or _role_conversion(role)
+        or not known_zone(role.column_timezone or role.timezone or "UTC")
+        or not known_zone(role.timezone or "UTC")
+    ):
+        return None
+    lower: list[date] = []
+    upper: list[date] = []
+    where = []
+    for item in query.get("where") or []:
+        op = operators.word_of(item.get("op"))
+        if item.get("field") != dim.id or op not in operators.RANGE_WORDS:
+            where.append(item)
+            continue
+        comparison = operators.COMPARISON_SQL[op]
+        value = item["value"]
+        midnight = _calendar_bound(value)
+        if (
+            midnight is not None
+            and midnight.tzinfo is None
+            and midnight.time() == datetime.min.time()
+            and isinstance(value, str)
+            and len(value) > 10
+        ):
+            value = midnight.date().isoformat()
+        try:
+            day = date.fromisoformat(value)
+            if day.isoformat() != value:
+                return None
+            if comparison in {">", "<="}:
+                day += timedelta(days=1)
+        except (TypeError, ValueError, OverflowError):
+            return None  # Leave invalid or unrepresentable bounds to the original filter path.
+        (lower if comparison in {">", ">="} else upper).append(day)
+    if not lower or not upper or max(lower) >= min(upper):
+        return None
+    time = {
+        "temporal_role": role.id,
+        "start": max(lower).isoformat(),
+        "end": min(upper).isoformat(),
+    }
+    return replace(
+        plan,
+        query={**query, "where": where},
+        time={**time, "window_total": True, "scalar_date_window": True},
+    )
+
+
 def _reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     """Whether the plan's empty periods are bounded by the base's loaded range: every series on
     DuckDB and Postgres; elsewhere a named window's every-period series (``fill`` with both
@@ -347,9 +427,10 @@ def _reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     time = plan.time or {}
     return dialect.has_time_coverage or bool(
         dialect.reads_coverage
-        and time.get("fill")
-        and time.get("start") is not None
-        and time.get("end") is not None
+        and (
+            time.get("scalar_date_window")
+            or (time.get("fill") and time.get("start") is not None and time.get("end") is not None)
+        )
     )
 
 
@@ -614,9 +695,12 @@ def _record_time_scope(
     for row in rows:
         alias = row.bound_measure.alias
         value = next(field.expression for field in leaf.select if field.alias == alias)
-        role = _temporal_role_index(config)[
-            _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
-        ]
+        role_id = (
+            plan.time["temporal_role"]
+            if plan.time.get("scalar_date_window")
+            else _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
+        )
+        role = _temporal_role_index(config)[role_id]
         # A sum or count's declared edge bounds its gated buckets, and a series' buckets where
         # only its probe reads coverage; others keep the last row.
         measure = _measure_index(config)[row.bound_measure.measure_id]
