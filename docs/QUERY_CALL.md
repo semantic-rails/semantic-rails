@@ -1274,7 +1274,11 @@ membership (`is ["a", "b"]` keeps either, `not ["a"]` keeps every other row and 
 value) and the dimension's `unknown_values` read as no value. `missing` counts them, and `is` one
 of them is refused as in `where`. The warehouse's identifier rules determine which spellings
 read the same column. All dimensions on that column must agree on `unknown_values`, or the
-comparison is refused with `INVALID_QUERY`. A column with no matching dimension reads as itself.
+comparison is refused with `INVALID_QUERY`. List order and repeated values do not affect
+agreement. A comparison with a text literal uses the type declared for the written spelling.
+An undeclared spelling inherits temporal literal handling when its matching dimensions agree.
+If they disagree about whether to compare text values as dates or timestamps, filter on a
+dimension by ID. A column with no matching dimension reads as itself.
 A list anywhere else, or after a SQL comparison, is refused. Use `in`. A comparison also takes a
 text word as its `op`, with a text literal `right`
 (`{"kind": "comparison", "op": "starts_with", "left": <column>, "right": {"kind": "literal",

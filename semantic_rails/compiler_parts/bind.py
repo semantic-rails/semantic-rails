@@ -500,7 +500,20 @@ def _word_comparison(
     value = _column_sql(column, measure, config, dims)
     if dims:
         value = unknown_as_null(value, dims[0])
-    temporal = any(dim.data_type in {"date", "timestamp"} for dim in dims)
+    typed = [dim for dim in dims if dim.column == column.column] or dims
+    temporal_types = {dim.data_type in {"date", "timestamp"} for dim in typed}
+    operands = (
+        operators.values_of(word, expr.right.value) if word in {"is", "not"} else [expr.right.value]
+    )
+    if len(temporal_types) > 1 and any(isinstance(item, str) for item in operands):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{measure.id}.left: '{word}' reads {entity}.{column.column}, whose dimensions "
+            "disagree on whether to compare text values as dates or timestamps. "
+            "Filter on the dimension you mean.",
+            details={"path": f"{measure.id}.left", "dimensions": sorted(dim.id for dim in typed)},
+        )
+    temporal = temporal_types == {True}
     return build_filter_condition(value, word, expr.right.value, path=measure.id, temporal=temporal)
 
 

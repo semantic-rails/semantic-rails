@@ -301,7 +301,8 @@ def enforce_query_policies(
                     for row in blocking
                     for violation in list(row.get("violations", []) or [])
                 ],
-            }
+            },
+            config,
         )
     withheld = withheld_object_ids(
         config,
@@ -348,9 +349,12 @@ def _coarser_blocking(
     return blocking
 
 
-def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLayerError:
+def denied(
+    details: Mapping[str, Any], config: PackageConfig | None = None, *, unstated: bool = False
+) -> SemanticLayerError:
     """The refusal of a query a policy blocks. Its message and its one hint come from
-    ``details`` alone (the blocked objects and the effects with their violations), so
+    ``details`` (the blocked objects and the effects with their violations) and the package's
+    column declarations, so
     ``visible_view.public_error`` restates both from a caller's view of the same details;
     ``unstated`` says that view left out an unmet cut, which gets the generic words."""
     lines: list[str] = []
@@ -365,7 +369,7 @@ def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLay
             lines.append(f"{names} is denied by policy")
             actions.append(f"Remove {names} from the call." if objects else "")
         for violation in violations:
-            line, action, fragment = _constraint_cut(violation)
+            line, action, fragment = _constraint_cut(violation, config)
             # An inner call's violation names the object it groups or filters.
             lines.append(f"{violation.get('object') or names} {line}")
             actions.append(action)
@@ -397,7 +401,9 @@ def _listed(items: Iterable[Any], word: str = "and") -> str:
     return f"{', '.join(texts[:-1])} {word} {texts[-1]}" if len(texts) > 1 else "".join(texts)
 
 
-def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+def _constraint_cut(
+    violation: Mapping[str, Any], config: PackageConfig | None
+) -> tuple[str, str, dict[str, Any]]:
     """What one metric constraint violation says, in the call's words: the cuts the policy
     allows, the one fix, and the call fragment that makes it (merged into the call)."""
     kind = violation.get("kind")
@@ -513,6 +519,14 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
             for field in violation.get("disallowed") or []
             if inline and kind == "disallowed_where" and str(field).startswith("entity.")
         ]
+        if config is not None:
+            for field in undeclared.copy():
+                spelling = _allowed_column_spelling(field, allowed, config)
+                if spelling:
+                    line += (
+                        f". For {field}, write the column as its dimension declares it, {spelling}"
+                    )
+                    undeclared.remove(field)
         if undeclared:
             one = len(undeclared) == 1
             it, column = ("it", "the column") if one else ("them", "each column")
@@ -539,6 +553,20 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
         "Remove the having, entity filter or inline filter that reads it.",
         {},
     )
+
+
+def _allowed_column_spelling(field: str, allowed: list[str], config: PackageConfig) -> str:
+    """The written spelling of a dimension the constraint already allows on this column."""
+    for dim in config.dimensions:
+        prefix = f"{dim.entity}."
+        if dim.id not in allowed or dim.unknown_values or not field.startswith(prefix):
+            continue
+        spelling = field.removeprefix(prefix)
+        if spelling != dim.column and _column_key(spelling, config) == _column_key(
+            dim.column, config
+        ):
+            return dim.column
+    return ""
 
 
 def _inner_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:

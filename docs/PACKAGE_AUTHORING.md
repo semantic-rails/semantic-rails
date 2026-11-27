@@ -754,7 +754,10 @@ kind names must match exactly.
   dimension declared over the columns in its condition or value, including on
   the measure's own entity, as a `where` filter or `group_by` on them does. A
   matching `deny` or `hidden` object policy on any such dimension
-  refuses the query with `POLICY_DENIED` before SQL is rendered. Own-entity
+  refuses the query with `POLICY_DENIED` before SQL is rendered. A declared measure
+  whose expression compares a column with a filter word or a text word also depends on
+  the dimensions over that column. A matching `deny` refuses the measure and any metric
+  that reads it, including when the measure uses a rollup. Own-entity
   columns with no declared dimension remain allowed. While any `object_access`
   or `object_visibility` policy is declared, it may not read another entity's column
   that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
@@ -1138,7 +1141,9 @@ by a `visible_only` policy they are not eligible for). Policy enforcement still 
 whole package, so hiding an object never removes or changes a `deny`,
 `withhold_values`, `metric_constraint` or `row_filter`.
 
-- **Hidden with it:** every object that reads a hidden object (a metric over it, directly or
+- **Hidden with it:** a declared measure is hidden if its expression compares a column with a
+  filter word or text word and reads the hidden dimension over that column, including on a
+  rollup. So is every object that reads a hidden object (a metric over it, directly or
   through another metric, a filter or a metric filter; a segment whose basis metric,
   conditions or preview dimensions read it; a conversion metric whose dimension bindings
   name it), every object that names it in any of its fields (a value domain listing a hidden

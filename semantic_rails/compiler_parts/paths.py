@@ -217,7 +217,7 @@ def text_dimension(entity: str, column: str, word: str, config: PackageConfig, p
             f"{declared}",
             details={
                 "path": path,
-                "dimensions": [dim.id for dim in dims],
+                "dimensions": sorted(dim.id for dim in dims),
                 "recovery_hints": [
                     {
                         "code": "USE_FILTER_WORD",

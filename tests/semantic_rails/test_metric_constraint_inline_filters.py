@@ -2264,7 +2264,10 @@ def test_a_text_word_on_a_quoted_column_reads_only_its_own_spelling(quoted):
     assert own["ok"], own["errors"]
     error = other["errors"][0]
     assert error["code"] == "POLICY_DENIED"
-    assert f"No dimension declares {ORDER}.CUSTOMER REF" in error["message"]
+    assert (
+        f"For {ORDER}.CUSTOMER REF, write the column as its dimension declares it, Customer Ref"
+        in error["message"]
+    )
 
 
 # The allow-list. Under a constraint with allowed_where, a select item, having, entity filter or
