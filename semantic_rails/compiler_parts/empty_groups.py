@@ -429,7 +429,7 @@ def guard_empty_groups(
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
     occupied = set(relation_names) | {
-        node.name.casefold()
+        node.name.casefold().partition(".")[0]
         for node in sql_nodes([list((scopes or {}).values()), list(observed.values())])
         if isinstance(node, (SqlCte, SqlTableRef))
     }

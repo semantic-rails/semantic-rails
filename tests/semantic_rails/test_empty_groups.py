@@ -1163,6 +1163,44 @@ def test_coverage_does_not_shadow_a_source_relation(
     assert response["window"]["data_through"] == "2024-08-01"
 
 
+def test_coverage_does_not_shadow_a_schema_in_a_subtotal(tmp_path: Path) -> None:
+    package = _shop_package(
+        tmp_path,
+        "CREATE SCHEMA coverage_3",
+        "CREATE TABLE coverage_3.orders AS SELECT * FROM orders",
+        "CREATE TABLE coverage_1 AS SELECT * FROM tickets",
+    )
+    config = load_package_config(str(package))
+    renamed = {"orders": "coverage_3.orders", "tickets": "coverage_1"}
+    config = replace(
+        config,
+        entities=[replace(row, table=renamed.get(row.table, row.table)) for row in config.entities],
+    )
+    scans = {"kind": "measure", "measure": "measure.shop.scan_count"}
+    rt = Runtime.from_config(config, source_path=str(package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    orders=SHOP_ORDERS,
+                    scans=scans,
+                    scans_total={"kind": "total", "input": scans["measure"], "over": [SHOP_STORE]},
+                ),
+                "group_by": [SHOP_STORE],
+                "time": {"temporal_role": SHOP_ROLE, "grain": "quarter"},
+            },
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    rows = typed_rows(response)
+    assert (rows[0]["orders"], rows[0]["scans"], rows[0]["scans_total"]) == (2, 3, 4)
+    assert [(row["orders"], row["scans"], row["scans_total"]) for row in rows[-2:]] == [
+        (1, None, None),
+        (1, None, None),
+    ]
+
+
 def test_orders_per_ticket_past_the_last_order_read_null_on_every_warehouse(
     shop_package: Path, request: pytest.FixtureRequest
 ) -> None:

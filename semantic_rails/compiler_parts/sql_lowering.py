@@ -739,6 +739,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         relation_names: set[str] = set()
         if scopes:
             # A coverage CTE can be prefixed or sit beside pipeline reads added later.
+            # Namespacing rewrites the first qualifier, which can also be a schema or catalog.
             package_relations = {
                 *(row.table for row in config.entities),
                 *(row.relation for row in config.aggregate_relations),
@@ -746,8 +747,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 *(row.zero_through.relation for row in config.measures if row.zero_through),
                 *relation_source_tables(config, (row.id for row in config.relations)),
             }
-            relation_names = _cte_names([ctes, projected_fields, base_table]) | {
-                name.casefold().rsplit("__", 1)[-1] for name in package_relations
+            relation_names = {
+                name.partition(".")[0] for name in _cte_names([ctes, projected_fields, base_table])
+            } | {
+                name.casefold().partition(".")[0].rsplit("__", 1)[-1] for name in package_relations
             }
         ctes.extend(
             guard_empty_groups(
