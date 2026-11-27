@@ -42,7 +42,8 @@ from ..compiler_parts.joined_parts import (
     select_width,
     shared_name,
 )
-from ..compiler_parts.part_domain import PRESENT, reading_part_domain
+from ..compiler_parts.namespacing import avoid_name_collisions
+from ..compiler_parts.part_domain import KEYS, PRESENT, reading_part_domain
 from ..db_parts.base import QueryRows
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -323,6 +324,9 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         order_by=payload.get("order_by") or [],
         limit=payload.get("limit"),
     )
+    visibility = _visibility(parts)
+    reserved = () if visibility is None else visibility.modeled | visibility.load_logs
+    statement, _ = avoid_name_collisions(statement, reserved)
     # A requested order under a limit is broken by the keys, and a tie at the limit is stated,
     # as a call's is; the parts' order breaks what is left.
     own, order_keys = (
@@ -331,7 +335,6 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         else (statement, ())
     )
     own = replace(own, order_by=[*own.order_by, *presence_order(len(parts))])
-    visibility = _visibility(parts)
     sql_profile = str(payload.get("sql_profile", "audit") or "audit")
     prepared = _prepare(own, config, sql_profile, visibility)
     probe = None
@@ -426,7 +429,9 @@ def _compile_part(
         payload=payload,
         policy_effects=policy_effects,
         compiled=compiled,
-        statement=PartStatement(compiled["sql_ast"], keys, outputs, hidden),
+        statement=PartStatement(
+            compiled["sql_ast"], keys, outputs, hidden, binding.sql_names.get(KEYS, KEYS)
+        ),
     )
 
 

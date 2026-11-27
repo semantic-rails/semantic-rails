@@ -48,6 +48,7 @@ from ..sql_ast import (
     SqlIsNull,
     SqlLiteral,
     SqlSelect,
+    SqlSourceRef,
     SqlTableRef,
 )
 from .bind import (
@@ -339,7 +340,7 @@ def parent_value_leaf_select(
     )
     reached = SqlSelect(
         select=[*keys, *groups, SqlField(value_expr, "__parent_value")],
-        from_table=SqlTableRef(name=entities[rows].table),
+        from_table=SqlSourceRef(name=entities[rows].table),
         joins=_joins_for_paths(rows, measure_plan.path_selections, config, measure_entity=None),
         where=where,
         distinct=True,

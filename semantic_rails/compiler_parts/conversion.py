@@ -49,6 +49,7 @@ from ..sql_ast import (
     SqlLiteral,
     SqlOrderTerm,
     SqlSelect,
+    SqlSourceRef,
     SqlTableRef,
     SqlWindow,
 )
@@ -647,7 +648,7 @@ def _conversion_event_cte(
         name=cte_name,
         query=SqlSelect(
             select=select_fields,
-            from_table=SqlTableRef(name=source_table),
+            from_table=SqlSourceRef(name=source_table),
             joins=joins,
             where=where_items,
         ),

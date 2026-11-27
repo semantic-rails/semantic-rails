@@ -637,7 +637,8 @@ def test_relation_dependency_cycle_fails_only_when_required(tmp_path: Path, monk
         runtime.close()
 
 
-def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
+@pytest.mark.parametrize("right_table", ["right_events", "rel_preagg_aligned__right_preaggregate"])
+def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path, right_table: str):
     package_dir = tmp_path / "preagg_demo"
     package_dir.mkdir()
     package = {
@@ -658,7 +659,7 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
                     {
                         "join": {
                             "type": "full outer",
-                            "relation": "right_events",
+                            "relation": right_table,
                             "on": [{"left": "account_id", "right": "account_id"}],
                             "require_pre_aggregate": True,
                             "pre_aggregate": {
@@ -714,7 +715,8 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
         },
     }
     (package_dir / "seed.sql").write_text(
-        "CREATE TABLE left_events (account_id INTEGER, value INTEGER); CREATE TABLE right_events (account_id INTEGER, value INTEGER);",
+        "CREATE TABLE left_events AS SELECT 1 AS account_id, 10 AS value; "
+        f"CREATE TABLE {right_table} AS SELECT 1 AS account_id, 20 AS value;",
         encoding="utf-8",
     )
     _write_relation_package(package_dir, package)
@@ -727,6 +729,13 @@ def test_relation_join_pre_aggregate_controls_render_boundaries(tmp_path: Path):
     assert "rel_preagg_aligned__left_preaggregate AS (" in rendered
     assert "rel_preagg_aligned__right_preaggregate AS (" in rendered
     assert "FULL OUTER JOIN" in rendered
+
+    runtime = Runtime.from_path(str(package_dir))
+    try:
+        response = runtime.query({"select": ["measure.preagg.aligned_rows"]})
+        assert response["rows"] == [{"aligned_rows": 1}]
+    finally:
+        runtime.close()
 
     bad = yaml.safe_load(yaml.safe_dump(package))
     bad["relations"]["aligned"]["steps"][1]["join"].pop("pre_aggregate")

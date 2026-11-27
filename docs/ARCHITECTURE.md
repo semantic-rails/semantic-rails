@@ -498,6 +498,11 @@ The runtime compiles a request through these stages:
 6. Render SQL text from the SQL AST.
 7. Execute the prepared SQL against the configured warehouse.
 
+The compiler keeps generated CTE names and relation aliases distinct from package
+relation names, including schema and catalog components, using case-insensitive
+comparison. Coverage and observation probes keep their generated prefixes so
+answer disclosures can identify the probes each output reads.
+
 Important planner behaviors:
 
 - safe mixed-grain cases compile via leaf pre-aggregation rewrites

@@ -51,7 +51,6 @@ from ..ir import (
 )
 from ..query_call import engine_where, refusal
 from ..registry import Registry
-from ..relation_pipelines import attach_relation_ctes
 from ..row_filter_visibility import Visibility, hold_unowned_reads, visibility_for
 from ..row_filters import RowFilter, apply_row_filters
 from ..schema import (
@@ -95,6 +94,7 @@ from .indexes import (
 )
 from .listings import bind_listing
 from .lowering_common import recording_stock_key_gaps
+from .namespacing import attach_and_name_relations, avoid_name_collisions
 from .parent_values import bind_parent_values
 from .paths import (
     _leaf_time_role,
@@ -193,6 +193,7 @@ class BoundQuery:
     # Every caller aggregate over columns the SQL reads, by synthetic measure id: the plan's own
     # and each nested compile's (an entity filter's input, at any depth).
     synthetic_measures: dict[str, Any] = field(default_factory=dict)
+    sql_names: dict[str, str] = field(default_factory=dict)
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """The cuts the caller added that count for ``object_id``: whole-query cuts plus the
@@ -435,7 +436,7 @@ def _bind_with_row_filters(
         )
 
     def filtered(statement: Any) -> SqlSelect:
-        return apply_row_filters(statement, visibility)
+        return apply_row_filters(avoid_name_collisions(statement)[0], visibility)
 
     # A closing-day probe reads the stock's rows as its leaf does, under the same filters, and
     # so does a balance's coverage (its data_through); one that can't be filtered is refused.
@@ -735,13 +736,18 @@ def _bind_query(
         recording_stock_key_gaps() as stock_key_gaps,
         recording_closing_reads() as closing_reads,
         recording_zero_outputs() as zero_outputs,
-        recording_balance_edges() as balance_edges,
+        recording_balance_edges(
+            [
+                *(row.table for row in config.entities),
+                *(row.output_name for row in config.relations),
+            ]
+        ) as balance_edges,
         recording_route_choices() as route_choices,
         observing(plan.query, config),
         capping_at(parse_now((payload.get("policy_context") or {}).get("now"))) as clock,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
-        sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
+        sql_ast, sql_names = attach_and_name_relations(config, lower_to_sql(plan, config))
     cuts = dependencies.cuts
     # A leaf read by a whole-query cut (a metric filter) filters the whole query too.
     shared = set().union(*(cut.leaves for cut in cuts if cut.owners is None))
@@ -771,4 +777,5 @@ def _bind_query(
         authored_leaves=_authored_leaves(plan, config),
         inner_calls=tuple(dependencies.inner_calls),
         synthetic_measures=_caller_aggregates(plan, config, dependencies.synthetic_measures),
+        sql_names=sql_names,
     )

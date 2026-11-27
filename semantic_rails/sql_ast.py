@@ -304,6 +304,11 @@ class SqlIdentifier:
 
 
 @dataclass(frozen=True)
+class SqlSourceColumn(SqlIdentifier):
+    """A column qualified by a package relation."""
+
+
+@dataclass(frozen=True)
 class SqlLiteral:
     value: Any
     # Date or timestamp text compared with a clock or date column, which a warehouse whose
@@ -574,6 +579,15 @@ class SqlTableRef:
 
 
 @dataclass(frozen=True)
+class SqlSourceRef(SqlTableRef):
+    """A package relation, independent of the compiler's CTE names."""
+
+
+# The verifier rebuilds bound row predicates with this local alias.
+ROW_FILTER_OWNER = "rf_owner"
+
+
+@dataclass(frozen=True)
 class SqlTableFunction:
     name: str
     args: list[SqlExpr] = field(default_factory=list)
@@ -637,6 +651,16 @@ class SqlSelect:
 class SqlCte:
     name: str
     query: SqlQuery
+
+
+@dataclass(frozen=True)
+class SqlPipelineCte(SqlCte):
+    """A relation pipeline's stage, subject to pipeline read restrictions."""
+
+
+@dataclass(frozen=True)
+class SqlSourceCte(SqlPipelineCte):
+    """A pipeline output whose name is declared by the package."""
 
 
 @dataclass(frozen=True)

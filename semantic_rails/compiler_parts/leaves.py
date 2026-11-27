@@ -51,6 +51,7 @@ from ..sql_ast import (
     SqlJoin,
     SqlLiteral,
     SqlSelect,
+    SqlSourceRef,
     SqlTableRef,
 )
 from . import nested
@@ -255,7 +256,7 @@ def _aggregate_relation_leaf_select(
 
     return SqlSelect(
         select=select_fields,
-        from_table=SqlTableRef(name=aggregate.relation),
+        from_table=SqlSourceRef(name=aggregate.relation),
         where=where_clauses,
         group_by=group_fields,
     )
@@ -495,7 +496,7 @@ def _entity_in_terms_of_leaf_select(
     )
     return SqlSelect(
         select=select_fields,
-        from_table=SqlTableRef(name=anchor_table),
+        from_table=SqlSourceRef(name=anchor_table),
         joins=_joins_for_paths(
             anchor_entity,
             path_selections,
@@ -546,7 +547,7 @@ def _fanout_dedup_leaf_select(
             SqlField(value_expr, "__entity_value"),
             *(SqlField(marker, "__entity_rows") for marker, _ in markers),
         ],
-        from_table=SqlTableRef(name=table),
+        from_table=SqlSourceRef(name=table),
         joins=joins,
         where=where,
         distinct=True,
@@ -673,7 +674,7 @@ def _parent_lookup_leaf_select(
     return SqlSelect(
         ctes=ctes,
         select=[*key_fields, SqlField(SqlCall("MAX", [value]), bound.alias)],
-        from_table=SqlTableRef(name=table),
+        from_table=SqlSourceRef(name=table),
         joins=joins,
         where=where,
         group_by=group_by,
@@ -749,7 +750,7 @@ def _fanout_filter_leaf_select(
             ),
             *_rows_fields(measure_plan, measure, value_expr),
         ],
-        from_table=SqlTableRef(name=_entity_index(config)[measure.entity].table),
+        from_table=SqlSourceRef(name=_entity_index(config)[measure.entity].table),
         joins=joins,
         where=[*where, *conditions],
         group_by=[field.expression for field in key_fields],
@@ -996,7 +997,7 @@ def _source_rollup_leaf_select(
                 name=rollup_name,
                 query=SqlSelect(
                     select=preagg_select_fields,
-                    from_table=SqlTableRef(name=source_table),
+                    from_table=SqlSourceRef(name=source_table),
                     where=where_clauses,
                     group_by=preagg_group_fields,
                 ),
@@ -1072,7 +1073,7 @@ def _measure_leaf_select(
         and all(predicate.scope_mode != "contextual" for predicate in owned_predicates)
     ):
         owned_reads[measure_plan.bound_measure.alias] = LeafScope(
-            from_table=SqlTableRef(name=entities[measure.entity].table),
+            from_table=SqlSourceRef(name=entities[measure.entity].table),
             joins=tuple(owned_joins),
             where=tuple(owned_conditions),
             value=None,
@@ -1306,7 +1307,7 @@ def _measure_leaf_select(
         record_scope(
             SqlSelect(
                 select=[*select_fields, SqlField(value, leaf_alias)],
-                from_table=SqlTableRef(name=entities[measure.entity].table),
+                from_table=SqlSourceRef(name=entities[measure.entity].table),
                 joins=scope_joins,
                 where=where_clauses,
                 group_by=group_fields,
@@ -1376,7 +1377,7 @@ def _measure_leaf_select(
             order_expr=order_expr,
             value_expr=leaf_value_expr,
             leaf_alias=leaf_alias,
-            from_table=SqlTableRef(name=entities[measure.entity].table),
+            from_table=SqlSourceRef(name=entities[measure.entity].table),
             joins=joins,
             where_clauses=[
                 clause
@@ -1416,7 +1417,7 @@ def _measure_leaf_select(
     leaf = SqlSelect(
         ctes=predicate_ctes,
         select=select_fields,
-        from_table=SqlTableRef(name=entities[measure.entity].table),
+        from_table=SqlSourceRef(name=entities[measure.entity].table),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,
@@ -1503,7 +1504,7 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
     )
     select = SqlSelect(
         select=select_fields,
-        from_table=SqlTableRef(name=entities[plan.root_entity].table),
+        from_table=SqlSourceRef(name=entities[plan.root_entity].table),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,
@@ -1688,7 +1689,7 @@ def _measure_group_leaf_select(
     )
     leaf = SqlSelect(
         select=select_fields,
-        from_table=SqlTableRef(name=entities[first_measure.entity].table),
+        from_table=SqlSourceRef(name=entities[first_measure.entity].table),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,

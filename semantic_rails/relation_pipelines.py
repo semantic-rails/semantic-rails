@@ -54,9 +54,12 @@ from .sql_ast import (
     SqlJsonExtract,
     SqlLiteral,
     SqlOrderTerm,
+    SqlPipelineCte,
     SqlQuery,
     SqlSelect,
     SqlSetQuery,
+    SqlSourceCte,
+    SqlSourceRef,
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
@@ -77,6 +80,7 @@ _TEMPORAL_COLUMNS: ContextVar[tuple[Mapping[str, frozenset[str]], str]] = Contex
 @dataclass
 class _RelationState:
     source_name: str = ""
+    authored_source: bool = False
     columns: list[str] = field(default_factory=list)
     ctes: list[SqlCte] = field(default_factory=list)
     preaggregated: bool = False
@@ -85,6 +89,9 @@ class _RelationState:
     # pass-throughs, or the step that computed it. A filter reads a column as a date or
     # timestamp when what the relation's readers or its source declare shares its lineage.
     lineage: dict[str, str] = field(default_factory=dict)
+
+    def source(self, alias: str) -> SqlTableRef:
+        return (SqlSourceRef if self.authored_source else SqlTableRef)(self.source_name, alias)
 
 
 @dataclass(frozen=True)
@@ -442,7 +449,7 @@ def _lower_select(
         SqlField(_expr(expr_raw, warehouse=warehouse), str(alias))
         for alias, expr_raw in columns.items()
     ]
-    query = SqlSelect(select=select_fields, from_table=SqlTableRef(state.source_name, alias="src"))
+    query = SqlSelect(select=select_fields, from_table=state.source("src"))
     output_columns = [str(alias) for alias in columns]
     grain_columns = set(state.grain_columns) & set(output_columns)
     return _RelationState(
@@ -474,7 +481,7 @@ def _lower_where(
     ]
     query = SqlSelect(
         select=_column_fields(state.columns),
-        from_table=SqlTableRef(state.source_name, alias="src"),
+        from_table=state.source("src"),
         where=predicates,
     )
     return _RelationState(
@@ -505,7 +512,7 @@ def _lower_json_extract(
         SqlIdentifier(parts=["src", source_column]), path, as_text=bool(config.get("as_text", True))
     )
     fields.append(SqlField(json_expr, alias))
-    query = SqlSelect(select=fields, from_table=SqlTableRef(state.source_name, alias="src"))
+    query = SqlSelect(select=fields, from_table=state.source("src"))
     return _RelationState(
         source_name=output_name,
         columns=[*state.columns, alias],
@@ -530,7 +537,7 @@ def _lower_explode(
     fields.append(SqlField(element, alias))
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(state.source_name, alias="src"),
+        from_table=state.source("src"),
         joins=[SqlJoin("CROSS", table=table)],
     )
     output_columns = [column for column in state.columns if column != source_column]
@@ -577,9 +584,7 @@ def _lower_group_by(
         SqlField(_aggregate_expr(spec, warehouse=warehouse), str(alias))
         for alias, spec in aggregates.items()
     )
-    query = SqlSelect(
-        select=fields, from_table=SqlTableRef(state.source_name, alias="src"), group_by=group_exprs
-    )
+    query = SqlSelect(select=fields, from_table=state.source("src"), group_by=group_exprs)
     columns = [str(alias) for alias in dimensions] + [str(alias) for alias in aggregates]
     return _RelationState(
         source_name=output_name,
@@ -657,10 +662,12 @@ def _lower_preaggregate_side(
     warehouse: str,
     on_items: list[Any],
     side: str,
+    authored_source: bool,
 ) -> tuple[SqlCte, list[str], set[str]]:
     spec = _ensure_mapping(spec_raw, path=f"relation join pre_aggregate.{side}")
     state = _RelationState(
         source_name=source_name,
+        authored_source=authored_source,
         columns=[str(item) for item in _ensure_list(spec.get("columns", []))],
     )
     lowered = _lower_group_by(spec, state, output_name=output_name, warehouse=warehouse)
@@ -697,6 +704,7 @@ def _lower_join(
             warehouse=warehouse,
             on_items=on_items,
             side="left",
+            authored_source=state.authored_source,
         )
         join_ctes.append(left_cte)
         left_source = left_cte.name
@@ -708,6 +716,7 @@ def _lower_join(
             warehouse=warehouse,
             on_items=on_items,
             side="right",
+            authored_source=True,
         )
         join_ctes.append(right_cte)
         right_source = right_cte.name
@@ -741,11 +750,17 @@ def _lower_join(
     ]
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(left_source, alias="left"),
+        from_table=(
+            SqlTableRef(left_source, alias="left")
+            if pre_aggregate.get("left")
+            else state.source("left")
+        ),
         joins=[
             SqlJoin(
                 str(config.get("type", "inner")).upper(),
-                SqlTableRef(right_source, alias="right"),
+                (SqlTableRef if pre_aggregate.get("right") else SqlSourceRef)(
+                    right_source, alias="right"
+                ),
                 condition,
             )
         ],
@@ -788,12 +803,12 @@ def _lower_semi_join(
     subquery_where = [condition, *right_predicates]
     subquery = SqlSelect(
         select=[SqlField(SqlLiteral(1), "match")],
-        from_table=SqlTableRef(relation, alias="right"),
+        from_table=SqlSourceRef(relation, alias="right"),
         where=subquery_where,
     )
     query = SqlSelect(
         select=_column_fields(state.columns),
-        from_table=SqlTableRef(state.source_name, alias="src"),
+        from_table=state.source("src"),
         where=[SqlExists(subquery, negated=negated)],
     )
     return _RelationState(
@@ -839,7 +854,7 @@ def _lower_window(
                 str(alias),
             )
         )
-    query = SqlSelect(select=fields, from_table=SqlTableRef(state.source_name, alias="src"))
+    query = SqlSelect(select=fields, from_table=state.source("src"))
     return _RelationState(
         source_name=output_name,
         columns=[*state.columns, *[str(alias) for alias in windows]],
@@ -898,8 +913,8 @@ def _lower_state_as_of(
     ]
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(state.source_name, alias="src"),
-        joins=[SqlJoin("INNER", SqlTableRef(spine, alias="spine"), condition)],
+        from_table=state.source("src"),
+        joins=[SqlJoin("INNER", SqlSourceRef(spine, alias="spine"), condition)],
     )
     return _RelationState(
         source_name=output_name,
@@ -980,11 +995,11 @@ def _lower_attribution_join(
     ]
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(base, alias="base"),
+        from_table=SqlSourceRef(base, alias="base"),
         joins=[
             SqlJoin(
                 str(config.get("type", "left")).upper(),
-                SqlTableRef(attributed, alias="attributed"),
+                SqlSourceRef(attributed, alias="attributed"),
                 condition,
             )
         ],
@@ -1002,7 +1017,7 @@ def _branch_select(source: str, columns: dict[str, Any], *, warehouse: str) -> S
             SqlField(_expr(expr_raw, warehouse=warehouse), str(alias))
             for alias, expr_raw in columns.items()
         ],
-        from_table=SqlTableRef(source, alias="src"),
+        from_table=SqlSourceRef(source, alias="src"),
     )
 
 
@@ -1073,7 +1088,9 @@ def _lower_step_sql(
     if step.kind == "source":
         source = _source_from_config(config)
         columns = [str(item) for item in _ensure_list(config.get("columns", relation.columns))]
-        return _RelationState(source_name=source, columns=columns, ctes=list(state.ctes))
+        return _RelationState(
+            source_name=source, authored_source=True, columns=columns, ctes=list(state.ctes)
+        )
     if step.kind == "date_spine":
         query, columns = _date_spine_query(config)
         return _RelationState(
@@ -1172,11 +1189,14 @@ def lower_relation(
             )
         query = SqlSelect(
             select=_column_fields(state.columns),
-            from_table=SqlTableRef(state.source_name, alias="src"),
+            from_table=state.source("src"),
         )
         state.ctes.append(SqlCte(relation.output_name, query))
         state.source_name = relation.output_name
-    return state.ctes, state.columns
+    return [
+        (SqlSourceCte if cte.name == relation.output_name else SqlPipelineCte)(cte.name, cte.query)
+        for cte in state.ctes
+    ], state.columns
 
 
 def _table_ref_name(table: Any) -> str:

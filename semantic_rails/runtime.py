@@ -623,10 +623,10 @@ def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
     """The first row of ``probe``, run as the answer's own SQL is: held to its row filters
     again (after its relation CTEs are attached), its slots read from its render, and the
     request's limits kept."""
-    from .relation_pipelines import attach_relation_ctes
+    from .compiler_parts.namespacing import attach_and_name_relations
     from .row_filters import apply_row_filters
 
-    probe = attach_relation_ctes(runtime._config, probe)
+    probe, _ = attach_and_name_relations(runtime._config, probe)
     visibility = compiled.get("row_filter_visibility")
     if visibility is not None:
         probe = apply_row_filters(probe, visibility)
