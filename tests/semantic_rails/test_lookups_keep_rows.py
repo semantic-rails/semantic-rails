@@ -928,6 +928,17 @@ def test_a_dimension_only_query_reads_no_rollup(runtime, gold):
     assert ("food", None) in expected
 
 
+def test_an_order_grouped_by_product_key_uses_the_lookup_after_fanout(runtime, gold):
+    sku = "dimension.geo_product_sku"
+    query = _query("measure.geo.amount", group_by=[sku])
+    expected = gold(
+        "SELECT p.sku, SUM(o.amount) FROM orders o JOIN items i ON i.order_id = o.order_id "
+        "LEFT JOIN products p ON p.sku = i.sku GROUP BY 1"
+    )
+    assert expected[None] == 12
+    assert _rows(runtime, query) == expected
+
+
 def test_a_lookup_after_a_one_to_many_hop_joins_left_inside_exists(runtime, gold):
     """A child filter reads the item's product: the lookup joins LEFT inside the EXISTS that
     reads the items, not as an EXISTS of its own."""

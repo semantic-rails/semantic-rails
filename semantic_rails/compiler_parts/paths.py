@@ -355,8 +355,8 @@ def route_key_source_expr(
     customer that table doesn't hold yet: the refund and the order then group under one key.
     A single hop can use the direct read. A last hop with several roles, a reverse hop, or a
     one-to-one extension reads the joined entity. The joined read also applies when the leaf
-    has no single route, when the last hop enters a validity window, or when the leaf replaces
-    the near model's table."""
+    has no single route, a hop can reach several rows, the final hop enters a validity window,
+    or the leaf replaces the near model's table."""
     dim = _dimension_index(config).get(dim_id)
     if dim is None:
         return None
@@ -374,6 +374,8 @@ def route_key_source_expr(
     near = source_entity
     for rel_id in path[:-1]:
         rel = relationships[rel_id]
+        if not _reaches_at_most_one(rel, near):
+            return None
         near = rel.target_entity if near == rel.source_entity else rel.source_entity
     last = relationships[path[-1]]
     if near == dim.entity or near in (table_overrides or {}):
@@ -381,7 +383,7 @@ def route_key_source_expr(
     if (
         last.source_entity != near
         or last.target_entity != dim.entity
-        or last.cardinality == "1:1"
+        or last.cardinality != "N:1"
         or _pair_has_several_pairings(near, dim.entity, config)
     ):
         return None

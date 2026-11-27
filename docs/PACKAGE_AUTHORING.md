@@ -2636,8 +2636,8 @@ condition is written: `missing: true` selects it, so "passengers excluding crew"
 crew-roster lookup is `crew_role` with `missing: true`; `is` never matches it and `not`
 keeps it.
 
-On a route that ends in one many-to-one relationship naming the entity, the preceding row
-can supply the entity's key. Refunds reach their customer through their order, so grouping or
+When each hop reaches at most one row and the final many-to-one relationship is declared
+from the preceding row to the entity, that row can supply the entity's key. Refunds reach their customer through their order, so grouping or
 filtering by the customer key reads `orders.customer_id`, as orders do. A customer who hasn't
 signed up keeps their refunds and orders under the same key. Their tier, region and name read
 NULL. ClickHouse keeps the inner join to customers, which drops refunds without a matching

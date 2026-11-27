@@ -194,8 +194,8 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
-On a route that ends in one many-to-one relationship naming the entity, the preceding row can
-supply the entity's key. Refunds reach their customer through their order, so "net revenue by
+When each hop reaches at most one row and the final many-to-one relationship is declared
+from the preceding row to the entity, that row can supply the entity's key. Refunds reach their customer through their order, so "net revenue by
 customer" reads the refunds' customer from `orders.customer_id`, as the orders do. A customer
 who hasn't signed up keeps their refunds and orders under the same key. Grouping, a filter in
 the call and a filter in a metric all use that key. The customer's tier, region and name still
@@ -1276,8 +1276,10 @@ expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NU
 unknown. A `comparison`'s `op` is a SQL comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`) or a filter
 word, read as in `where`: `gt`, `gte`, `lt`, `lte` and `is` as `>`, `>=`, `<`, `<=` and `=`; `not`
 as `<>` that keeps rows with no value; and `missing`, with a literal `true` or `false` `right`, as
-a test for no value. A filter word whose `left` is a column and whose `right` is a literal is
-exactly the `where` filter on the dimension over that column: `is` or `not` with a list is
+a test for no value. With a column on the left and a literal on the right, a filter word uses
+the same operators and unknown-value rules as a dimension filter. The column reference reads
+the named entity's table. To filter on a key supplied by a preceding row, use its dimension
+in `where` or `aggregate.filter.all`. For either form, `is` or `not` with a list is
 membership (`is ["a", "b"]` keeps either, `not ["a"]` keeps every other row and those with no
 value), the dimension's `unknown_values` read as no value (so `missing` counts them, and `is` one
 of them is refused as in `where`), and a column no dimension declares reads as itself. A list
