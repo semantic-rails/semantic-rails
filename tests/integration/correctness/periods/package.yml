@@ -1,0 +1,10 @@
+schema_version: 1
+package:
+  id: periods
+  namespace: periods
+  warehouse: duckdb
+  default_db: data/warehouse.duckdb
+  seed: {kind: sql_script, source: data/seed.sql}
+defaults:
+  dimension: {groupable: true, filterable: true}
+  time: {timezone: UTC, supported_grains: [day, week, month, quarter, year]}

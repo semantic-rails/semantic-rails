@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import string
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -151,6 +152,9 @@ def dimension_filter(
     return build_filter_condition(expr, op, value, path=path, temporal=temporal, as_text=as_text)
 
 
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
 def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
     """The dimensions of ``entity`` over its physical ``column``, named as the warehouse names
     columns: an exact name first; failing that, a name the SQL leaves unquoted (ASCII letters,
@@ -171,12 +175,40 @@ def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> l
     ]
 
 
+def column_key(name: str, config: PackageConfig) -> str:
+    """A column name as the warehouse reads it: in ASCII lower case when the SQL leaves it
+    unquoted (every warehouse but ClickHouse folds it) or quotes it on a warehouse that folds
+    quoted names too, else as it is. Never a Unicode casefold."""
+    from ..renderer import _quote_ident
+
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if _quote_ident(name) != name:
+        sensitive = dialect.quoted_identifiers_case_sensitive
+    else:
+        sensitive = dialect.identifiers_case_sensitive
+    return name if sensitive else name.translate(_ASCII_LOWER)
+
+
+def dimensions_sharing_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
+    """The dimensions ``column`` binds to (``dimensions_over_column``), first, then every other
+    dimension of ``entity`` over a spelling the warehouse reads as the same column
+    (``column_key``); none for a spelling that binds to no dimension, which reads as itself."""
+    over = dimensions_over_column(entity, column, config)
+    if not over:
+        return []
+    key, ids = column_key(column, config), {dim.id for dim in over}
+    others = [dim for dim in _dimension_index(config).values() if dim.id not in ids]
+    return over + [
+        dim for dim in others if dim.entity == entity and column_key(dim.column, config) == key
+    ]
+
+
 def text_dimension(entity: str, column: str, word: str, config: PackageConfig, path: str) -> Any:
     """The one dimension over ``entity``'s ``column`` that a text word compares, its type text
     or an id.
     The word reads it as a filter on that dimension does; a column that no dimension, or
-    several, declares is refused rather than guessed."""
-    dims = dimensions_over_column(entity, column, config)
+    several, declares (in any spelling the warehouse reads as it) is refused, not guessed."""
+    dims = dimensions_sharing_column(entity, column, config)
     if len(dims) != 1:
         declared = "several dimensions" if dims else "no dimension"
         raise SemanticLayerError(

@@ -1355,21 +1355,45 @@ def _temporal_validity(join_spec: dict[str, Any], rel_id: str, path: str) -> dic
     """A relationship's validity window: its ``valid_from`` and ``valid_to`` columns, and
     ``as_of``, the moment each row reads a version at: its own ``time`` (the default), or the
     ``end_of_day`` of its day on the query's clock."""
-    window = {
-        str(key): str(value)
-        for key, value in dict(join_spec.get("temporal_validity", {}) or {}).items()
-    }
+    raw_window = dict(join_spec.get("temporal_validity", {}) or {})
+    window = {str(key): str(value) for key, value in raw_window.items()}
     unknown = sorted(set(window) - set(_VALIDITY_KEYS))
+    unknown_problem = (
+        f"has unknown key '{unknown[0]}' (it takes {', '.join(_VALIDITY_KEYS)})" if unknown else ""
+    )
+    bounds = {"valid_from", "valid_to"}
+    declared = bounds & window.keys()
+    configured = {key for key in declared if raw_window[key] is not None and window[key].strip()}
+    # A lone key still declares a one-sided window when its column is blank or null.
+    ends = configured or declared
+    missing = (bounds - ends).pop() if len(ends) == 1 else ""
+    if missing:
+        versions = (
+            "every version that had started by the time it reads the history"
+            if missing == "valid_to"
+            else "every version that had not ended, even ones that start later,"
+        )
+        also_unknown = f" It also {unknown_problem}." if unknown_problem else ""
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{path}: {rel_id} temporal_validity is missing {missing}. "
+            f"A row would match {versions} and be counted once per version. "
+            f"Declare {missing}. A NULL value in the valid_to column means the version is still current."
+            f"{also_unknown}",
+            details={"relationship": rel_id, "path": "temporal_validity", "missing_key": missing},
+        )
     as_of = window.get("as_of", "time")
     problem = (
-        f"has unknown key '{unknown[0]}' (it takes {', '.join(_VALIDITY_KEYS)})"
-        if unknown
+        unknown_problem
+        if unknown_problem
         else f"as_of must be 'time' or 'end_of_day', not '{as_of}'"
         if as_of not in _VALIDITY_AS_OF
         else "has as_of but no valid_from or valid_to: as_of says when a row reads a version, "
         "and the window's columns say where each version starts and ends"
-        if "as_of" in window
-        and not any(window.get(key, "").strip() for key in ("valid_from", "valid_to"))
+        if "as_of" in window and not configured
+        else "has no validity columns. A row would match every version and be counted once per "
+        "version. Declare valid_from and valid_to."
+        if declared and not configured
         else ""
     )
     if problem:
