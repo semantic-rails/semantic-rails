@@ -1,0 +1,7 @@
+model:
+  id: consultants
+  relation: consultants
+  entities:
+    consultant: {}
+  dimensions:
+    consultant_name: {label: Consultant name, kind: categorical}

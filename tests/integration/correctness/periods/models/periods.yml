@@ -1,0 +1,7 @@
+model:
+  id: periods
+  relation: consultant_periods
+  entities:
+    period: {}
+  dimensions:
+    period_label: {label: Period, kind: categorical}
