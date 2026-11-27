@@ -736,6 +736,11 @@ def _window(tmp_path: Path, window: dict[str, Any]) -> Path:
             {"as_of": "end_of_day", "valid_from": None, "valid_to": None},
             "has as_of but no valid_from or valid_to",
         ),
+        (
+            {"valid_from": "", "valid_to": " "},
+            r"has no validity columns\. A row would match every version and be counted once per "
+            r"version\. Declare valid_from and valid_to\.",
+        ),
         ({"tolerance": "5 seconds"}, "unknown key 'tolerance'"),
     ],
 )
@@ -743,16 +748,36 @@ def test_a_validity_window_names_what_it_accepts(tmp_path, window, error):
     with pytest.raises(SemanticLayerError, match=error) as exc:
         load_package_config(str(_window(tmp_path, window)))
     assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details["relationship"] == TO_PLAN[0]
 
 
 @pytest.mark.parametrize(
     "window",
-    [{"valid_from": None}, {"valid_from": None, "as_of": "end_of_day"}],
-    ids=["valid_to_only", "valid_to_only_end_of_day"],
+    [
+        {"valid_from": None},
+        {"valid_from": None, "as_of": "end_of_day"},
+        {"valid_from": " "},
+        {"valid_from": None, "valid_to": " "},
+        {"valid_from": None, "valid_to": " ", "as_of": "end_of_day"},
+    ],
+    ids=[
+        "valid_to_only",
+        "valid_to_only_end_of_day",
+        "blank_valid_from",
+        "blank_valid_to_only",
+        "blank_valid_to_only_end_of_day",
+    ],
 )
-def test_a_window_with_only_valid_to_still_loads(tmp_path, window):
-    """As before this option: only an `as_of` with no column at all is refused."""
-    config = load_package_config(str(_window(tmp_path, window)))
-    (rel,) = [row for row in config.relationships if row.id == TO_PLAN[0]]
-    assert "valid_from" not in rel.temporal_validity
-    assert rel.temporal_validity["valid_to"] == "team_billing_history.valid_to"
+def test_a_window_with_only_valid_to_is_refused(tmp_path, window):
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(_window(tmp_path, window)))
+    error = exc.value
+    assert error.code == "INVALID_CONFIG"
+    assert error.details["relationship"] == TO_PLAN[0]
+    assert error.details["missing_key"] == "valid_from"
+    assert f"{TO_PLAN[0]} temporal_validity is missing valid_from" in str(error)
+    assert (
+        "match every version that had not ended, even ones that start later, "
+        "and be counted once per version" in str(error)
+    )
+    assert "Declare valid_from" in str(error)

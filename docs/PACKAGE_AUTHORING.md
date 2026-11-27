@@ -1396,6 +1396,8 @@ workspace would read an empty Plan. The day's last version is the one read: a wo
 signs up on Pro and moves to Builder the same day reads Builder, and one whose only version ends
 that day reads none. Route readings and `NULL_PRESERVING_HISTORY` say "valid at the end of the
 day". An unknown key is refused, and so is `as_of` with neither `valid_from` nor `valid_to`.
+A validity window must declare both `valid_from` and `valid_to`, with a NULL value in the
+`valid_to` column for a version that is still current.
 
 A `many_to_many` history read at a query's time keeps its cardinality's rule: its versions
 valid at one time can overlap, so a query that would count a row once per overlapping version
