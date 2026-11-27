@@ -2291,6 +2291,25 @@ def test_a_constraint_does_not_suggest_a_spelling_that_it_still_refuses(quoted):
         engine.close()
 
 
+def test_a_constraint_does_not_suggest_a_spelling_of_an_unfilterable_column(quoted):
+    package = replace(
+        quoted,
+        dimensions=[
+            replace(row, filterable=False) if row.id == CUSTOMER_REF else row
+            for row in quoted.dimensions
+        ],
+    )
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, ORDERS)
+    try:
+        for column in ("Customer Ref", "customer ref"):
+            _, expression = _spelled(column)["count_condition"]
+            [error] = engine.validate(_select(expression))["errors"]
+            assert error["code"] == "POLICY_DENIED"
+            assert "write the column as its dimension declares it" not in error["message"]
+    finally:
+        engine.close()
+
+
 # The allow-list. Under a constraint with allowed_where, a select item, having, entity filter or
 # predicate input that reads a number it governs is answered only in a shape on the list; the
 # refusal of anything else names the shapes.

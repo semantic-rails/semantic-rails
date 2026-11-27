@@ -567,7 +567,7 @@ def _allowed_column_spelling(field: str, allowed: list[str], config: PackageConf
         ):
             continue
         if all(
-            match.id in allowed and not match.unknown_values
+            match.id in allowed and match.filterable and not match.unknown_values
             for match in _dimensions_over(dim.entity, dim.column, config)
         ):
             return dim.column
