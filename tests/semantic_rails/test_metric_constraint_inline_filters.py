@@ -2270,6 +2270,27 @@ def test_a_text_word_on_a_quoted_column_reads_only_its_own_spelling(quoted):
     )
 
 
+def test_a_constraint_does_not_suggest_a_spelling_that_it_still_refuses(quoted):
+    dimension = next(row for row in quoted.dimensions if row.id == CUSTOMER_REF)
+    other = replace(dimension, id=f"{CUSTOMER_REF}_upper", column="CUSTOMER REF")
+    package = _with_bare_measures(replace(quoted, dimensions=[*quoted.dimensions, other]))
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, TOTAL_CENTS)
+    try:
+        for column in ("Customer Ref", "customer ref"):
+            word = {
+                "kind": "comparison",
+                "op": "is",
+                "left": {"kind": "column", "entity": ORDER, "column": column},
+                "right": {"kind": "literal", "value": "C-"},
+            }
+            query = _select(_summed(TOTAL, word), group_by=[STORE_NAME])
+            [error] = engine.validate(query)["errors"]
+            assert error["code"] == "POLICY_DENIED"
+            assert "write the column as its dimension declares it" not in error["message"]
+    finally:
+        engine.close()
+
+
 # The allow-list. Under a constraint with allowed_where, a select item, having, entity filter or
 # predicate input that reads a number it governs is answered only in a shape on the list; the
 # refusal of anything else names the shapes.

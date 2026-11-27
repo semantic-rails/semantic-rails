@@ -532,6 +532,30 @@ def test_unknown_values_agree_regardless_of_order_and_repetition(tmp_path, spell
         runtime.close()
 
 
+def test_distinct_numeric_unknown_literals_conflict(tmp_path):
+    runtime = _references(
+        tmp_path,
+        {"Ref Code": {"unknown_values": [1]}, "REF CODE": {"unknown_values": [1.0]}},
+    )
+    try:
+        with duckdb.connect(str(tmp_path / "dl.duckdb")) as connection:
+            connection.execute("DELETE FROM downloads")
+            connection.execute(
+                "INSERT INTO downloads VALUES (1, 'US', 10, '1.4'), (2, 'US', 5, '1.0')"
+            )
+        for spelling in ("Ref Code", "REF CODE", "ref code"):
+            with pytest.raises(SemanticLayerError) as raised:
+                runtime.query(_installs_where(spelling, "missing", True))
+            assert raised.value.code == "INVALID_QUERY"
+            assert "whose dimensions declare different unknown values" in str(raised.value)
+            assert raised.value.details["dimensions"] == [
+                "dimension.dl_download_ref_0",
+                "dimension.dl_download_ref_1",
+            ]
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("spelling", "expected"),
     [

@@ -562,8 +562,13 @@ def _allowed_column_spelling(field: str, allowed: list[str], config: PackageConf
         if dim.id not in allowed or dim.unknown_values or not field.startswith(prefix):
             continue
         spelling = field.removeprefix(prefix)
-        if spelling != dim.column and _column_key(spelling, config) == _column_key(
+        if spelling == dim.column or _column_key(spelling, config) != _column_key(
             dim.column, config
+        ):
+            continue
+        if all(
+            match.id in allowed and not match.unknown_values
+            for match in _dimensions_over(dim.entity, dim.column, config)
         ):
             return dim.column
     return ""

@@ -5,6 +5,8 @@
   "no dimension". `is "UNKNOWN"` and `not "UNKNOWN"` are refused as they are in `where`.
   With conflicting declarations, `missing`, `is` and `not` return `INVALID_QUERY` and name the
   dimensions. Reordered or repeated unknown values agree and yield one result.
+  Integer and decimal literals such as `1` and `1.0` remain distinct because the warehouse
+  may compare them differently.
 - A declared measure whose expression compares a column with a filter word or a text word
   now depends on the dimensions over that column, as a metric's filter does. A `deny` policy
   on such a dimension refuses the measure with `POLICY_DENIED`. A `hidden` policy hides the

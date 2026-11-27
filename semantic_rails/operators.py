@@ -515,7 +515,8 @@ def check_column_word(dims: list[Any], word: str, value: Any, column: str, path:
     """Refuse a comparison word on ``column`` (the comparison at ``path``) that is no one
     dimension's filter: the dimensions over the column, ``dims``, declare different unknown
     values, or the value is one the dimension declares unknown."""
-    if len({frozenset(getattr(dim, "unknown_values", None) or ()) for dim in dims}) > 1:
+    # The warehouse can compare integer and decimal literals differently, even for 1 and 1.0.
+    if len({frozenset(map(repr, getattr(dim, "unknown_values", None) or ())) for dim in dims}) > 1:
         raise SemanticLayerError(
             "INVALID_QUERY",
             f"{path}.left: '{word}' reads {column}, whose dimensions declare different unknown "
