@@ -917,10 +917,17 @@ def _source_rollup_leaf_select(
     preagg_fields: dict[str, Any] = {
         column: _column_ref(source_table, column) for column in source_join_columns
     }
+    single_hop_targets = {
+        row.target_entity for row in measure_plan.path_selections if len(row.chosen_path) == 1
+    }
     local_group_aliases: list[str] = []
     for dim_id in plan.group_by:
         dim = dimensions[dim_id]
         direct = _direct_dimension_source_expr(measure.entity, dim_id, config)
+        if direct is None and dim.entity in single_hop_targets:
+            direct = route_key_source_expr(
+                measure.entity, dim_id, measure_plan.path_selections, config
+            )
         if dim.entity == measure.entity:
             preagg_fields[dim_id] = unknown_as_null(_column_ref(source_table, dim.column), dim)
             local_group_aliases.append(dim_id)
