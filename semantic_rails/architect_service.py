@@ -852,7 +852,9 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            check=partial(self._check_model_updates, raw, documents, [staged]),
+            check=partial(self._check_calendars, raw, documents)
+            if staged["calendar_changed"]
+            else None,
             intent={
                 "operation": "upsert_model",
                 "model_id": model_id,
@@ -1095,7 +1097,9 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            check=partial(self._check_model_updates, raw, documents, staged),
+            check=partial(self._check_calendars, raw, documents)
+            if any(fact["calendar_changed"] for fact in staged)
+            else None,
             intent=intent,
             legacy_intent=legacy_intent if complete_legacy_draft else None,
             extra={
@@ -1364,102 +1368,6 @@ class ArchitectProject:
                 "target_file": self._relative(graph_path),
             },
         }
-
-    def _check_model_updates(
-        self,
-        raw: dict[str, list[_RawObject]],
-        documents: dict[Path, dict[str, Any]],
-        staged: list[dict[str, Any]],
-    ) -> None:
-        """Check newly staged parent mappings after the revision and replay checks."""
-        if any(fact["calendar_changed"] for fact in staged):
-            self._check_calendars(raw, documents)
-        prior_models = {row.key: row.spec.get("entities") or {} for row in raw["models"]}
-        target_ids = {row.key: row.object_id for row in raw["entities"]}
-        parents: list[tuple[str, str, Any]] = []
-        for fact in staged:
-            model_id = fact["model"]
-            if model_id not in prior_models:
-                continue  # A new model has no existing route to compete with.
-            model = self._staged_model(documents[fact["model_path"]], model_id)
-            entries = model["entities"]
-            if entries.get("bridge", True):
-                parents.extend(
-                    (model_id, name, entry)
-                    for name, entry in entries.items()
-                    if name in target_ids and name != fact["entity_key"]
-                )
-        if not parents:
-            return
-
-        transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
-        base = transaction.load_base_config()
-        if base is None:
-            return
-        try:
-            final = self._proposed_config(transaction, self._file_updates(documents))
-        except (
-            SemanticLayerError,
-            yaml.YAMLError,
-            TypeError,
-            ValueError,
-            AttributeError,
-            KeyError,
-        ):
-            # Let the transaction report its usual validation result for invalid staging.
-            return
-        base_entities = {entity.id: entity for entity in base.entities}
-        final_entities = {entity.id: entity for entity in final.entities}
-        source_ids = {entity.model_id: entity.id for entity in final.entities}
-        for model_id, name, entry in parents:
-            source, target = source_ids.get(model_id), target_ids[name]
-            old_target, new_target = base_entities.get(target), final_entities.get(target)
-            if (
-                source is None
-                or source == target
-                or source not in base_entities
-                or old_target is None
-                or new_target is None
-            ):
-                continue
-            pair = (source, target)
-            target_key = new_target.key_columns
-            columns = _as_list(entry.get("expr") if isinstance(entry, dict) else None) or target_key
-            previous = prior_models[model_id]
-            old_entry = previous.get(name)
-            old_key = old_target.key_columns
-            old_columns = (
-                _as_list(old_entry.get("expr") if isinstance(old_entry, dict) else None) or old_key
-            )
-            if name in previous and (columns, target_key) == (old_columns, old_key):
-                continue
-            prior_mappings = {
-                edge.id: (edge.source_columns, edge.target_columns)
-                for edge in base.relationships
-                if (edge.source_entity, edge.target_entity) == pair
-                and "forward" in edge.allowed_directions
-            }
-            new_edges = [
-                edge
-                for edge in final.relationships
-                if (edge.source_entity, edge.target_entity) == pair
-                and "forward" in edge.allowed_directions
-                and prior_mappings.get(edge.id) != (edge.source_columns, edge.target_columns)
-            ]
-            if not new_edges:
-                continue
-            before = resolve_pairs(base, [pair])[pair]
-            if not before.path:
-                continue
-            edge = next(
-                (
-                    edge
-                    for edge in new_edges
-                    if (edge.source_columns, edge.target_columns) == (columns, target_key)
-                ),
-                None,
-            )
-            self._require_lookup_route(base, final, pair, columns, edge, before)
 
     @staticmethod
     def _check_calendars(

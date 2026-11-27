@@ -139,11 +139,10 @@ package with one model, its count and amount metrics, an example, a package test
    own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if a previously
    answered pair still changes, or if generated decisions change a previously refused pair's
    outcome compared with the relationship alone. The relationship's own new answers are allowed.
-   When `upsert_relationship`, `upsert_model`, or `import_dbt_project` stages a
-   forward lookup that competes with an existing route, Architect asks which route
-   should answer that pair. This includes pairs with a reverse-only relationship.
-   The Python `upsert_models` method applies the same check. Save the ordered mapping
-   and the affected `graph.path_preferences` rows together using `write_project_files`.
+   When `upsert_relationship` stages a lookup that competes with an existing forward
+   route, Architect asks which relationship should answer that pair, including when
+   an existing relationship can only be used in reverse. Save the ordered mapping and
+   the affected `graph.path_preferences` rows together using `write_project_files`.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `graph.path_preferences` list, replacing every row for exactly the pair however its

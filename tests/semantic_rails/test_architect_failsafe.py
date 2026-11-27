@@ -145,34 +145,16 @@ def _query(package, measure, *, grouping=None, monthly=False, route=None):
     return {row[dimension]: row["v"] for row in rows} if grouping else [row["v"] for row in rows]
 
 
+@pytest.mark.parametrize("unique", [True, False], ids=["functional", "reverse-many"])
+@pytest.mark.parametrize("pinned", [True, False], ids=["held-pin", "no-pin"])
+@pytest.mark.parametrize("keep", [False, True], ids=["plain", "keep"])
 @pytest.mark.parametrize(
-    ("tool", "role", "reverse_only", "keep", "pinned", "unique"),
-    [
-        pytest.param(
-            "upsert_relationship",
-            role,
-            reverse_only,
-            keep,
-            pinned,
-            unique,
-            id=f"{role_id}-{keep_id}-{pin_id}-{unique_id}",
-        )
-        for role, reverse_only, role_id in [
-            ("", False, "unnamed"),
-            ("buyer", False, "named"),
-            ("buyer", True, "named-with-reverse-only-recipient"),
-        ]
-        for keep, keep_id in [(False, "plain"), (True, "keep")]
-        for pinned, pin_id in [(True, "held-pin"), (False, "no-pin")]
-        for unique, unique_id in [(True, "functional"), (False, "reverse-many")]
-    ]
-    + [
-        pytest.param(tool, "", True, False, True, True, id=tool)
-        for tool in ("upsert_model", "upsert_models", "import_dbt_project")
-    ],
+    ("role", "reverse_only"),
+    [("", False), ("buyer", False), ("buyer", True)],
+    ids=["unnamed", "named", "named-with-reverse-only-recipient"],
 )
 def test_new_lookup_requires_a_choice_between_buyer_and_refund(
-    tmp_path, tool, role, reverse_only, keep, pinned, unique
+    tmp_path, unique, pinned, keep, role, reverse_only
 ):
     keys = ["customer_id"] if unique else ["customer_id", "store_id"]
     package = _package(
@@ -227,7 +209,7 @@ def test_new_lookup_requires_a_choice_between_buyer_and_refund(
             "via": ["recipient_id", *keys[1:]],
         }
         _write(graph_path, graph)
-        if role and unique and pinned:
+        if unique and pinned:
             # Hand-authored YAML can deliberately keep the refund path. Compare it with
             # the same package without the recipient, and with a query choosing the buyer.
             authored = tmp_path / "authored" / package.name
@@ -257,69 +239,21 @@ def test_new_lookup_requires_a_choice_between_buyer_and_refund(
             ).report
             assert repeated["ok"], repeated.get("errors")
     revision, files = project.revision(), _files_and_receipts(project)
-    model_args = {
-        "model_id": "sales",
-        "entity_key": "sale",
-        "relation": "sales",
-        "primary_key": ["sale_id"],
-        "entities": {"customer": {}},
-    }
-    if tool == "import_dbt_project":
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text(
-            json.dumps(
-                {
-                    "metadata": {"project_name": "shop", "adapter_type": "duckdb"},
-                    "nodes": {
-                        "model.shop.sales": {
-                            "resource_type": "model",
-                            "name": "sales",
-                            "schema": "main",
-                            "columns": {
-                                "sale_id": {"data_type": "INTEGER"},
-                                "customer_id": {"data_type": "INTEGER"},
-                            },
-                            "constraints": [
-                                {"type": "primary_key", "columns": ["sale_id"]},
-                                {"type": "foreign_key", "columns": keys, "to": "customers"},
-                            ],
-                        }
-                    },
-                }
-            )
-        )
     for dry_run in (True, False):
-        mutation = {
-            "dry_run": dry_run,
-            "expected_revision": revision,
-            "idempotency_key": "relate-buyer",
-        }
-        if tool == "upsert_model":
-            reply = _call(package, tool, **model_args, **mutation)
-        elif tool == "import_dbt_project":
-            reply = _call(package, tool, manifest_path=str(manifest), select=["sales"], **mutation)
-        else:
-            with pytest.raises(SemanticLayerError) as refusal:
-                if tool == "upsert_models":
-                    project.upsert_models([model_args], **mutation)
-                else:
-                    project.upsert_relationship(
-                        from_entity=pair[0],
-                        to_entity="customer",
-                        columns=keys,
-                        name=role,
-                        keep_existing_routes=keep,
-                        **mutation,
-                    )
-            error = refusal.value
-            reply = {
-                "ok": False,
-                "error": {"code": error.code, "message": str(error), "details": error.details},
-            }
-        assert not reply["ok"]
-        error = reply["error"]
-        assert error["code"] == "ROUTE_DECISION_NOT_RECORDED"
-        assert error["message"] == (
+        with pytest.raises(SemanticLayerError) as refusal:
+            project.upsert_relationship(
+                from_entity=pair[0],
+                to_entity="customer",
+                columns=keys,
+                name=role,
+                keep_existing_routes=keep,
+                dry_run=dry_run,
+                expected_revision=revision,
+                idempotency_key="relate-buyer",
+            )
+        error = refusal.value
+        assert error.code == "ROUTE_DECISION_NOT_RECORDED"
+        assert str(error) == (
             "Choose the route from Sale to Customer. The direct relationship uses "
             f"{', '.join(keys)}. The other outcome is "
             + (
@@ -330,9 +264,9 @@ def test_new_lookup_requires_a_choice_between_buyer_and_refund(
             + ". Save the relationship and the affected graph.path_preferences rows together "
             "with write_project_files."
         )
-        assert error["details"]["direct_path"] == direct
-        assert error["details"]["previous"] == {"relationship_path": detour}
-        assert error["details"]["selected"] == {
+        assert error.details["direct_path"] == direct
+        assert error.details["previous"] == {"relationship_path": detour}
+        assert error.details["selected"] == {
             "relationship_path": detour if pinned or keep else direct
         }
         assert (project.revision(), _files_and_receipts(project)) == (revision, files)
