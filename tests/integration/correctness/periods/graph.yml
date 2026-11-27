@@ -1,0 +1,15 @@
+graph:
+  entities:
+    consultant: {label: Consultant, key: [consultant_id], model: consultants}
+    entry: {label: Time entry, key: [entry_id], model: entries}
+    period: {label: Period, key: [consultant_id, period_start], model: periods}
+  relationships:
+    entry_period:
+      entities: [entry, period]
+      cardinality: many_to_one
+      target: [consultant_id]
+      allowed_directions: [forward]
+      safety: requires_rewrite
+      temporal_validity:
+        valid_from: consultant_periods.period_start
+        valid_to: consultant_periods.period_end

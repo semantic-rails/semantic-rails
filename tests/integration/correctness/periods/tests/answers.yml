@@ -1,0 +1,74 @@
+tests:
+  bounded_periods_keep_the_total:
+    kind: query_matches_snapshot
+    now: &now "2026-12-01T00:00:00Z"
+    cites:
+      - tests/integration/correctness/periods/graph.yml#graph.relationships.entry_period.temporal_validity
+      - tests/integration/correctness/periods/models/entries.yml#model.measures.hours
+    query:
+      select: [measure.periods.hours]
+      group_by: [dimension.periods_period_period_label]
+      where: [{field: dimension.periods_entry_consultant_id, op: is, value: kim}]
+      time: &year {start: "2026-01-01", end: "2027-01-01"}
+      totals: []
+    expected_rows:
+      - {dimension.periods_period_period_label: Jun, hours: 24, total_over: null}
+      - {dimension.periods_period_period_label: May, hours: 8, total_over: null}
+      - {dimension.periods_period_period_label: null, hours: 32, total_over: dimension.periods_period_period_label}
+    reference_sql: |
+      SELECT p.period_label, SUM(e.hours),
+             CASE WHEN GROUPING(p.period_label) = 1 THEN 'dimension.periods_period_period_label' END
+      FROM time_entries e
+      LEFT JOIN consultant_periods p
+        ON p.consultant_id = e.consultant_id
+        AND e.work_at >= p.period_start AND (e.work_at < p.period_end OR p.period_end IS NULL)
+      WHERE e.consultant_id = 'kim'
+      GROUP BY GROUPING SETS ((p.period_label), ())
+  bounded_periods_keep_unmatched_hours:
+    kind: query_matches_snapshot
+    now: *now
+    cites:
+      - tests/integration/correctness/periods/graph.yml#graph.relationships.entry_period.temporal_validity
+      - tests/integration/correctness/periods/models/entries.yml#model.measures.hours
+    query:
+      select: [measure.periods.hours]
+      group_by: [dimension.periods_period_period_label]
+      where: [{field: dimension.periods_entry_consultant_id, op: is, value: pat}]
+      time: *year
+      totals: []
+    expected_rows:
+      - {dimension.periods_period_period_label: May, hours: 8, total_over: null}
+      - {dimension.periods_period_period_label: null, hours: 29, total_over: null}
+      - {dimension.periods_period_period_label: null, hours: 37, total_over: dimension.periods_period_period_label}
+    reference_sql: |
+      SELECT p.period_label, SUM(e.hours),
+             CASE WHEN GROUPING(p.period_label) = 1 THEN 'dimension.periods_period_period_label' END
+      FROM time_entries e
+      LEFT JOIN consultant_periods p
+        ON p.consultant_id = e.consultant_id
+        AND e.work_at >= p.period_start AND (e.work_at < p.period_end OR p.period_end IS NULL)
+      WHERE e.consultant_id = 'pat'
+      GROUP BY GROUPING SETS ((p.period_label), ())
+  midnight_reads_the_new_period:
+    kind: query_matches_snapshot
+    now: *now
+    cites:
+      - tests/integration/correctness/periods/graph.yml#graph.relationships.entry_period.temporal_validity
+      - tests/integration/correctness/periods/models/entries.yml#model.measures.hours
+    query:
+      select: [measure.periods.hours]
+      group_by: [dimension.periods_consultant_consultant_name, dimension.periods_period_period_label]
+      where: [{field: dimension.periods_entry_consultant_id, op: is, value: lee}]
+      time: *year
+    expected_rows:
+      - {dimension.periods_consultant_consultant_name: Lee, dimension.periods_period_period_label: Jun, hours: 16}
+      - {dimension.periods_consultant_consultant_name: Lee, dimension.periods_period_period_label: May, hours: 6}
+    reference_sql: |
+      SELECT c.consultant_name, p.period_label, SUM(e.hours)
+      FROM time_entries e
+      JOIN consultants c ON c.consultant_id = e.consultant_id
+      LEFT JOIN consultant_periods p
+        ON p.consultant_id = e.consultant_id
+        AND e.work_at >= p.period_start AND (e.work_at < p.period_end OR p.period_end IS NULL)
+      WHERE e.consultant_id = 'lee'
+      GROUP BY c.consultant_name, p.period_label

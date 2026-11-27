@@ -1396,6 +1396,8 @@ workspace would read an empty Plan. The day's last version is the one read: a wo
 signs up on Pro and moves to Builder the same day reads Builder, and one whose only version ends
 that day reads none. Route readings and `NULL_PRESERVING_HISTORY` say "valid at the end of the
 day". An unknown key is refused, and so is `as_of` with neither `valid_from` nor `valid_to`.
+A validity window must declare both `valid_from` and `valid_to`, with a NULL value in the
+`valid_to` column for a version that is still current.
 
 A `many_to_many` history read at a query's time keeps its cardinality's rule: its versions
 valid at one time can overlap, so a query that would count a row once per overlapping version
@@ -2635,6 +2637,13 @@ dimension treats the row as it treats a NULL value in the row itself, wherever t
 condition is written: `missing: true` selects it, so "passengers excluding crew" through a
 crew-roster lookup is `crew_role` with `missing: true`; `is` never matches it and `not`
 keeps it.
+
+When each hop reaches at most one row and the final many-to-one relationship is declared
+from the preceding row to the entity, that row can supply the entity's key. Refunds reach their customer through their order, so grouping or
+filtering by the customer key reads `orders.customer_id`, as orders do. A customer who hasn't
+signed up keeps their refunds and orders under the same key. Their tier, region and name read
+NULL. ClickHouse keeps the inner join to customers, which drops refunds without a matching
+customer row.
 
 Only these reads join a lookup with an inner join, so a row with no match is left out:
 

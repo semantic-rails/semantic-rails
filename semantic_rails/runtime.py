@@ -79,7 +79,7 @@ from .compiler_parts.empty_groups import (
     observation_scope,
     observed_outside_filters,
 )
-from .compiler_parts.paths import dimensions_over_column, text_dimension
+from .compiler_parts.paths import dimensions_sharing_column, text_dimension
 from .compiler_parts.total_rows import call_rows
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -1811,7 +1811,7 @@ class Runtime:
                     now=instant,
                     default_clock=clock,
                     text_dimension=text_dimension,
-                    column_dimensions=dimensions_over_column,
+                    column_dimensions=dimensions_sharing_column,
                     **({} if joined else {"partial": partial}),
                 )
         payload: dict[str, Any] = {**internal, "policy_context": policy}

@@ -115,6 +115,7 @@ from .paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    route_key_source_expr,
 )
 from .predicate import (
     _inline_threshold_cte_and_where,
@@ -361,7 +362,10 @@ def _predicate_physical_nodes(
 
 
 def _source_local_filter_conditions(
-    measure_entity: str, items: Iterable[dict[str, Any]], config: PackageConfig
+    measure_entity: str,
+    items: Iterable[dict[str, Any]],
+    config: PackageConfig,
+    path_selections: Iterable[PathSelection],
 ) -> list[Any] | None:
     conditions: list[Any] = []
     for item in items:
@@ -373,7 +377,7 @@ def _source_local_filter_conditions(
             and _dimension_index(config)[dim_id].entity != measure_entity
         ):
             return None
-        conditions.append(_filter_condition_for_item(measure_entity, item, config))
+        conditions.append(_filter_condition_for_item(measure_entity, item, config, path_selections))
     return conditions
 
 
@@ -507,12 +511,18 @@ def _anchored_entity_set_plan(
         return None
 
     source_filters = _source_local_filter_conditions(
-        measure.entity, list(plan.query.get("where", []) or []), config
+        measure.entity,
+        list(plan.query.get("where", []) or []),
+        config,
+        denominator_plan.path_selections,
     )
     if source_filters is None:
         return None
     bound_filters = _source_local_filter_conditions(
-        measure.entity, _bound_filter_clauses(denominator_plan.bound_measure, config), config
+        measure.entity,
+        _bound_filter_clauses(denominator_plan.bound_measure, config),
+        config,
+        denominator_plan.path_selections,
     )
     if bound_filters is None:
         return None
@@ -770,7 +780,8 @@ def _anchored_snapshot_ctes(
 ) -> tuple[list[SqlCte], str, str, list[Any]]:
     """The chosen snapshots, their CTE and time alias, and the condition that keeps one."""
     entities = _entity_index(config)
-    bound = anchored.denominator_measure_plan.bound_measure
+    measure_plan = anchored.denominator_measure_plan
+    bound = measure_plan.bound_measure
     measure = _measure_index(config)[bound.measure_id]
     source_table = entities[measure.entity].table
     # One snapshot is chosen per series and time bucket only, so a grouped clock, calendar
@@ -800,12 +811,17 @@ def _anchored_snapshot_ctes(
     ]
     where_clauses: list[Any] = (
         _source_local_filter_conditions(
-            measure.entity, [item for item in filters if item not in chosen], config
+            measure.entity,
+            [item for item in filters if item not in chosen],
+            config,
+            measure_plan.path_selections,
         )
         or []
     )
     kept_rows: list[Any] = []
-    if chosen_conditions := _source_local_filter_conditions(measure.entity, chosen, config):
+    if chosen_conditions := _source_local_filter_conditions(
+        measure.entity, chosen, config, measure_plan.path_selections
+    ):
         kept = SqlCase(
             [SqlCaseWhen(_and_conditions(chosen_conditions), SqlLiteral(1))], SqlLiteral(0)
         )
@@ -817,7 +833,7 @@ def _anchored_snapshot_ctes(
         )
 
     snapshot_name = f"latest_{_slug(_last_token(measure.entity).replace('entity_', ''), fallback='entity')}_snapshot"
-    window_choice = anchored.denominator_measure_plan.bound_measure.aggregation
+    window_choice = bound.aggregation
     if window_choice not in {"first_value", "last_value"}:
         window_choice = (
             "first_value" if measure.accumulation.snapshot == "start_of_period" else "last_value"
@@ -842,12 +858,26 @@ def _anchored_snapshot_ctes(
 
 
 def _dimension_expr_from_anchor(
-    dim_id: str, *, anchor_name: str, measure_entity: str, config: PackageConfig
+    dim_id: str,
+    *,
+    anchor_name: str,
+    measure_entity: str,
+    path_selections: list[PathSelection],
+    config: PackageConfig,
 ) -> Any:
     direct = _direct_dimension_source_expr(measure_entity, dim_id, config)
     if direct is not None:
         return SqlIdentifier(parts=[anchor_name, dim_id])
-    return _resolve_dimension_expr(dim_id, config)[0]
+    return (
+        route_key_source_expr(
+            measure_entity,
+            dim_id,
+            path_selections,
+            config,
+            table_overrides={measure_entity: anchor_name},
+        )
+        or _resolve_dimension_expr(dim_id, config)
+    )[0]
 
 
 def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelect | None:
@@ -886,7 +916,11 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
             anchor_select_fields[key_alias] = SqlIdentifier(parts=["snapshot", key_alias])
     for dim_id in plan.group_by:
         anchor_select_fields[dim_id] = _dimension_expr_from_anchor(
-            dim_id, anchor_name="snapshot", measure_entity=measure.entity, config=config
+            dim_id,
+            anchor_name="snapshot",
+            measure_entity=measure.entity,
+            path_selections=measure_plan.path_selections,
+            config=config,
         )
     if time_alias:
         anchor_select_fields[time_alias] = SqlIdentifier(parts=["snapshot", time_alias])

@@ -1,0 +1,6 @@
+metrics:
+  hours:
+    kind: aggregate
+    measure: measure.periods.hours
+    value_type: number
+    description: Hours worked

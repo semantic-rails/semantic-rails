@@ -35,7 +35,7 @@ from typing import Any
 # Through the compiler, which registers the nested compiles a binding runs.
 from .compiler import bind_query, read_routes
 from .compiler_parts.indexes import RouteRefusal, get_package_analysis
-from .compiler_parts.paths import dimensions_over_column, text_dimension
+from .compiler_parts.paths import dimensions_sharing_column, text_dimension
 from .compiler_parts.plan_checks import _object_default_query_temporal_role
 from .config import package_root_for_source
 from .errors import SemanticLayerError
@@ -174,7 +174,7 @@ def walked_pairs(config: PackageConfig, queries: Iterable[PackageQuery]) -> dict
                     now=now,
                     default_clock=clock,
                     text_dimension=text_dimension,
-                    column_dimensions=dimensions_over_column,
+                    column_dimensions=dimensions_sharing_column,
                 )
                 bound = bind_query(config, registry, payload)
                 # The plan's own paths (a group_by's, a measure's) and those lowering read.

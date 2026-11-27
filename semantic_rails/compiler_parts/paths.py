@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import string
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -151,6 +152,9 @@ def dimension_filter(
     return build_filter_condition(expr, op, value, path=path, temporal=temporal, as_text=as_text)
 
 
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
 def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
     """The dimensions of ``entity`` over its physical ``column``, named as the warehouse names
     columns: an exact name first; failing that, a name the SQL leaves unquoted (ASCII letters,
@@ -171,12 +175,40 @@ def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> l
     ]
 
 
+def column_key(name: str, config: PackageConfig) -> str:
+    """A column name as the warehouse reads it: in ASCII lower case when the SQL leaves it
+    unquoted (every warehouse but ClickHouse folds it) or quotes it on a warehouse that folds
+    quoted names too, else as it is. Never a Unicode casefold."""
+    from ..renderer import _quote_ident
+
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if _quote_ident(name) != name:
+        sensitive = dialect.quoted_identifiers_case_sensitive
+    else:
+        sensitive = dialect.identifiers_case_sensitive
+    return name if sensitive else name.translate(_ASCII_LOWER)
+
+
+def dimensions_sharing_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
+    """The dimensions ``column`` binds to (``dimensions_over_column``), first, then every other
+    dimension of ``entity`` over a spelling the warehouse reads as the same column
+    (``column_key``); none for a spelling that binds to no dimension, which reads as itself."""
+    over = dimensions_over_column(entity, column, config)
+    if not over:
+        return []
+    key, ids = column_key(column, config), {dim.id for dim in over}
+    others = [dim for dim in _dimension_index(config).values() if dim.id not in ids]
+    return over + [
+        dim for dim in others if dim.entity == entity and column_key(dim.column, config) == key
+    ]
+
+
 def text_dimension(entity: str, column: str, word: str, config: PackageConfig, path: str) -> Any:
     """The one dimension over ``entity``'s ``column`` that a text word compares, its type text
     or an id.
     The word reads it as a filter on that dimension does; a column that no dimension, or
-    several, declares is refused rather than guessed."""
-    dims = dimensions_over_column(entity, column, config)
+    several, declares (in any spelling the warehouse reads as it) is refused, not guessed."""
+    dims = dimensions_sharing_column(entity, column, config)
     if len(dims) != 1:
         declared = "several dimensions" if dims else "no dimension"
         raise SemanticLayerError(
@@ -338,6 +370,91 @@ def _direct_dimension_source_expr(
     if expr is None:
         return None
     return unknown_as_null(expr, dim), dim.id
+
+
+def route_key_source_expr(
+    source_entity: str,
+    dim_id: str,
+    path_selections: Iterable[PathSelection],
+    config: PackageConfig,
+    *,
+    table_overrides: dict[str, str] | None = None,
+) -> tuple[Any, str] | None:
+    """An entity's key ``dim_id``, read from the model the leaf's route joins just before that
+    entity: the column its rows name the entity by, as a leaf rooted at that model reads it
+    (``_direct_dimension_source_expr``). A refund reaches its customer through its order, so it
+    reads ``orders.customer_id``, never the customers table's own column, which is NULL for a
+    customer that table doesn't hold yet: the refund and the order then group under one key.
+    A single hop can use the direct read. A last hop with several roles, a reverse hop, or a
+    one-to-one extension reads the joined entity. The joined read also applies when the leaf
+    has no single route, a hop can reach several rows, the final hop enters a validity window,
+    or the leaf replaces the near model's table."""
+    dim = _dimension_index(config).get(dim_id)
+    if dim is None:
+        return None
+    entities = _entity_index(config)
+    target = entities.get(dim.entity)
+    if target is None or dim.column not in set(target.key_columns):
+        return None
+    paths = {tuple(row.chosen_path) for row in path_selections if row.target_entity == dim.entity}
+    if len(paths) != 1:
+        return None
+    path = next(iter(paths))
+    if len(path) < 2:
+        return None
+    relationships = _relationship_index(config)
+    near = source_entity
+    for rel_id in path[:-1]:
+        rel = relationships[rel_id]
+        if not _reaches_at_most_one(rel, near):
+            return None
+        near = rel.target_entity if near == rel.source_entity else rel.source_entity
+    last = relationships[path[-1]]
+    if near == dim.entity or near in (table_overrides or {}):
+        return None
+    if (
+        last.source_entity != near
+        or last.target_entity != dim.entity
+        or last.cardinality != "N:1"
+        or _pair_has_several_pairings(near, dim.entity, config)
+    ):
+        return None
+    near_columns = last.source_columns or [last.source_column]
+    far_columns = last.target_columns or [last.target_column]
+    table = entities[near].table
+    if enters_validity_window(last, table):
+        return None
+    column = next(
+        (
+            near_col
+            for near_col, far_col in zip(near_columns, far_columns, strict=True)
+            if far_col == dim.column
+        ),
+        None,
+    )
+    if column is None:
+        return None
+    return unknown_as_null(_column_ref(table, column), dim), dim.id
+
+
+def leaf_dimension_expr(
+    source_entity: str,
+    dim_id: str,
+    path_selections: Iterable[PathSelection],
+    config: PackageConfig,
+    *,
+    table_overrides: dict[str, str] | None = None,
+) -> tuple[Any, str]:
+    """``dim_id`` as a leaf rooted at ``source_entity`` reads it over its routes: the source
+    table's own column when it holds it, an entity's key from the model the route reaches it
+    from (``route_key_source_expr``), else the dimension's own column."""
+    return (
+        _direct_dimension_source_expr(source_entity, dim_id, config)
+        or route_key_source_expr(
+            source_entity, dim_id, path_selections, config, table_overrides=table_overrides
+        )
+        or _resolve_dimension_expr(dim_id, config)
+    )
 
 
 def keyed_entity(config: PackageConfig, dimension_id: str) -> Any:

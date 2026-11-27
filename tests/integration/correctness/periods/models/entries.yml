@@ -1,0 +1,18 @@
+model:
+  id: entries
+  relation: time_entries
+  entities:
+    entry: {}
+    consultant: {}
+    period: {expr: consultant_id}
+  dimensions:
+    consultant_id: {label: Consultant ID, kind: categorical}
+  times:
+    work_at: {label: Work time, kind: timestamp, class: event_time, default: true}
+  measures:
+    hours:
+      kind: aggregate
+      label: Hours
+      expr: hours
+      accumulation: {kind: event}
+      value_type: number
