@@ -87,6 +87,7 @@ from .paths import (
     _column_ref,
     _reaches_at_most_one,
     dimensions_over_column,
+    dimensions_sharing_column,
     text_dimension,
     unknown_as_null,
 )
@@ -472,7 +473,11 @@ def _word_comparison(
     entity = _resolve_expr_entity(column, measure, config)
     dims = dimensions_over_column(entity, column.column, config)
     operators.check_column_word(
-        dims, word, expr.right.value, f"{entity}.{column.column}", measure.id
+        dimensions_sharing_column(entity, column.column, config),
+        word,
+        expr.right.value,
+        f"{entity}.{column.column}",
+        measure.id,
     )
     value = _config_expr_to_sql(column, measure, config)
     if dims:
