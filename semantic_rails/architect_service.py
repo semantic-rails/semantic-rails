@@ -43,19 +43,21 @@ from .architect_transactions import (
     project_revision,
     route_rows_update,
 )
+from .config import _load_package_source
 from .config_parts.route_rows import RouteRowError, check_route_row, entity_references
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 from .expressions import expr_to_dict
-from .fanout import package_route, pair_routes, route_reading
+from .fanout import entity_label, package_route, pair_routes, route_reading
 from .naming import slug
 from .naming import title as _title
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
-from .route_census import resolve_pairs, route_census, route_changes
-from .schema import PackageConfig, PathPreferenceConfig
+from .route_census import RouteOutcome, resolve_pairs, route_census, route_changes
+from .schema import PackageConfig, PathPreferenceConfig, RelationshipConfig
 from .sql_identifiers import relation_parts
+from .untimed_measures import calendar_like
 from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
@@ -850,9 +852,7 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            check=partial(self._check_calendars, raw, documents)
-            if staged["calendar_changed"]
-            else None,
+            check=partial(self._check_model_updates, raw, documents, [staged]),
             intent={
                 "operation": "upsert_model",
                 "model_id": model_id,
@@ -914,14 +914,32 @@ class ArchitectProject:
                 )
         raw = self._raw_inventory()
         documents: dict[Path, dict[str, Any]] = {}
+        dbt_fields = {"_dbt_measures", "_dbt_calendar_keys", "_dbt_original_measures"}
+        authored_models = [
+            {name: value for name, value in item.items() if name not in dbt_fields}
+            for item in models
+        ]
+        generated = [
+            "_dbt_measures" in item and item["measures"] == item["_dbt_original_measures"]
+            for item in models
+        ]
         staged = [
             self._stage_model(
                 raw,
                 documents,
-                **{"group": group, **{k: v for k, v in item.items() if k != "references"}},
+                **{
+                    "group": group,
+                    **{k: v for k, v in authored.items() if k != "references"},
+                    **({"measures": None} if from_dbt else {}),
+                },
             )
-            for item in models
+            for from_dbt, authored in zip(generated, authored_models, strict=True)
         ]
+        dbt_drafts = {
+            fact["model"]: item
+            for item, fact, from_dbt in zip(models, staged, generated, strict=True)
+            if from_dbt
+        }
         entity_keys: dict[str, list[str]] = {
             row.key: _as_list(row.spec.get("key")) for row in raw["entities"]
         }
@@ -967,6 +985,7 @@ class ArchitectProject:
                     )
                     continue
                 skipped.append({"model": fact["model"], **reference, "reason": reason})
+        dbt_calendar_links: set[tuple[str, str, str]] = set()
         for (_, target), references in pending.items():
             if len({tuple(columns) for _, _, columns in references}) > 1:
                 for fact, reference, _ in sorted(
@@ -990,11 +1009,81 @@ class ArchitectProject:
                 target: _foreign_key_entry(columns, entity_keys[target]),
             }
             added.append({"model": fact["model"], "entity": target, "columns": columns})
+            if (draft := dbt_drafts.get(fact["model"])) and len(columns) == 1:
+                dbt_calendar_links.update(
+                    (fact["model"], str(reference["relation"]), columns[0])
+                    for _, reference, _ in references
+                    if draft["_dbt_calendar_keys"].get(reference.get("target_dbt_unique_id"))
+                    == entity_keys[target]
+                )
+        if dbt_drafts:
+            from .architect_introspection import periodic_measure_holds
+            from .dbt_artifacts import name_dbt_measures
+
+            # Inspect the relationships the loader will actually use, including retained
+            # authored links and any defaults that suppress or redirect inferred links.
+            transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+            periodic_models = self._periodic_dbt_models(
+                transaction, self._file_updates(documents), dbt_calendar_links
+            )
+            owners = {row.key: str(row.model_key) for row in raw["measures"]}
+            for item, fact in zip(models, staged, strict=True):
+                if (draft := dbt_drafts.get(fact["model"])) is None:
+                    for name in item.get("measures") or {}:
+                        owners.setdefault(name, fact["model"])
+                    continue
+                model = self._staged_model(documents[fact["model_path"]], fact["model"])
+                measures = name_dbt_measures(
+                    fact["model"], fact["entity_key"], draft["_dbt_measures"], owners
+                )
+                held = (
+                    periodic_measure_holds(
+                        model["relation"],
+                        (),
+                        [
+                            {"key": name, "kind": "aggregate"}
+                            for name, spec in measures.items()
+                            if spec["kind"] == "aggregate" and spec["expr"]["kind"] == "column"
+                        ],
+                        periodic=True,
+                    )
+                    if fact["model"] in periodic_models
+                    else {}
+                )
+                updates = {name: spec for name, spec in measures.items() if name not in held}
+                dropped = list(fact["dropped_fields"] or [])
+                kept = list(fact["kept_objects"] or []) if draft.get("keep_existing") else None
+                model["measures"] = _merge_named_objects(
+                    "measures", dict(model.get("measures") or {}), updates, dropped, kept
+                )
+                fact["kept_objects"] = kept or None
+                fact["dropped_fields"] = sorted(dropped) or fact["dropped_fields"]
+                if held:
+                    fact["held_measures"] = held
         graph_paths = {fact["graph_path"] for fact in staged}
         model_paths = {fact["model_path"] for fact in staged}
         if not any(fact["graph_changed"] for fact in staged):
             for path in graph_paths - model_paths:
                 documents.pop(path, None)
+        legacy_intent = {"operation": "upsert_models", "models": authored_models, "group": group}
+        intent = {
+            **legacy_intent,
+            "models": [
+                {
+                    **authored,
+                    "measures": item["_dbt_measures"],
+                    "_dbt_calendar_keys": item["_dbt_calendar_keys"],
+                }
+                if from_dbt
+                else authored
+                for item, authored, from_dbt in zip(models, authored_models, generated, strict=True)
+            ],
+        }
+        # A prior receipt can prove a replay only when its draft included all the input
+        # measures. Earlier artifact-only holds erased parts of the request before hashing.
+        complete_legacy_draft = dbt_drafts and all(
+            len(draft["measures"]) == len(draft["_dbt_measures"]) for draft in dbt_drafts.values()
+        )
         return self._commit(
             documents,
             kind="models",
@@ -1006,10 +1095,9 @@ class ArchitectProject:
             expected_revision=expected,
             idempotency_key=key,
             dry_run=dry_run,
-            check=partial(self._check_calendars, raw, documents)
-            if any(fact["calendar_changed"] for fact in staged)
-            else None,
-            intent={"operation": "upsert_models", "models": deepcopy(models), "group": group},
+            check=partial(self._check_model_updates, raw, documents, staged),
+            intent=intent,
+            legacy_intent=legacy_intent if complete_legacy_draft else None,
             extra={
                 "models": [
                     {
@@ -1018,6 +1106,11 @@ class ArchitectProject:
                         "existed": fact["existed"],
                         "target_file": fact["target_file"],
                         **_field_reports(fact),
+                        **(
+                            {"held_measures": fact["held_measures"]}
+                            if "held_measures" in fact
+                            else {}
+                        ),
                     }
                     for fact in staged
                 ],
@@ -1032,6 +1125,48 @@ class ArchitectProject:
         if "models" in doc:
             return dict(doc["models"])[model_slug]
         return doc["model"]
+
+    def _periodic_dbt_models(
+        self,
+        transaction: ProjectTransaction,
+        updates: list[ProjectFileUpdate],
+        dbt_calendar_links: set[tuple[str, str, str]],
+    ) -> set[str]:
+        """Models with a grain column bound to a calendar's own key."""
+        try:
+            config = self._proposed_config(transaction, updates)
+        except SemanticLayerError:
+            # Let the normal transaction replay or report the package validation failure.
+            return set()
+        entities = {entity.id: entity for entity in config.entities}
+        dimensions = {dimension.id: dimension.entity for dimension in config.dimensions}
+        clocks = {
+            dimensions[role.dimension]
+            for role in config.temporal_roles
+            if role.default_query_time_axis
+            and role.temporal_class != "as_of_time"
+            and role.dimension in dimensions
+        }
+        periodic = set()
+        for edge in config.relationships:
+            source, target = entities[edge.source_entity], entities[edge.target_entity]
+            if (
+                "forward" in edge.allowed_directions
+                and edge.cardinality in {"N:1", "1:1"}
+                and len(edge.source_columns) == 1
+                and edge.target_columns == target.key_columns
+                and edge.source_columns[0] in source.key_columns
+                and (
+                    target.kind == "time"
+                    or (
+                        target.id in clocks
+                        and calendar_like("", [target.name, *target.key_columns])
+                    )
+                    or (source.model_id, target.table, edge.source_columns[0]) in dbt_calendar_links
+                )
+            ):
+                periodic.add(source.model_id)
+        return periodic
 
     def _stage_model(
         self,
@@ -1229,6 +1364,102 @@ class ArchitectProject:
                 "target_file": self._relative(graph_path),
             },
         }
+
+    def _check_model_updates(
+        self,
+        raw: dict[str, list[_RawObject]],
+        documents: dict[Path, dict[str, Any]],
+        staged: list[dict[str, Any]],
+    ) -> None:
+        """Check newly staged parent mappings after the revision and replay checks."""
+        if any(fact["calendar_changed"] for fact in staged):
+            self._check_calendars(raw, documents)
+        prior_models = {row.key: row.spec.get("entities") or {} for row in raw["models"]}
+        target_ids = {row.key: row.object_id for row in raw["entities"]}
+        parents: list[tuple[str, str, Any]] = []
+        for fact in staged:
+            model_id = fact["model"]
+            if model_id not in prior_models:
+                continue  # A new model has no existing route to compete with.
+            model = self._staged_model(documents[fact["model_path"]], model_id)
+            entries = model["entities"]
+            if entries.get("bridge", True):
+                parents.extend(
+                    (model_id, name, entry)
+                    for name, entry in entries.items()
+                    if name in target_ids and name != fact["entity_key"]
+                )
+        if not parents:
+            return
+
+        transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+        base = transaction.load_base_config()
+        if base is None:
+            return
+        try:
+            final = self._proposed_config(transaction, self._file_updates(documents))
+        except (
+            SemanticLayerError,
+            yaml.YAMLError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            KeyError,
+        ):
+            # Let the transaction report its usual validation result for invalid staging.
+            return
+        base_entities = {entity.id: entity for entity in base.entities}
+        final_entities = {entity.id: entity for entity in final.entities}
+        source_ids = {entity.model_id: entity.id for entity in final.entities}
+        for model_id, name, entry in parents:
+            source, target = source_ids.get(model_id), target_ids[name]
+            old_target, new_target = base_entities.get(target), final_entities.get(target)
+            if (
+                source is None
+                or source == target
+                or source not in base_entities
+                or old_target is None
+                or new_target is None
+            ):
+                continue
+            pair = (source, target)
+            target_key = new_target.key_columns
+            columns = _as_list(entry.get("expr") if isinstance(entry, dict) else None) or target_key
+            previous = prior_models[model_id]
+            old_entry = previous.get(name)
+            old_key = old_target.key_columns
+            old_columns = (
+                _as_list(old_entry.get("expr") if isinstance(old_entry, dict) else None) or old_key
+            )
+            if name in previous and (columns, target_key) == (old_columns, old_key):
+                continue
+            prior_mappings = {
+                edge.id: (edge.source_columns, edge.target_columns)
+                for edge in base.relationships
+                if (edge.source_entity, edge.target_entity) == pair
+                and "forward" in edge.allowed_directions
+            }
+            new_edges = [
+                edge
+                for edge in final.relationships
+                if (edge.source_entity, edge.target_entity) == pair
+                and "forward" in edge.allowed_directions
+                and prior_mappings.get(edge.id) != (edge.source_columns, edge.target_columns)
+            ]
+            if not new_edges:
+                continue
+            before = resolve_pairs(base, [pair])[pair]
+            if not before.path:
+                continue
+            edge = next(
+                (
+                    edge
+                    for edge in new_edges
+                    if (edge.source_columns, edge.target_columns) == (columns, target_key)
+                ),
+                None,
+            )
+            self._require_lookup_route(base, final, pair, columns, edge, before)
 
     @staticmethod
     def _check_calendars(
@@ -1463,6 +1694,11 @@ class ArchitectProject:
                 f"name must be lowercase letters, digits and underscores (got {name!r})",
             )
 
+        def entity_pair(config: PackageConfig, model_id: str, target_id: str) -> tuple[str, str]:
+            return next(
+                entity.id for entity in config.entities if entity.model_id == model_id
+            ), target_id
+
         def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
             raw = self._raw_inventory()
             row_grain = self._row_grain_models(raw)
@@ -1523,6 +1759,17 @@ class ArchitectProject:
             model_doc = documents[model_row.source_path]
             model, wrapper = self._model_for_update(model_doc, model_row, model_slug=model_row.key)
             entities = dict(model.get("entities", {}) or {})
+            base = transaction.load_base_config()
+            pair = entity_pair(base, model_row.key, target_row.object_id) if base else None
+            edges = (
+                [
+                    edge
+                    for edge in base.relationships
+                    if (edge.source_entity, edge.target_entity) == pair
+                ]
+                if base
+                else []
+            )
             if role:
                 # A named role: its own graph.relationships entry, on these columns.
                 fk_name = f"{slug(model_row.key)}_{slug(dst)}"
@@ -1553,16 +1800,16 @@ class ArchitectProject:
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
                 if graph_path != model_row.source_path:
                     documents.pop(model_row.source_path)
-                return keep_routes(self._file_updates(documents))
-            # Keep the source first for readability; the loader resolves its primary identity.
-            # A row-grain model lists only its parents.
-            own = {} if src in row_grain else {src: entities.get(src) or {}}
-            model["entities"] = {
-                **own,
-                **{name: spec for name, spec in entities.items() if name not in {src, dst}},
-                dst: _foreign_key_entry(foreign_key, target_key),
-            }
-            self._store_model(model_doc, wrapper, model_row.key, model)
+                return keep_routes(
+                    self._file_updates(documents),
+                    base,
+                    model_row.key,
+                    target_row.object_id,
+                    target_key,
+                    edges,
+                    str(dict(current or {}).get("as") or "").strip()
+                    or f"relationship.{slug(role)}",
+                )
             pair_entries = {
                 str(name): _as_list(entry.get("entities"))
                 for name, entry in relationships.items()
@@ -1570,14 +1817,21 @@ class ArchitectProject:
                 and _as_list(entry.get("entities")) in ([src, dst], [dst, src])
             }
             same_side = [name for name, pair in pair_entries.items() if pair == [src, dst]]
-            # One foreign-key write can change only one role. Refuse a pair that has (or may
-            # have) another: several entries, an entry declared from the other side, or an
-            # entry with its own `via` beside the model's `entities` foreign key (two routes
-            # on different columns, which stripping that `via` would merge into one).
-            own_columns = any(
-                "via" in dict(relationships[name]) for name in same_side if dst in entities
+            existing = same_side[0] if same_side else ""
+            authored = dict(relationships.get(existing) or {})
+            # With no valid base, different authored columns can still describe separate roles.
+            possibly_separate = (
+                base is None
+                and dst in entities
+                and "via" in authored
+                and _as_list(dict(entities[dst] or {}).get("expr")) != _as_list(authored["via"])
             )
-            if len(pair_entries) > 1 or len(same_side) != len(pair_entries) or own_columns:
+            if (
+                len(pair_entries) > 1
+                or len(same_side) != len(pair_entries)
+                or len(edges) > 1
+                or possibly_separate
+            ):
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"{src} and {dst} already have several relationships or roles "
@@ -1585,8 +1839,37 @@ class ArchitectProject:
                     "or a new name for another role",
                     details={"relationships": list(pair_entries)},
                 )
-            existing = same_side[0] if same_side else ""
+            if edges and (
+                existing_mapping := (edges[0].source_columns, edges[0].target_columns)
+            ) != (
+                foreign_key,
+                target_key,
+            ):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{src} already links to {dst} using {existing_mapping[0]} to {existing_mapping[1]}. "
+                    f"The requested mapping uses {foreign_key} to {target_key}. Give the new "
+                    "relationship a role name, or update the mapping and confirm affected "
+                    "routes with write_project_files.",
+                    details={
+                        "existing_mapping": list(zip(*existing_mapping, strict=True)),
+                        "requested_mapping": list(zip(foreign_key, target_key, strict=True)),
+                    },
+                )
             name = existing or f"{model_row.key}_{dst}"
+            # Keep matching graph and model columns explicit on a repeat, even when the
+            # parent key has the same names. A later key change can make the base unloadable.
+            parent = _foreign_key_entry(foreign_key, target_key)
+            if base is not None and not parent and _as_list(authored.get("via")) == foreign_key:
+                parent["expr"] = foreign_key[0] if len(foreign_key) == 1 else foreign_key
+            # Keep the source first for readability. A row-grain model lists only its parents.
+            own = {} if src in row_grain else {src: entities.get(src) or {}}
+            model["entities"] = {
+                **own,
+                **{name: spec for name, spec in entities.items() if name not in {src, dst}},
+                dst: parent,
+            }
+            self._store_model(model_doc, wrapper, model_row.key, model)
             if kind == "one_to_one" or existing:
                 if not existing and name in relationships:
                     raise SemanticLayerError(
@@ -1594,26 +1877,80 @@ class ArchitectProject:
                         f"graph.relationships.{name} already relates other entities",
                         details={"relationship": name},
                     )
-                # via/target would override the columns written above.
-                entry = {
-                    field_name: value
-                    for field_name, value in dict(relationships.get(name) or {}).items()
-                    if field_name not in {"via", "target"}
-                }
+                entry = dict(relationships.get(name) or {})
+                if base is None:
+                    # Repair a stale override using the new model mapping.
+                    entry.pop("via", None)
+                    entry.pop("target", None)
                 relationships[name] = {**entry, "entities": [src, dst], "cardinality": kind}
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
             elif graph_path != model_row.source_path:
                 documents.pop(graph_path)
-            return keep_routes(self._file_updates(documents))
+            return keep_routes(
+                self._file_updates(documents),
+                base,
+                model_row.key,
+                target_row.object_id,
+                target_key,
+                edges,
+            )
 
-        def keep_routes(updates: list[ProjectFileUpdate]) -> tuple[list[ProjectFileUpdate], None]:
-            """``updates``, plus a row for each pair whose route they move, when asked to keep."""
-            if keep_existing_routes:
-                transaction = ProjectTransaction(
-                    self.project_path, workspace_root=self.workspace_root
+        def keep_routes(
+            updates: list[ProjectFileUpdate],
+            base: PackageConfig | None,
+            model_id: str,
+            target_id: str,
+            target_key: list[str],
+            edges: list[RelationshipConfig],
+            role_id: str = "",
+        ) -> tuple[list[ProjectFileUpdate], None]:
+            """Validate the lookup and add decisions for other pairs when asked to keep."""
+            base_pair = entity_pair(base, model_id, target_id) if base is not None else None
+            before = (
+                resolve_pairs(base, [base_pair])[base_pair]
+                if base_pair is not None and base is not None
+                else None
+            )
+            # A repeat edits its existing role. A new role can join a pair that already has
+            # direct forward roles, unless the selected answer goes through another entity.
+            has_role = any(edge.id == role_id for edge in edges)
+            has_forward_role = before is not None and any(
+                "forward" in edge.allowed_directions
+                and (before.path == (edge.id,) or before.refused == "AMBIGUOUS_PATH")
+                for edge in edges
+            )
+            check_lookup = not role or not (has_role or has_forward_role)
+            if not keep_existing_routes and not check_lookup:
+                return updates, None
+            changed = self._proposed_config(transaction, updates)
+
+            def require_lookup(final: PackageConfig) -> None:
+                if not check_lookup:
+                    return
+                pair = entity_pair(final, model_id, target_id)
+                edge = next(
+                    (
+                        edge
+                        for edge in final.relationships
+                        if (edge.source_entity, edge.target_entity) == pair
+                        and (edge.source_columns, edge.target_columns) == (foreign_key, target_key)
+                        and (edge.id == role_id if role else not edges or edge.id == edges[0].id)
+                    ),
+                    None,
                 )
-                base = load_package_snapshot(str(self.project_path)).config
-                changed = self._proposed_config(transaction, updates)
+                if edge and (base is None or (edges and not role)):
+                    return
+                self._require_lookup_route(
+                    base,
+                    final,
+                    pair,
+                    foreign_key,
+                    edge,
+                    before,
+                    before_keep=changed if keep_existing_routes else None,
+                )
+
+            if keep_existing_routes and base is not None:
                 rows = [
                     {
                         "source_entity": change["source_entity"],
@@ -1643,6 +1980,7 @@ class ArchitectProject:
                 # Preserve every previously answered pair. For refused pairs, allow the
                 # relationship's own outcome, but refuse any additional change from pins.
                 final = self._proposed_config(transaction, updates)
+                require_lookup(final)
                 remaining = [
                     change
                     for change in route_changes(base, final)
@@ -1663,10 +2001,13 @@ class ArchitectProject:
                     raise SemanticLayerError(
                         "ROUTE_DECISION_NOT_RECORDED",
                         "keep_existing_routes could not preserve every existing route outcome; "
-                        "nothing was written. Record explicit decisions instead.",
+                        "nothing was written. Save the relationship and the affected "
+                        "graph.path_preferences rows together with write_project_files.",
                         details={"route_changes": remaining},
                     )
                 metadata["kept_route_decisions"] = rows
+            else:
+                require_lookup(changed)
             return updates, None
 
         metadata: dict[str, Any] = {
@@ -1678,7 +2019,8 @@ class ArchitectProject:
                 **({"name": role} if role else {}),
             }
         }
-        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
+        transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+        outcome = transaction.apply(
             (),
             expected_revision=expected,
             idempotency_key=key,
@@ -1703,6 +2045,64 @@ class ArchitectProject:
             project_path=self.project_path,
             _snapshots=outcome.snapshots,
             _active=bool(outcome.snapshots),
+        )
+
+    @staticmethod
+    def _require_lookup_route(
+        base: PackageConfig | None,
+        final: PackageConfig,
+        pair: tuple[str, str],
+        foreign_key: list[str],
+        edge: RelationshipConfig | None,
+        before: RouteOutcome | None,
+        *,
+        before_keep: PackageConfig | None = None,
+    ) -> None:
+        """Require a new forward lookup to explain how it relates to the existing answer."""
+        if edge and "forward" not in edge.allowed_directions:
+            return
+        direct = (edge.id,) if edge else ()
+        selected = resolve_pairs(final, [pair])[pair]
+        if (
+            direct
+            and selected.path == direct
+            and (before_keep is not None or before is None or not before.path)
+        ):
+            return
+        if base is not None and before and direct and selected.path == direct:
+            current, reading_config = before, base
+        else:
+            current, reading_config = selected, final
+        reading = (
+            route_reading(reading_config, pair[0], current.path)
+            if current.path
+            else f"a refusal ({current.refused})"
+        )
+        if base is not None and before and direct and before.path == direct == selected.path:
+            old_edge = next(edge for edge in base.relationships if edge.id == direct[0])
+            reading += f" using {', '.join(old_edge.source_columns)}"
+        columns = ", ".join(foreign_key)
+        choice = (
+            f"The direct relationship uses {columns}. The other outcome is {reading}."
+            if direct
+            else f"The staged package could not create the lookup on {columns}. Its outcome is {reading}."
+        )
+        raise SemanticLayerError(
+            "ROUTE_DECISION_NOT_RECORDED",
+            f"Choose the route from {entity_label(final, pair[0])} to "
+            f"{entity_label(final, pair[1])}. {choice} Save the relationship and "
+            "the affected graph.path_preferences rows together with "
+            "write_project_files.",
+            details={
+                "source_entity": pair[0],
+                "target_entity": pair[1],
+                "direct_path": list(direct),
+                "selected": selected.shape(),
+                "previous": before.shape() if before else None,
+                "route_changes": route_changes(base, before_keep or final)
+                if base is not None
+                else [],
+            },
         )
 
     def _proposed_config(
@@ -2482,6 +2882,7 @@ class ArchitectProject:
         idempotency_key: str,
         dry_run: bool,
         intent: dict[str, Any],
+        legacy_intent: dict[str, Any] | None = None,
         extra: dict[str, Any] | None = None,
         check: Callable[[], None] | None = None,
     ) -> ArchitectMutation:
@@ -2522,6 +2923,11 @@ class ArchitectProject:
             expected_revision=expected_revision,
             idempotency_key=idempotency_key,
             intent={**deepcopy(intent), "expected_revision": expected_revision},
+            legacy_intent=(
+                {**legacy_intent, "expected_revision": expected_revision}
+                if legacy_intent is not None
+                else None
+            ),
             dry_run=dry_run,
             validate_after=validate_after,
             success_status="upserted",
@@ -2801,13 +3207,11 @@ class ArchitectProject:
             ),
             "",
         )
-        parents = {
-            str(keys[0]).lower(): (row.key, str(keys[0]))
-            for row in raw["entities"]
-            if len(keys := _as_list(row.spec.get("key"))) == 1
-        }
+        parents = {row["key"].lower(): row for row in self.link_context(relation)["targets"]}
         taken = {row.key for row in raw["entities"]} | {row.key for row in raw["models"]}
-        return {"taken": frozenset(taken), "link_model": link, "parents": parents}
+        context = self.clock_context(relation)
+        context.pop("clock_links")
+        return {**context, "taken": frozenset(taken), "link_model": link, "parents": parents}
 
     def clock_context(self, relation: str) -> dict[str, Any]:
         """What ``suggest_model`` reads from the package for ``relation``: each entity with a
@@ -2819,13 +3223,25 @@ class ArchitectProject:
         raw = self._raw_inventory()
         models = {row.key: row for row in raw["models"]}
         clocks: list[dict[str, Any]] = []
+        place = _relation_place(relation)
+        own_as_of = False
+        defaults_path = self._target_path("defaults.yml")
+        if defaults_path.is_file():
+            try:
+                authored = _load_package_source(str(self.project_path))
+            except (SemanticLayerError, yaml.YAMLError, TypeError, ValueError, OSError):
+                # Keep suggestions available while the package has unrelated authoring errors.
+                authored = _yaml_load(defaults_path)
+        else:
+            authored = _yaml_load(self._target_path("package.yml"))
+        defaults = authored.get("defaults") or {}
+        time_class = (defaults.get("time") or {}).get("class")
         for time_row in raw["times"]:
             model = models.get(str(time_row.model_key))
-            if (
-                model is None
-                or time_row.spec.get("default") is not True
-                or time_row.spec.get("class") == "as_of_time"
-            ):
+            as_of = time_row.spec.get("class", time_class) == "as_of_time"
+            if model and as_of and _relation_place(model.spec.get("relation")) == place:
+                own_as_of = True
+            if model is None or as_of or time_row.spec.get("default") is not True:
                 continue
             entity = self._find_raw(
                 raw["entities"], self._primary_entity_for_model(model, raw["entities"])
@@ -2843,7 +3259,6 @@ class ArchitectProject:
                     "calendar": entity.spec.get("kind") == "time",
                 }
             )
-        place = _relation_place(relation)
         clock_links: dict[str, str] = {}
         for model in raw["models"]:
             if _relation_place(model.spec.get("relation")) != place:
@@ -2853,7 +3268,7 @@ class ArchitectProject:
                 if clock is not None:
                     columns = _as_list(dict(spec or {}).get("expr")) or [clock["key"]]
                     clock_links[str(name)] = str(columns[0])
-        return {"clocks": clocks, "clock_links": clock_links}
+        return {"clocks": clocks, "clock_links": clock_links, "own_as_of": own_as_of}
 
     def link_context(self, relation: str) -> dict[str, Any]:
         """What ``suggest_links`` reads from the package for ``relation``: each entity with a

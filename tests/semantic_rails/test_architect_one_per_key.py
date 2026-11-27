@@ -344,7 +344,11 @@ def test_no_table_name_is_a_guess(tmp_path):
     pkg = _package(tmp_path)
     taken = ArchitectProject(pkg, workspace_root=tmp_path).one_per_key_context("room_loads")
     assert taken["link_model"] == "room_loads"
-    assert taken["parents"]["building_id"] == ("building", "building_id")
+    assert taken["parents"]["building_id"] == {
+        "entity": "building",
+        "relation": "buildings",
+        "key": "building_id",
+    }
     with open_duckdb(pkg / "data" / "warehouse.duckdb") as warehouse:
         clash = suggest_one_per_key(
             warehouse, "room_loads", taken=frozenset({"room", uuid.uuid4().hex})

@@ -22,6 +22,7 @@ from tests.semantic_rails.test_route_census import (
     _answers,
     _files_and_receipts,
     _impact,
+    _relationship_and_base_routes,
 )
 from tests.semantic_rails.test_route_clarification import (
     ACCOUNT,
@@ -76,11 +77,11 @@ def _thirteen_routes(root):
     return pkg
 
 
-def _mcp_call(root, package, name, **arguments):
+def _mcp_call(root, package, tool, **arguments):
     async def call():
         server = create_architect_mcp_server(workspace_root=root)
         async with create_connected_server_and_client_session(server) as session:
-            result = await session.call_tool(name, {"project_path": str(package), **arguments})
+            result = await session.call_tool(tool, {"project_path": str(package), **arguments})
             assert not result.isError, result
             return dict(result.structuredContent or {})
 
@@ -96,36 +97,41 @@ def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_p
     pairs = census_pairs(config)
     outcomes = {pair: outcome.shape() for pair, outcome in resolve_pairs(config, pairs).items()}
     assert _answers(pkg) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
-    args = {"from_entity": "membership", "to_entity": "owner", "columns": ["owner_id"]}
-    with pytest.raises(SemanticLayerError, match="keep_existing_routes=true") as refused:
-        project.upsert_relationship(**args)
-    assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert len(refused.value.details["route_changes"]) == 13
-    assert _files_and_receipts(project) == files
+    args = {
+        "from_entity": "membership",
+        "to_entity": "owner",
+        "columns": ["owner_id"],
+        "name": "memberships_owner",
+    }
+    for keep, dry_run in [(False, False), (True, True), (True, False)]:
+        with pytest.raises(
+            SemanticLayerError, match="together with write_project_files"
+        ) as refused:
+            project.upsert_relationship(**args, keep_existing_routes=keep, dry_run=dry_run)
+        assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
+        changes = refused.value.details["route_changes"]
+        assert len(changes) == 13
+        assert (project.revision(), _files_and_receipts(project)) == (revision, files)
 
-    preview = project.upsert_relationship(**args, keep_existing_routes=True, dry_run=True).report
+    # Explicitly confirm the three own-key routes that still answer by the same path.
+    decisions = [
+        _pin(*pair, outcomes[pair]["relationship_path"])
+        for pair in [(ACCOUNT, REGION), (MEMBERSHIP, ACCOUNT), (OWNER, REGION)]
+    ]
+    updates = _relationship_and_base_routes(project, **args, changes=changes, decisions=decisions)
+    preview = project.write_files(updates, expected_revision=revision, dry_run=True).report
     assert preview["ok"] and preview["status"] == "preview"
-    moved_pairs = {
-        (row["source_entity"], row["target_entity"])
-        for row in refused.value.details["route_changes"]
-    }
-    assert moved_pairs <= {
-        (row["source_entity"], row["target_entity"]) for row in preview["kept_route_decisions"]
-    }
     assert _files_and_receipts(project) == files
     committed = _mcp_call(
         tmp_path,
         pkg,
-        "upsert_relationship",
-        **args,
-        keep_existing_routes=True,
+        "write_project_files",
+        files=updates,
         expected_revision=revision,
         idempotency_key="relate-and-keep",
-        # Every kept row: a summary shows the first of a long list.
         full_report=True,
     )
-    assert committed["ok"] and committed["status"] == "upserted", committed
-    assert committed["kept_route_decisions"] == preview["kept_route_decisions"]
+    assert committed["ok"] and committed["status"] == "written", committed
     assert committed["revision"] == preview["proposed_revision"]
     assert committed["route_changes"] == []
     changed = load_package_config(str(pkg))
@@ -140,17 +146,16 @@ def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_p
     assert _impact(base, pkg)["route_changes"] == []
     assert _answers(pkg) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
     assert (
-        project.upsert_relationship(
-            **args,
-            keep_existing_routes=True,
+        project.write_files(
+            updates,
             expected_revision=revision,
             idempotency_key="relate-and-keep",
         ).report["status"]
         == "replayed"
     )
     with pytest.raises(SemanticLayerError) as reused:
-        project.upsert_relationship(
-            **args, expected_revision=revision, idempotency_key="relate-and-keep"
+        project.write_files(
+            updates, expected_revision=revision, idempotency_key="relate-and-keep", reason="edited"
         )
     assert reused.value.details["conflict_kind"] == "idempotency_key_reuse"
 
@@ -248,9 +253,15 @@ def test_keep_choice_allows_an_answer_opened_by_the_relationship_only(tmp_path):
     assert len(moved) >= 2
 
     project = ArchitectProject(pkg, workspace_root=tmp_path)
-    report = project.upsert_relationship(
-        from_entity="membership", to_entity="owner", columns=["owner_id"], keep_existing_routes=True
-    ).report
+    args = {"from_entity": "membership", "to_entity": "owner", "columns": ["owner_id"]}
+    with pytest.raises(SemanticLayerError) as refused:
+        project.upsert_relationship(**args)
+    assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert (
+        "If there is no existing forward route competing with the lookup, retry upsert_relationship "
+        "with keep_existing_routes=true to preserve routes for the other pairs."
+    ) in str(refused.value)
+    report = project.upsert_relationship(**args, keep_existing_routes=True).report
     assert report["ok"] and report["status"] == "upserted"
     final = load_package_config(str(pkg))
     final_outcomes = resolve_pairs(final, pairs)
@@ -303,23 +314,34 @@ def test_keep_choice_allows_an_answer_opened_by_the_relationship_only(tmp_path):
 
 def test_keep_choice_refuses_when_preservation_is_bypassed(tmp_path, monkeypatch):
     project = ArchitectProject(_thirteen_routes(tmp_path), workspace_root=tmp_path)
-    files = _files_and_receipts(project)
+    revision, files = project.revision(), _files_and_receipts(project)
+    args = {
+        "from_entity": "membership",
+        "to_entity": "owner",
+        "columns": ["owner_id"],
+        "name": "memberships_owner",
+    }
     monkeypatch.setattr(
         project,
         "_prepare_route_decisions",
         lambda transaction, config, rows, updates: (updates, []),
     )
-    with pytest.raises(SemanticLayerError) as refused:
+    with pytest.raises(SemanticLayerError, match="together with write_project_files") as refused:
         project.upsert_relationship(
-            from_entity="membership",
-            to_entity="owner",
-            columns=["owner_id"],
+            **args,
             keep_existing_routes=True,
             validate_after=False,
         )
     assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert len(refused.value.details["route_changes"]) == 13
-    assert _files_and_receipts(project) == files
+    assert (project.revision(), _files_and_receipts(project)) == (revision, files)
+    report = project.write_files(
+        _relationship_and_base_routes(
+            project, **args, changes=refused.value.details["route_changes"]
+        ),
+        expected_revision=revision,
+    ).report
+    assert report["ok"] and report["route_changes"] == []
 
 
 def test_keep_choice_cannot_open_an_inherited_answer_with_generated_pins(tmp_path):

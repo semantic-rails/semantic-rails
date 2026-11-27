@@ -32,6 +32,7 @@ from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
 from .package_snapshot import links_package_input, load_package_snapshot
 from .route_census import route_changes, unkept_route_changes
+from .schema import PackageConfig
 from .yaml_loader import safe_load as yaml_safe_load
 
 ABSENT_PROJECT_REVISION = "absent"
@@ -383,8 +384,8 @@ def route_rows_update(
 
 def _routes_not_recorded(unkept: list[dict[str, Any]], operation: str) -> SemanticLayerError:
     keep_hint = (
-        "Retry upsert_relationship with keep_existing_routes=true "
-        "to record and keep every existing route. "
+        "If there is no existing forward route competing with the lookup, retry upsert_relationship with "
+        "keep_existing_routes=true to preserve routes for the other pairs. "
         if operation == "upsert_relationship"
         else ""
     )
@@ -508,6 +509,7 @@ class ProjectTransaction:
         expected_revision: str,
         idempotency_key: str,
         intent: Mapping[str, Any],
+        legacy_intent: Mapping[str, Any] | None = None,
         dry_run: bool = False,
         validate_after: bool = True,
         allow_internal_paths: bool = False,
@@ -558,7 +560,10 @@ class ProjectTransaction:
         with self._exclusive_lock():
             receipt = self._load_receipt(key)
             if receipt is not None:
-                if str(receipt.get("intent_hash", "")) != intent_hash:
+                accepted_hashes = {intent_hash}
+                if legacy_intent is not None:
+                    accepted_hashes.add(_canonical_json_digest(dict(legacy_intent)))
+                if str(receipt.get("intent_hash", "")) not in accepted_hashes:
                     raise SemanticLayerError(
                         "CONFIG_CONFLICT",
                         "The idempotency key was already used for a different Architect mutation",
@@ -875,6 +880,21 @@ class ProjectTransaction:
         # Its messages name the project, not the temporary copy it was checked in.
         return _replace_text(parse, str(project), str(self.project_path))
 
+    def load_base_config(self) -> PackageConfig | None:
+        """Return the current config when it can supply a baseline for route checks."""
+        try:
+            return load_package_snapshot(self.parse_source()).config
+        except (
+            SemanticLayerError,
+            yaml.YAMLError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            KeyError,
+        ):
+            # Invalid base input answered nothing; the parse gate can accept its repair.
+            return None
+
     def _guard_routes(
         self,
         updates: tuple[ProjectFileUpdate, ...],
@@ -891,17 +911,7 @@ class ProjectTransaction:
         ceiling may leave the pair refused; switching to another answer still requires
         its own row. Only deliberate decisions use report mode. No route row is generated.
         """
-        try:
-            base = load_package_snapshot(self.parse_source()).config
-        except (
-            SemanticLayerError,
-            yaml.YAMLError,
-            TypeError,
-            ValueError,
-            AttributeError,
-            KeyError,
-        ):
-            # Invalid base input answered nothing; the parse gate can accept its repair.
+        if (base := self.load_base_config()) is None:
             return {}
         with self.virtual_project(updates) as staged:
             try:

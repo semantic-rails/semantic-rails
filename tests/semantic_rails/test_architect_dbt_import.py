@@ -16,7 +16,14 @@ from semantic_rails.architect_introspection import open_duckdb, suggest_model
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.architect_transactions import project_revision
-from semantic_rails.dbt_artifacts import dbt_import_models, load_dbt_artifacts
+from semantic_rails.dbt_artifacts import (
+    DbtColumn,
+    DbtProject,
+    DbtRelation,
+    dbt_import_models,
+    load_dbt_artifacts,
+    suggest_models_from_dbt,
+)
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import (
@@ -987,3 +994,94 @@ def test_a_reimport_adds_a_new_time_without_a_second_default(workspace: Path) ->
     after = _model(path)
     assert "ordered_at" in after["times"]
     assert [name for name, spec in after["times"].items() if spec.get("default")] == ["order_time"]
+
+
+def test_dbt_holds_a_periodic_column_even_if_its_clock_is_part_of_the_key():
+    relation = DbtRelation(
+        "model.shop.levels",
+        "model",
+        "levels",
+        "main.levels",
+        "",
+        "main",
+        "levels",
+        columns={
+            "product_id": DbtColumn("product_id", "INTEGER"),
+            "as_of_date": DbtColumn("as_of_date", "DATE"),
+            "quantity": DbtColumn("quantity", "INTEGER"),
+        },
+        primary_key=["product_id", "as_of_date"],
+    )
+    project = DbtProject("shop", "duckdb", "", {relation.unique_id: relation})
+
+    (suggestion,) = suggest_models_from_dbt(project)
+    assert (
+        "Choose whether quantity is a total for each period or a balance."
+        in (suggestion["held_measures"]["quantity"])
+    )
+    assert suggestion["upsert_model"]["measures"] == {}
+    items, _, _ = dbt_import_models(project, ["levels"])
+    assert items[0]["measures"] == {}
+
+
+@pytest.mark.parametrize("calendar_date_is_unique", [False, True])
+@pytest.mark.parametrize(
+    "to_columns", [{}, {"to_columns": ["lookup_id"]}], ids=["shorthand", "explicit"]
+)
+def test_dbt_distinguishes_calendar_grain_from_a_dated_order(calendar_date_is_unique, to_columns):
+    day = DbtColumn("actual_date", "DATE", not_null=True, unique=calendar_date_is_unique)
+    calendar = DbtRelation(
+        "model.shop.calendar",
+        "model",
+        "same_day_orders",
+        "main.same_day_orders",
+        "",
+        "main",
+        "same_day_orders",
+        columns={"actual_date": day},
+        primary_key=["lookup_id"],
+    )
+    fact = DbtRelation(
+        "model.shop.volumes",
+        "model",
+        "volumes",
+        "main.volumes",
+        "",
+        "main",
+        "volumes",
+        columns={"amount": DbtColumn("amount", "INTEGER")},
+        primary_key=["lookup", "product_id"],
+        foreign_keys=[
+            {
+                "columns": ["lookup"],
+                "to": calendar.unique_id,
+                **to_columns,
+                "source": "contract",
+            }
+        ],
+    )
+    alias = DbtRelation(
+        "model.shop.snapshots",
+        "model",
+        "inventory_snapshots",
+        "main.inventory_levels",
+        "",
+        "main",
+        "inventory_levels",
+        columns={"quantity": DbtColumn("quantity", "INTEGER")},
+        primary_key=["level_id"],
+    )
+    project = DbtProject(
+        "shop", "duckdb", "", {row.unique_id: row for row in (calendar, fact, alias)}
+    )
+    volume, inventory = suggest_models_from_dbt(project, ["volumes", "inventory_snapshots"])
+    assert ("amount" in volume["upsert_model"]["measures"]) is not calendar_date_is_unique
+    if calendar_date_is_unique:
+        assert volume["held_measures"]["amount"].startswith(
+            "Choose whether amount is a total for each period or a balance."
+        )
+        items, _, _ = dbt_import_models(project, ["volumes", "same_day_orders"])
+        assert "amount" not in items[0]["measures"]
+        assert items[0]["references"][0]["entity"] == items[1]["entity_key"]
+    assert "quantity" in inventory["held_measures"]
+    assert "quantity" not in inventory["upsert_model"]["measures"]

@@ -478,12 +478,24 @@ def _author_model_from_table(
         [item for item in suggestion["dimensions"] if item["column"] not in key_columns],
         name="column",
     )
+    context = project.clock_context(relation)
+    with introspection.open_duckdb(path) as warehouse:
+        held_measures = introspection.periodic_measure_holds(
+            relation,
+            ((col["name"], col["type"]) for col in described["columns"]),
+            suggestion["measures"],
+            periodic=context["own_as_of"]
+            or introspection.calendar_grain(warehouse, described, key_columns, context["clocks"]),
+        )
+    for reason in held_measures.values():
+        print(f"  {reason}")
     measures = _pick_suggestions(
         "Measures",
         [
             item
             for item in suggestion["measures"]
-            if item["kind"] != "entity_count" or len(key_columns) == 1
+            if (item["kind"] != "entity_count" or len(key_columns) == 1)
+            and item["key"] not in held_measures
         ],
         name="key",
         detail="aggregation",
@@ -518,6 +530,7 @@ def _author_model_from_table(
         times=times,
         dimensions=dimensions,
         measures=measures,
+        held_measures=held_measures,
     )
     for measure_key, measure in draft["measures"].items():
         measure.setdefault("meta", dict(_DEFAULT_META))

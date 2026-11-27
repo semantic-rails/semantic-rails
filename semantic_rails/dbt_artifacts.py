@@ -17,6 +17,7 @@ import json
 import os
 import re
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,9 +29,11 @@ from .architect_introspection import (
     entity_name,
     fk_link,
     link_columns,
+    periodic_measure_holds,
     upsert_model_draft,
 )
 from .errors import SemanticLayerError
+from .untimed_measures import calendar_like
 from .yaml_loader import load_yaml_file
 
 _RELATION_RESOURCES = ("model", "seed", "snapshot", "source")
@@ -441,10 +444,24 @@ def suggest_models_from_dbt(
         if select
         else [row for row in project.relations.values() if row.resource_type == "model"]
     )
-    return [_suggest(relation) for relation in chosen]
+    return [_suggest(relation, project) for relation in chosen]
 
 
-def _suggest(relation: DbtRelation) -> dict[str, Any]:
+def _calendar_key(target: DbtRelation) -> bool:
+    return (
+        len(target.primary_key) == 1
+        and calendar_like("", [target.name, *target.primary_key])
+        and any(
+            column.data_type.upper() == "DATE"
+            and (column.name in target.primary_key or (column.not_null and column.unique))
+            for column in target.columns.values()
+        )
+    )
+
+
+def _suggest(
+    relation: DbtRelation, project: DbtProject, *, infer_calendar_links: bool = True
+) -> dict[str, Any]:
     ephemeral = relation.materialized.lower() == "ephemeral"
     entity = entity_name(relation.alias or relation.name)
     key_columns = list(relation.primary_key)
@@ -476,6 +493,24 @@ def _suggest(relation: DbtRelation) -> dict[str, Any]:
             for column in relation.columns.values()
         ],
     )
+    periodic = relation.resource_type == "snapshot" or (
+        infer_calendar_links
+        and any(
+            len(fk["columns"]) == 1
+            and fk["columns"][0] in key_columns
+            and (target := project.relations.get(fk["to"])) is not None
+            and _calendar_key(target)
+            and (fk.get("to_columns") or target.primary_key) == target.primary_key
+            for fk in relation.foreign_keys
+        )
+    )
+    held_measures = periodic_measure_holds(
+        relation.relation,
+        ((col.name, col.data_type) for col in relation.columns.values()),
+        roles["measures"],
+        periodic=periodic,
+        model_name=relation.name,
+    )
     return {
         "relation": relation.relation,
         "dbt_unique_id": relation.unique_id,
@@ -500,6 +535,7 @@ def _suggest(relation: DbtRelation) -> dict[str, Any]:
         **roles,
         "foreign_keys": links,
         "untyped_columns": [column["name"] for column in unmodeled],
+        **({"held_measures": held_measures} if held_measures else {}),
         "upsert_model": None
         if ephemeral
         else upsert_model_draft(
@@ -507,6 +543,7 @@ def _suggest(relation: DbtRelation) -> dict[str, Any]:
             relation=relation.relation,
             key_columns=key_columns,
             description=relation.description,
+            held_measures=held_measures,
             **roles,
         ),
     }
@@ -556,17 +593,16 @@ def dbt_import_models(
     skipped_references: list[dict[str, Any]] = []
     owners = dict(measure_models or {})
     for unique_id, draft in drafts.items():
-        model, drafted = draft["model_id"], draft["measures"]
-        draft["measures"] = {}
-        for key, spec in drafted.items():
-            prefixed = f"{draft['entity_key']}_{key}"
-            if (
-                owners.setdefault(key, model) != model
-                and owners.setdefault(prefixed, model) == model
-                and prefixed not in drafted
-            ):
-                key = prefixed
-            draft["measures"][key] = spec
+        draft["measures"] = name_dbt_measures(
+            draft["model_id"], draft["entity_key"], draft["measures"], owners
+        )
+        # The package can bind a different key from the artifact. Carry the input drafts
+        # and calendar evidence so upsert_models can decide after binding each reference.
+        draft["_dbt_measures"] = _suggest(
+            project.relations[unique_id], project, infer_calendar_links=False
+        )["upsert_model"]["measures"]
+        draft["_dbt_original_measures"] = deepcopy(draft["measures"])
+        calendar_keys: dict[str, list[str]] = {}
         draft["references"] = []
         for link in suggestions[unique_id]["foreign_keys"]:
             target = link["references"]["dbt_unique_id"]
@@ -587,7 +623,27 @@ def dbt_import_models(
                 )
             else:
                 draft["references"].append(reference)
+                target_relation = project.relations.get(target)
+                if target_relation and _calendar_key(target_relation):
+                    calendar_keys[target] = target_relation.primary_key
+        draft["_dbt_calendar_keys"] = calendar_keys
     return list(drafts.values()), skipped_models, skipped_references
+
+
+def name_dbt_measures(
+    model: str, entity: str, drafts: dict[str, Any], owners: dict[str, str]
+) -> dict[str, Any]:
+    named = {}
+    for key, spec in drafts.items():
+        prefixed = f"{entity}_{key}"
+        if (
+            owners.setdefault(key, model) != model
+            and owners.setdefault(prefixed, model) == model
+            and prefixed not in drafts
+        ):
+            key = prefixed
+        named[key] = spec
+    return named
 
 
 def _profile_duckdb_path(dbt_root: Path, profile: str) -> str:

@@ -129,7 +129,9 @@ package with one model, its count and amount metrics, an example, a package test
    already joins on, or named like the model's foreign key (`<model>_<entity>`), is refused
    naming that relationship. A pair that may have several roles
    (several `graph.relationships` entries in either direction, or an entry with its own `via`
-   beside the model's foreign key) is refused without `name`. A second role makes the pair's
+   on different columns beside the model's foreign key) is refused without `name`. Changing an
+   existing unnamed mapping requires a role name or an explicit file edit that confirms the
+   affected routes. Repeating the same ordered mapping is allowed. A second role makes the pair's
    questions ambiguous: pass `keep_existing_routes: true` to keep the first role as the
    default (see [Two roles on one pair](PACKAGE_AUTHORING.md#two-roles-on-one-pair)).
    To add a relationship while preserving existing routes, pass `keep_existing_routes: true`.
@@ -137,6 +139,11 @@ package with one model, its count and amount metrics, an example, a package test
    own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if a previously
    answered pair still changes, or if generated decisions change a previously refused pair's
    outcome compared with the relationship alone. The relationship's own new answers are allowed.
+   When `upsert_relationship`, `upsert_model`, or `import_dbt_project` stages a
+   forward lookup that competes with an existing route, Architect asks which route
+   should answer that pair. This includes pairs with a reverse-only relationship.
+   The Python `upsert_models` method applies the same check. Save the ordered mapping
+   and the affected `graph.path_preferences` rows together using `write_project_files`.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `graph.path_preferences` list, replacing every row for exactly the pair however its
@@ -354,6 +361,11 @@ never create, seed or change it.
   - **Nothing is written.** Apply the drafts with `dry_run`, then `expected_revision`. Nothing
     checks the data at query time: a column with two values within a key reads NULL on the
     one-per-key model, which is why the draft leaves such columns off.
+- Both model suggestions list periodic column measures in `held_measures` when the source has an
+  as-of clock, a snapshot name, or a calendar key in its grain. Model, time and count drafts remain
+  available. Author a flow for period totals. For balances, author
+  `accumulation: {kind: stock, snapshot: end_of_period}` with an own `as_of_time` and a row grain
+  that includes its date and series key. Expose a date column if the source has an integer day key.
 - `suggest_links`: the relationships from a table to other tables' keys, from their values.
   - **Candidates.** Each column paired with another table's key: the package's entities with a
     one-column key (with `project_path`), else every declared single-column primary key. A column
@@ -373,6 +385,12 @@ never create, seed or change it.
     you to decide. A row whose value isn't found keeps its row, and reads NULL through the link.
     A target key that repeats or is missing on some rows names no one row and is in
     `not_proposed` (`suggest_one_per_key` says whether that table reads one row per key).
+  - **Composite keys.** `composite_foreign_keys` shows declared mappings in column order.
+    A scalar candidate that uses part of one goes in `not_proposed` before any value comparison,
+    unless a separate foreign key declares the same source column and exact target relation
+    and key. The model suggestions report held links in `held_links` and omit their draft
+    mappings and calendars. To link to a composite key, choose the target and pass all source
+    columns in its key order to `upsert_relationship`.
   - **Drafts.** With `project_path`, each pair carries `upsert_relationship` arguments from the
     entity (or row-grain model) over the table: `one_to_one` when the column is unique and never
     null, else `many_to_one`. Targets the model already links to are skipped.
@@ -451,6 +469,10 @@ one existing package entity reads its relation; otherwise it is listed in `skipp
 If a referenced dbt target was explicitly selected but skipped, its child reference is also
 reported in `skipped_references`; an older package model at the same relation cannot replace it.
 References to intentionally unselected targets may still use one eligible existing entity.
+When a grain column references a package calendar, the import uses the bound calendar key
+to identify periodic data, including when the dbt constraint omits the target column.
+It lists each held column measure under that model's `held_measures` and asks the author
+to choose a period total or a balance.
 If a model has different foreign-key columns pointing to the same semantic entity, both links
 are reported in `skipped_references` because one entity reference cannot represent both joins.
 Identical links are recorded once.
@@ -577,10 +599,9 @@ Which route between two entities a question means is a business definition (see
   generated. The refusal's
   `details.route_changes` lists affected pairs. The message names the explicit
   `graph.path_preferences` fields (`source_entity`, `target_entity`, `relationship_path`),
-  without suggesting rows. For `upsert_relationship`, retry with `keep_existing_routes: true`
-  to record the previous routes within the relationship write. Otherwise choose routes and
-  call `record_route_decision(decisions=[...])` before adding the relationship, or include chosen
-  rows in the authored change. Census and guard
+  without suggesting rows. When the new lookup has no competing forward route,
+  `keep_existing_routes: true` can preserve routes for the other pairs. Otherwise save the relationship
+  and the chosen route rows together with `write_project_files`. Census and guard
   comparisons use package decisions independently of active query route overrides. An ordinary
   change that moves an inherited answer needs that pair's own decision.
 - For several pairs, call `record_route_decision(decisions=[...])` with a nonempty list of

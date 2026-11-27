@@ -29,7 +29,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -242,14 +242,19 @@ def describe_table(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
             unique.append(names)
         elif kind_name == "NOT NULL":
             not_null.update(names)
-        elif kind_name == "FOREIGN KEY" and not _dotted(schema, str(row["referenced_table"])):
+        elif kind_name == "FOREIGN KEY":
+            table = str(row["referenced_table"] or "")
+            if _dotted(schema, table):
+                if len(names) == 1:
+                    continue
+                table = quote_identifier(table)
             foreign_keys.append(
                 {
                     "columns": names,
                     "references": {
                         # DuckDB permits declared foreign keys only within the
                         # same schema and reports the target table without it.
-                        "relation": _relation_name(schema, str(row["referenced_table"] or "")),
+                        "relation": _relation_name(schema, table),
                         "columns": [str(column) for column in row["referenced_column_names"] or []],
                     },
                 }
@@ -614,6 +619,37 @@ def draft_roles(
     return roles, unmodeled
 
 
+def periodic_measure_holds(
+    relation: str,
+    columns: Iterable[tuple[str, str]],
+    measures: list[dict[str, Any]],
+    *,
+    periodic: bool = False,
+    model_name: str = "",
+) -> dict[str, str]:
+    """The column measures that need a choice of periodic totals or balances."""
+    table = relation.rsplit(".", 1)[-1].strip('"')
+    if not (
+        periodic
+        or _snapshot_clock_like(table)
+        or _snapshot_clock_like(model_name)
+        or any(
+            _snapshot_clock_like(name) and classify_column(name, kind) == "time"
+            for name, kind in columns
+        )
+    ):
+        return {}
+    return {
+        item["key"]: (
+            f"Choose whether {item['key']} is a total for each period or a balance. For a "
+            "balance, declare the snapshot date and the columns that identify the same series "
+            "across dates."
+        )
+        for item in measures
+        if item["kind"] == "aggregate"
+    }
+
+
 def upsert_model_draft(
     *,
     entity: str,
@@ -623,6 +659,7 @@ def upsert_model_draft(
     dimensions: list[dict[str, Any]],
     measures: list[dict[str, Any]],
     description: str = "",
+    held_measures: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Draft ``upsert_model`` arguments from suggestions, leaving out low-confidence ones."""
     kept_times = [item for item in times if item["confidence"] != "low"]
@@ -671,6 +708,7 @@ def upsert_model_draft(
                 }
             )
             for item in measures
+            if item["kind"] != "aggregate" or item["key"] not in (held_measures or {})
         },
     }
     if description:
@@ -702,7 +740,7 @@ def _key_like(column: str) -> bool:
 def _snapshot_clock_like(column: str) -> bool:
     """A time column named like a snapshot's as-of time (``snapshot_date``, ``as_of_date``)."""
     as_of = re.search(r"(?:^|[^a-z0-9])as_of(?:[^a-z0-9]|$)", column.lower())
-    return _has_word(column, ("snapshot", "asof")) or as_of is not None
+    return _has_word(column, ("snapshot", "snapshots", "asof")) or as_of is not None
 
 
 def _distinct_count_like(column: str) -> bool:
@@ -886,12 +924,39 @@ def _foreign_keys(
     return links
 
 
+def _composite_fk_hold(
+    described: dict[str, Any], column: str, target: Mapping[str, str]
+) -> dict[str, Any] | None:
+    components = [
+        fk for fk in described["foreign_keys"] if len(fk["columns"]) > 1 and column in fk["columns"]
+    ]
+    if not components or any(
+        fk["columns"] == [column]
+        and fk["references"]["columns"] == [target["key"]]
+        and target.get("relation")
+        and _split_relation(fk["references"]["relation"].lower())
+        == _split_relation(target["relation"].lower())
+        for fk in described["foreign_keys"]
+    ):
+        return None
+    return {
+        "column": column,
+        "target": {key: target[key] for key in ("relation", "key", "entity") if target.get(key)},
+        "declared_foreign_keys": components,
+        "reason": (
+            f"{column} is part of a declared composite foreign key. Choose the target and "
+            "supply all source columns in its key order with upsert_relationship."
+        ),
+    }
+
+
 def suggest_model(
     warehouse: DuckDBWarehouse,
     relation: str,
     *,
     clocks: list[dict[str, str]] | None = None,
     clock_links: Mapping[str, str] | None = None,
+    own_as_of: bool = False,
 ) -> dict[str, Any]:
     """Propose a model over ``relation``, each choice with a confidence and a reason.
 
@@ -922,9 +987,10 @@ def suggest_model(
     profile: dict[str, Any] = {"row_count": None, "sampled": None, "columns": described["columns"]}
     key, search = None, {"status": "timed_out", "unconfirmed": []}
     keyed: list[dict[str, Any]] = []
+    held_links: list[dict[str, Any]] = []
     if clocks:
         with contextlib.suppress(_OutOfTime):  # out of time: no date key, as before
-            keyed = _date_keys(warehouse, described, source, clocks)
+            keyed = _date_keys(warehouse, described, source, clocks, held_links)
     grains: dict[str, list[str]] = {}
     deadline = time.monotonic() + KEY_SEARCH_SECONDS  # sampling, profiling and the key search
     with (
@@ -950,6 +1016,7 @@ def suggest_model(
         grain = key_columns if row["column"] in key_columns else grains.get(row["column"])
         if row.pop("covered", False) and grain:
             row["grain"] = grain
+    keyed = [row for row in keyed if row.get("grain") or not row.get("declared_only")]
     links = _foreign_keys(warehouse, described, key_columns)
     roles, unmodeled = draft_roles(
         entity, key_columns, links, profile["columns"], rows=profile["row_count"]
@@ -967,8 +1034,18 @@ def suggest_model(
     # A date column that is also a calendar's key is one candidate: its own date.
     keyed = [row for row in keyed if row["column"] not in {item["column"] for item in own}]
     time_roles = _time_roles(described["relation"], entity, own, keyed, dict(clock_links or {}))
+    held_measures = periodic_measure_holds(
+        described["relation"],
+        ((col["name"], col["type"]) for col in described["columns"]),
+        roles["measures"],
+        periodic=own_as_of or any(row.get("grain") for row in keyed),
+    )
     draft = upsert_model_draft(
-        entity=entity, relation=described["relation"], key_columns=key_columns, **roles
+        entity=entity,
+        relation=described["relation"],
+        key_columns=key_columns,
+        held_measures=held_measures,
+        **roles,
     )
     if time_roles and time_roles["status"] == "choose":
         for spec in draft["times"].values():
@@ -986,6 +1063,8 @@ def suggest_model(
         "key_search": search,
         **roles,
         "foreign_keys": links,
+        **({"held_links": held_links} if held_links else {}),
+        **({"held_measures": held_measures} if held_measures else {}),
         **({"unsupported_columns": unsupported_columns} if unsupported_columns else {}),
         **({"time_roles": time_roles} if time_roles else {}),
         "upsert_model": draft,
@@ -997,6 +1076,7 @@ def _date_keys(
     described: dict[str, Any],
     source: str,
     clocks: list[dict[str, Any]],
+    held_links: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The columns of a relation that hold a calendar's key: named like the key, of a
     compatible type, and confirmed by their values (at least ``DEFAULT_LINK_COVERAGE`` of the
@@ -1012,9 +1092,11 @@ def _date_keys(
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
     found: list[dict[str, Any]] = []
     table = _split_relation(described["relation"])[1]
-    snapshot_table = _snapshot_clock_like(table) or _has_word(table, ("snapshots",))
+    snapshot_table = _snapshot_clock_like(table)
     declared = {
-        str(fk["columns"][0]): _split_relation(str(fk["references"]["relation"]))
+        (str(fk["columns"][0]), _split_relation(fk["references"]["relation"])): fk["references"][
+            "columns"
+        ]
         for fk in described["foreign_keys"]
         if len(fk["columns"]) == 1
     }
@@ -1051,11 +1133,17 @@ def _date_keys(
             # a ``day_key`` calendar) may be a second date of the row: it dates nothing by
             # itself, but it makes the choice the author's. One declared a foreign key of
             # another table (``day_part_code``) is that table's.
-            if not named and not (
+            date_named = (
                 _key_like(name)
                 and calendar_like("", [name])
-                and declared.get(name, clock_place) == clock_place
-            ):
+                and (not any(col == name for col, _ in declared) or (name, clock_place) in declared)
+            )
+            declared_only = not (named or date_named)
+            if declared_only and declared.get((name, clock_place)) != [clock["key"]]:
+                continue
+            if held := _composite_fk_hold(described, name, clock):
+                if held_links is not None:
+                    held_links.append(held)
                 continue
             evidence = _link_evidence(warehouse, source, name, qualified, clock["key"], deadline)
             if not evidence["target_key_unique"] or (
@@ -1077,9 +1165,28 @@ def _date_keys(
                     "reason": words,
                     **({"doubtful": True} if doubtful else {}),
                     **({"covered": True} if covered else {}),
+                    **({"declared_only": True} if declared_only else {}),
                 }
             )
     return found
+
+
+def calendar_grain(
+    warehouse: DuckDBWarehouse,
+    described: dict[str, Any],
+    key: list[str],
+    clocks: list[dict[str, Any]],
+) -> bool:
+    """Whether a selected grain contains a key the package calendar holds."""
+    columns = [column for column in described["columns"] if column["name"] in key]
+    if clocks and columns:
+        source = _qualified(warehouse, *_split_relation(described["relation"]))
+        with contextlib.suppress(_OutOfTime):
+            return any(
+                row.get("covered")
+                for row in _date_keys(warehouse, {**described, "columns": columns}, source, clocks)
+            )
+    return False
 
 
 def _one_row_per_day(
@@ -1374,7 +1481,9 @@ def suggest_one_per_key(
     *,
     taken: frozenset[str] = frozenset(),
     link_model: str = "",
-    parents: Mapping[str, tuple[str, str]] | None = None,
+    parents: Mapping[str, dict[str, str] | tuple[str, str]] | None = None,
+    clocks: list[dict[str, Any]] | None = None,
+    own_as_of: bool = False,
 ) -> dict[str, Any]:
     """Propose reading a keyless ``relation`` one row per a key it repeats, from its data.
 
@@ -1395,7 +1504,7 @@ def suggest_one_per_key(
     only that column set. Above a million rows the candidates are compared on the profile's
     sample and the proposal is confirmed on the whole relation. ``taken`` holds entity and model
     names in use, which the draft's names avoid; ``parents`` maps a lowercased column name to the
-    (entity, key column) it names, so a key column fixed per key becomes the draft's parent
+    target (entity, relation and key) it names, so a key column fixed per key becomes the draft's parent
     entity. Nothing is written, and nothing here checks data at query time: the author decides.
     """
     described = describe_table(warehouse, relation)
@@ -1487,6 +1596,8 @@ def suggest_one_per_key(
             taken=taken,
             link_model=link_model,
             parents=parents or {},
+            periodic=own_as_of
+            or calendar_grain(warehouse, described, best["columns"], clocks or []),
         ),
     }
 
@@ -1504,7 +1615,8 @@ def _one_per_key_proposal(
     *,
     taken: frozenset[str],
     link_model: str,
-    parents: Mapping[str, tuple[str, str]],
+    parents: Mapping[str, dict[str, str] | tuple[str, str]],
+    periodic: bool,
 ) -> dict[str, Any]:
     key = list(evidence["columns"])
     base = _key_base(key, entity)
@@ -1512,8 +1624,17 @@ def _one_per_key_proposal(
     model_id = f"{base}_one_per_key"
     # A key column fixed per key names a parent: the package's entity it names, else a dimension.
     fixed = [column for column in evidence["fixed"] if column not in key]
-    named = {column: parents[column.lower()] for column in fixed if column.lower() in parents}
-    unnamed = [column for column in fixed if _key_like(column) and column not in named]
+    named = {}
+    held_links = []
+    for column in fixed:
+        if parent := parents.get(column.lower()):
+            if isinstance(parent, tuple):
+                parent = {"entity": parent[0], "key": parent[1]}
+            if held := _composite_fk_hold(described, column, parent):
+                held_links.append(held)
+            else:
+                named[column] = parent
+    unnamed = [column for column in fixed if _key_like(column) and column.lower() not in parents]
     stats = [
         column
         for column in profile["columns"]
@@ -1529,19 +1650,26 @@ def _one_per_key_proposal(
                 "reason": "fixed per key",
             }
         )
+    held_measures = periodic_measure_holds(
+        described["relation"],
+        ((col["name"], col["type"]) for col in described["columns"]),
+        roles["measures"],
+        periodic=periodic,
+    )
     draft = upsert_model_draft(
         entity=target,
         relation=described["relation"],
         key_columns=key,
         description=f"One row per {', '.join(key)} of {described['relation']}: the columns "
         "fixed per key.",
+        held_measures=held_measures,
         **roles,
     )
     draft.update(model_id=model_id, one_per_key=True)
     if named:
         draft["entities"] = {
-            parent: {} if column == parent_key else {"expr": column}
-            for column, (parent, parent_key) in named.items()
+            parent["entity"]: {} if column == parent["key"] else {"expr": column}
+            for column, parent in named.items()
         }
     coverage = _coverage(evidence)
     if unnamed:
@@ -1555,6 +1683,8 @@ def _one_per_key_proposal(
         "evidence": evidence,
         "coverage": coverage,
         "upsert_model": draft,
+        **({"held_links": held_links} if held_links else {}),
+        **({"held_measures": held_measures} if held_measures else {}),
     }
     if link_model:
         proposal["link"] = {
@@ -1703,6 +1833,9 @@ def suggest_links(
         "below_threshold": [],
         "not_proposed": [],
     }
+    composite = [fk for fk in described["foreign_keys"] if len(fk["columns"]) > 1]
+    if composite:
+        answer["composite_foreign_keys"] = composite
     described_targets: dict[str, dict[str, str]] = {}
     deadline = time.monotonic() + KEY_SEARCH_SECONDS
     try:
@@ -1729,6 +1862,9 @@ def suggest_links(
                     continue
                 if not columns and not _names_link(column, key, entity):
                     continue
+                if held := _composite_fk_hold(described, column, target):
+                    answer["not_proposed"].append(held)
+                    continue
                 target_schema, target_name = _split_relation(str(target["relation"]))
                 evidence = _link_evidence(
                     warehouse,
@@ -1742,7 +1878,9 @@ def suggest_links(
     except _OutOfTime:
         answer["timed_out"] = True
     for bucket in ("proposals", "below_threshold", "not_proposed"):
-        answer[bucket].sort(key=lambda row: (-row["evidence"]["coverage"], row["column"]))
+        answer[bucket].sort(
+            key=lambda row: (-row.get("evidence", {}).get("coverage", 0), row["column"])
+        )
     return answer
 
 
