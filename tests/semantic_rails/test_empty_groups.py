@@ -1166,15 +1166,16 @@ def test_coverage_does_not_shadow_a_source_relation(
 def test_coverage_does_not_shadow_a_schema_in_a_subtotal(tmp_path: Path) -> None:
     package = _shop_package(
         tmp_path,
-        "CREATE SCHEMA coverage_3",
-        "CREATE TABLE coverage_3.orders AS SELECT * FROM orders",
-        "CREATE TABLE coverage_1 AS SELECT * FROM tickets",
+        "CREATE SCHEMA coverage_1",
+        "CREATE TABLE coverage_1.orders AS SELECT * FROM orders",
     )
     config = load_package_config(str(package))
-    renamed = {"orders": "coverage_3.orders", "tickets": "coverage_1"}
     config = replace(
         config,
-        entities=[replace(row, table=renamed.get(row.table, row.table)) for row in config.entities],
+        entities=[
+            replace(row, table="coverage_1.orders") if row.table == "orders" else row
+            for row in config.entities
+        ],
     )
     scans = {"kind": "measure", "measure": "measure.shop.scan_count"}
     rt = Runtime.from_config(config, source_path=str(package))

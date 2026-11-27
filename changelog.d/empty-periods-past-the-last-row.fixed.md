@@ -14,3 +14,5 @@
   `NULL` in a month with none of its rows, even when it had rows before the window; it now reads
   `0` there, as DuckDB and Postgres do and as it did when the rollup couldn't answer.
 - A package can use a table named `coverage_1` in a query that checks when its data was loaded.
+  Follow-ups cover missing loaded coverage on ClickHouse and an observation probe that can
+  shadow a package relation in a bounded series.
