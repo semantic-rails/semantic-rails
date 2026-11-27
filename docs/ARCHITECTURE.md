@@ -501,7 +501,11 @@ The runtime compiles a request through these stages:
 The compiler keeps generated CTE names and relation aliases distinct from package
 relation names, including schema and catalog components, using case-insensitive
 comparison. Coverage and observation probes keep their generated prefixes so
-answer disclosures can identify the probes each output reads.
+answer disclosures can identify the probes each output reads. Probe queries
+reuse the bound query's CTE dependencies in render order. Pipeline source
+dependencies resolve against declared pipeline outputs. The compiler allocates
+intermediate pipeline names before attachment and gives a pipeline output a
+distinct SQL name when it would shadow a stored input.
 
 Important planner behaviors:
 

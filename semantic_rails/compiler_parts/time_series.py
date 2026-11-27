@@ -33,7 +33,6 @@ from ..sql_ast import (
     SqlJoin,
     SqlLiteral,
     SqlSelect,
-    SqlSourceRef,
     SqlTableRef,
 )
 from .aliasing import AliasRegistry, alias_select
@@ -283,9 +282,7 @@ def _dense_time_ctes(
             name="calendar_time",
             query=SqlSelect(
                 select=[SqlField(calendar_expr, time_alias)],
-                from_table=SqlTableRef(name=calendar_table)
-                if calendar_table == _IMPLICIT_CALENDAR
-                else SqlSourceRef(name=calendar_table),
+                from_table=SqlTableRef(name=calendar_table),
                 joins=dense_time_joins,
                 where=dense_time_where,
                 group_by=[calendar_expr],

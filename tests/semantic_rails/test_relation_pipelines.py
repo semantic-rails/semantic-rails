@@ -57,6 +57,115 @@ def _write_relation_package(package_dir: Path, package: dict) -> None:
         path.write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
 
 
+def _pipeline_collision_package(
+    tmp_path: Path, *, stored: str, upstream: str, step: dict, source: str | None = None
+) -> Path:
+    select = {"select": {"columns": {"id": "id"}}}
+    _write_relation_package(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "package": {
+                "id": "collision",
+                "namespace": "collision",
+                "warehouse": "duckdb",
+                "default_db": "seed.duckdb",
+                "seed": {"kind": "sql_script", "source": "seed.sql"},
+            },
+            "graph": {"entities": {"rows": {"key": ["id"], "model": "rows"}}},
+            "models": {
+                "rows": {
+                    "relation": "a",
+                    "entities": {"rows": {}},
+                    "measures": {
+                        "rows": {
+                            "label": "Rows",
+                            "kind": "entity_count",
+                            "accumulation": "event",
+                            "value_type": "count",
+                            "entity_key": ["id"],
+                        }
+                    },
+                }
+            },
+            "relations": {
+                "a": {
+                    "output_name": "a_rows",
+                    "steps": [{"source": source or upstream}, step, select],
+                    "columns": ["id"],
+                },
+                "b": {
+                    "output_name": upstream,
+                    "steps": [{"source": stored}],
+                    "columns": ["id"],
+                },
+            },
+        },
+    )
+    (tmp_path / "seed.sql").write_text(
+        f"CREATE TABLE {stored} (id INTEGER); INSERT INTO {stored} VALUES (1), (2);",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_pipeline_output_does_not_discard_another_pipelines_filter(
+    tmp_path: Path,
+) -> None:
+    for spelling, upstream in (("upper", "A_ROWS__2_WHERE"), ("lower", "a_rows__2_where")):
+        package = _pipeline_collision_package(
+            tmp_path / spelling,
+            stored="stored_rows",
+            upstream=upstream,
+            step={"where": {"predicates": [{"field": "id", "op": ">", "value": 1}]}},
+        )
+        rt = Runtime.from_path(str(package))
+        try:
+            result = rt.query({"select": ["metric.collision.rows"]})
+        finally:
+            rt.close()
+        assert result["rows"] == [{"rows": 1}], upstream
+        assert "src.id > 1" in result["explain"]["rendered_sql"], upstream
+
+
+def test_pipeline_stored_input_named_like_a_stage_does_not_create_a_cycle(tmp_path: Path) -> None:
+    package = _pipeline_collision_package(
+        tmp_path,
+        stored="a_rows__2_select",
+        upstream="b_rows",
+        step={"select": {"columns": {"id": "id"}}},
+    )
+    rt = Runtime.from_path(str(package))
+    try:
+        assert rt.query({"select": ["metric.collision.rows"]})["rows"] == [{"rows": 2}]
+    finally:
+        rt.close()
+
+
+def test_pipeline_output_cannot_shadow_the_stored_side_of_a_semi_join(tmp_path: Path) -> None:
+    source = "a_rows__2_semi_join"
+    for upstream in ("b_rows", source.upper()):
+        package = _pipeline_collision_package(
+            tmp_path / upstream,
+            stored="allowed_ids",
+            upstream=upstream,
+            source=source,
+            step={"semi_join": {"relation": upstream, "on": [{"left": "id", "right": "id"}]}},
+        )
+        (package / "seed.sql").write_text(
+            f"CREATE TABLE {source} (id INTEGER); INSERT INTO {source} VALUES (1), (2);"
+            "CREATE TABLE allowed_ids (id INTEGER); INSERT INTO allowed_ids VALUES (2), (3);",
+            encoding="utf-8",
+        )
+        rt = Runtime.from_path(str(package))
+        try:
+            result = rt.query({"select": ["metric.collision.rows"]})
+        finally:
+            rt.close()
+        assert result["rows"] == [{"rows": 1}], upstream
+        assert f"FROM {source} AS src" in result["explain"]["rendered_sql"], upstream
+
+
 def _write_relation_demo(tmp_path: Path) -> Path:
     package_dir = tmp_path / "relation_demo"
     package_dir.mkdir()

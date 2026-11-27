@@ -51,6 +51,7 @@ from ..ir import (
 )
 from ..query_call import engine_where, refusal
 from ..registry import Registry
+from ..relation_pipelines import attach_and_name_relations
 from ..row_filter_visibility import Visibility, hold_unowned_reads, visibility_for
 from ..row_filters import RowFilter, apply_row_filters
 from ..schema import (
@@ -94,7 +95,7 @@ from .indexes import (
 )
 from .listings import bind_listing
 from .lowering_common import recording_stock_key_gaps
-from .namespacing import attach_and_name_relations, avoid_name_collisions
+from .namespacing import avoid_name_collisions
 from .parent_values import bind_parent_values
 from .paths import (
     _leaf_time_role,
@@ -736,18 +737,22 @@ def _bind_query(
         recording_stock_key_gaps() as stock_key_gaps,
         recording_closing_reads() as closing_reads,
         recording_zero_outputs() as zero_outputs,
-        recording_balance_edges(
-            [
-                *(row.table for row in config.entities),
-                *(row.output_name for row in config.relations),
-            ]
-        ) as balance_edges,
+        recording_balance_edges() as balance_edges,
         recording_route_choices() as route_choices,
         observing(plan.query, config),
         capping_at(parse_now((payload.get("policy_context") or {}).get("now"))) as clock,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast, sql_names = attach_and_name_relations(config, lower_to_sql(plan, config))
+    balance_coverage = tuple(balance_edges["ctes"].values())
+    if balance_coverage:
+        balance_select, balance_names = avoid_name_collisions(
+            SqlSelect(select=[], ctes=list(balance_coverage)),
+            [*(cte.name for cte in sql_ast.ctes), *(row.output_name for row in config.relations)],
+        )
+        balance_coverage = tuple(balance_select.ctes)
+        for output in balance_edges["outputs"]:
+            output["probes"] = sorted(balance_names.get(name, name) for name in output["probes"])
     cuts = dependencies.cuts
     # A leaf read by a whole-query cut (a metric filter) filters the whole query too.
     shared = set().union(*(cut.leaves for cut in cuts if cut.owners is None))
@@ -772,7 +777,7 @@ def _bind_query(
         route_choices=tuple(route_choices),
         coverage_now=clock.literal if clock.read else "",
         balance_edges=tuple(balance_edges["outputs"]),
-        balance_coverage=tuple(balance_edges["ctes"].values()),
+        balance_coverage=balance_coverage,
         closing_reads=closing_reads_by_output(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
         inner_calls=tuple(dependencies.inner_calls),

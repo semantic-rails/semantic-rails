@@ -39,7 +39,7 @@ from .compiler_parts.dependencies import (
 )
 from .compiler_parts.empty_groups import recording_zero_outputs
 from .compiler_parts.lowering_common import _query_key_aliases
-from .compiler_parts.namespacing import attach_and_name_relations, reserve_name
+from .compiler_parts.namespacing import reserve_name
 from .compiler_parts.paths import dimension_filter, inner_lookups
 from .compiler_parts.physical_plan import build_performance_plan, build_physical_plan
 from .compiler_parts.plan_checks import NonAdditiveRefusal as NonAdditiveRefusal
@@ -74,6 +74,7 @@ from .dialects import dialect_for_warehouse
 from .flat_copy import as_dict
 from .ir import ExplainArtifact
 from .registry import Registry
+from .relation_pipelines import attach_and_name_relations
 from .renderer import collecting_slots, render_select_for_profile
 from .row_filters import RowFilter, verify_row_filters
 from .schema import PackageConfig

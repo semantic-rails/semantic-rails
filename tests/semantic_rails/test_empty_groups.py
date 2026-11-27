@@ -39,7 +39,7 @@ from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
-from semantic_rails.schema import MetricConfig
+from semantic_rails.schema import MetricConfig, RelationConfig, RelationPipelineStep
 from semantic_rails.sql_ast import SqlCte, SqlTableFunction, SqlTableRef
 from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.conftest import copy_package_config, opened
@@ -1447,6 +1447,90 @@ def test_coverage_does_not_shadow_a_schema_in_a_subtotal(tmp_path: Path) -> None
         (1, None, None),
         (1, None, None),
     ]
+
+
+@pytest.mark.parametrize("warehouse_simulation", [False, True], ids=["duckdb", "warehouse"])
+def test_pipeline_subtotal_keeps_loading_warnings_and_cutoff(
+    shop_package: Path, request: pytest.FixtureRequest, warehouse_simulation: bool
+) -> None:
+    if warehouse_simulation:
+        request.getfixturevalue("coverage_for_named_windows_only")
+    config = load_package_config(str(shop_package))
+    columns = ["order_id", "customer_id", "store_id", "ordered_at", "order_date", "amount"]
+    pipeline = RelationConfig(
+        id="relation.shop.order_view",
+        output_name="projected",
+        steps=[
+            RelationPipelineStep("source", {"relation": "orders"}),
+            RelationPipelineStep("select", {"columns": {column: column for column in columns}}),
+            RelationPipelineStep("select", {"columns": {column: column for column in columns}}),
+        ],
+        columns=columns,
+    )
+    config = replace(
+        config,
+        relations=[*config.relations, pipeline],
+        entities=[
+            replace(row, table=pipeline.output_name, relation_id=pipeline.id)
+            if row.table == "orders"
+            else row
+            for row in config.entities
+        ],
+    )
+    scans = "measure.shop.scan_count"
+    rt = Runtime.from_config(config, source_path=str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    orders=SHOP_ORDERS,
+                    scans={"kind": "measure", "measure": scans},
+                    scans_total={"kind": "total", "input": scans, "over": [SHOP_STORE]},
+                ),
+                "group_by": [SHOP_STORE],
+                "time": {"temporal_role": SHOP_ROLE, "grain": "quarter"},
+            },
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    assert response["row_count"] == 9
+    assert [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")] == [
+        ["scans_total", "scans"]
+    ]
+    assert len(_warnings(response, "PARTIAL_DATA")) == 1
+    assert response["window"]["data_through"] == "2024-06-01"
+
+
+def test_observation_probe_reads_the_hoisted_predicate_cte(shop_package: Path) -> None:
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_order",
+        "over": "all_time",
+        "input": SHOP_ORDERS,
+        "op": ">",
+        "value": 999,
+    }
+    rt = Runtime.from_path(str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    value={
+                        **SHOP_REVENUE,
+                        "kind": "aggregate",
+                        "filter": {"all": [{"expression": predicate}]},
+                    }
+                ),
+                "observation_scope": "dataset",
+                "where": [{"field": SHOP_STORE, "op": "is", "value": "a"}],
+            },
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    assert response["rows"] == [{"value": None}]
+    assert [item["details"]["outputs"] for item in _warnings(response)] == [["value"]]
 
 
 def test_orders_per_ticket_past_the_last_order_read_null_on_every_warehouse(

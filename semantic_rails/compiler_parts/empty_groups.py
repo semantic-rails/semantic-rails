@@ -32,7 +32,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from itertools import count
 from typing import Any
 
 from ..clock import current_time, engine_window, known_zone, local_now
@@ -75,7 +74,6 @@ from .bind import (
 )
 from .dependencies import holding, plan_is_root, settles_as_a_call
 from .indexes import _measure_index, _recipe_index
-from .namespacing import reserve_name
 from .temporal import _source_filter_refusals
 
 GUARDED_BASE = "guarded_base"
@@ -371,7 +369,6 @@ def guard_empty_groups(
     absent: Mapping[str, str] | None = None,
     probe_key: str = "",
     own_range: bool = False,
-    relation_names: Collection[str] = (),
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -431,15 +428,6 @@ def guard_empty_groups(
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
-    occupied = set(relation_names) | {
-        part.casefold()
-        for node in sql_nodes([list((scopes or {}).values()), list(observed.values())])
-        if isinstance(node, (SqlCte, SqlTableRef))
-        for part in node.name.split(".")
-    }
-    coverage_names = (f"coverage_{index}" for index in count(1))
-    edge_names = (f"edge_{index}" for index in count(1))
-    observation_names = (f"observed_{index}" for index in count(1))
     edges: dict[str, str] = {}
     probes: dict[str, str] = {}
 
@@ -447,7 +435,7 @@ def guard_empty_groups(
         """Whether ``probe`` finds a row, read once through plain CTEs the guard cross-joins."""
         name = probes.get(repr(probe))
         if name is None:
-            name = probes[repr(probe)] = reserve_name(observation_names, occupied, paired=True)
+            name = probes[repr(probe)] = f"observed_{len(probes) + 1}"
             ctes.extend(_dataset_probe_ctes(name, probe))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
@@ -457,7 +445,7 @@ def guard_empty_groups(
         loaded = repr((scope.from_table, scope.raw_time, scope.storage_zone, scope.bucket))
         name = coverage.get(loaded)
         if name is None:
-            name = coverage[loaded] = reserve_name(coverage_names, occupied)
+            name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
             ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return name
@@ -556,9 +544,7 @@ def guard_empty_groups(
                         # never share it.
                         edge = edges.get(repr(scope.edge))
                         if edge is None:
-                            edge = edges[repr(scope.edge)] = reserve_name(
-                                edge_names, occupied, paired=True
-                            )
+                            edge = edges[repr(scope.edge)] = f"edge_{len(edges) + 1}"
                             ctes.extend(_edge_ctes(edge, scope.edge))
                             joins.append(SqlJoin("CROSS", SqlTableRef(name=edge)))
                         seen = SqlBinary(seen, "AND", _certified_bucket(key, name, edge))
@@ -962,17 +948,11 @@ _balance_edges: ContextVar[dict[str, Any] | None] = ContextVar("balance_edges", 
 
 
 @contextmanager
-def recording_balance_edges(relation_names: Iterable[str] = ()) -> Iterator[dict[str, Any]]:
+def recording_balance_edges() -> Iterator[dict[str, Any]]:
     """Record each balance output's loaded coverage: CTEs of their own, apart from the query,
     read only to say where the balance's data ends (``NO_DATA_YET``). A balance reads NULL
     in a period without a snapshot either way, so its coverage never changes a value."""
-    edges: dict[str, Any] = {
-        "ctes": {},
-        "leaves": {},
-        "outputs": [],
-        "occupied": {part.casefold() for name in relation_names for part in name.split(".")},
-        "names": (f"balance_coverage_{index}" for index in count(1)),
-    }
+    edges: dict[str, Any] = {"ctes": {}, "leaves": {}, "outputs": []}
     with holding(_balance_edges, edges):
         yield edges
 
@@ -984,7 +964,7 @@ def record_balance_scope(alias: str, scope: LeafScope, dialect: Any) -> None:
     query = coverage_select(scope, dialect)
     name = next((cte.name for cte in edges["ctes"].values() if cte.query == query), None)
     if name is None:
-        name = reserve_name(edges["names"], edges["occupied"])
+        name = f"balance_coverage_{len(edges['ctes']) + 1}"
         edges["ctes"][name] = SqlCte(name=name, query=query)
     edges["leaves"][alias] = name
 

@@ -7,7 +7,6 @@ from dataclasses import fields, is_dataclass, replace
 from itertools import count
 from typing import Any
 
-from ..schema import PackageConfig
 from ..sql_ast import (
     ROW_FILTER_OWNER,
     SqlCte,
@@ -88,23 +87,6 @@ def avoid_name_collisions(
     if not (rename or alias_rename):
         return select, rename
     return _rewrite_names(select, rename, alias_rename, set()), rename
-
-
-def attach_and_name_relations(
-    config: PackageConfig, select: SqlSelect
-) -> tuple[SqlSelect, dict[str, str]]:
-    from ..relation_pipelines import attach_relation_ctes, pipeline_cte_names
-
-    reserved = {
-        *(entity.table for entity in config.entities),
-        *(aggregate.relation for aggregate in config.aggregate_relations),
-        *(measure.zero_through.relation for measure in config.measures if measure.zero_through),
-    }
-    if not config.relations:
-        return avoid_name_collisions(select, reserved)
-    select, early = avoid_name_collisions(select, reserved | pipeline_cte_names(config))
-    select, late = avoid_name_collisions(attach_relation_ctes(config, select), reserved)
-    return select, {**late, **{name: late.get(new, new) for name, new in early.items()}}
 
 
 def _rewrite_names(
