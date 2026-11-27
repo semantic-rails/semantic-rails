@@ -9,9 +9,9 @@
   With conflicting declarations, `missing`, `is` and `not` return `INVALID_QUERY` and name the
   dimensions. Reordered or repeated unknown values agree. With equivalent lists, the
   alternate spelling's `missing` total is 10 where it was 5.
-  Integer and decimal literals such as `1` and `1.0` remain distinct because the warehouse
-  may compare them differently. With `unknown_values: [1.0]`, the example totals 10 for
-  `is 1` and refuses `is 1.0`.
+  The declaration agreement check distinguishes integer and decimal literals such as `1`
+  and `1.0` because the warehouse may compare them differently. `is 1` and `is 1.0` are both
+  refused against `unknown_values: [1.0]`, as in `where`.
 - A declared measure whose expression compares a column with a filter word or a text word
   now depends on the dimensions over that column, as a metric's filter does. A `deny` policy
   on such a dimension refuses the measure with `POLICY_DENIED`. A `hidden` policy hides the

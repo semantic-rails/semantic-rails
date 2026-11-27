@@ -556,7 +556,12 @@ def test_distinct_numeric_unknown_literals_conflict(tmp_path):
         runtime.close()
 
 
-def test_an_explicit_integer_is_distinct_from_a_decimal_unknown_literal(tmp_path):
+@pytest.mark.parametrize(
+    ("spelling", "value"), [("Ref Code", 1), ("ref code", 1), ("ref code", 1.0)]
+)
+def test_an_explicit_integer_or_decimal_matching_an_unknown_literal_is_refused(
+    tmp_path, spelling, value
+):
     runtime = _references(tmp_path, {"Ref Code": {"unknown_values": [1.0]}})
     try:
         with duckdb.connect(str(tmp_path / "dl.duckdb")) as connection:
@@ -565,12 +570,50 @@ def test_an_explicit_integer_is_distinct_from_a_decimal_unknown_literal(tmp_path
                 "INSERT INTO downloads VALUES (1, 'US', 10, '1.4'), (2, 'US', 5, '1.0')"
             )
         with pytest.raises(SemanticLayerError) as raised:
-            runtime.query(_installs_where("ref code", "is", 1.0))
+            runtime.query(_installs_where(spelling, "is", value))
         assert raised.value.code == "INVALID_QUERY"
-        assert "1.0 is how dimension.dl_download_ref_0 records an unknown value" in str(
+        assert f"{value!r} is how dimension.dl_download_ref_0 records an unknown value" in str(
             raised.value
         )
-        assert runtime.query(_installs_where("ref code", "is", 1))["rows"] == [{"total": 10}]
+    finally:
+        runtime.close()
+
+
+def test_where_refuses_a_decimal_matching_an_integer_unknown_value(tmp_path):
+    dimension = "dimension.dl_download_ref_0"
+    runtime = _references(tmp_path, {"Ref Code": {"kind": "integer", "unknown_values": [-1]}})
+    try:
+        with duckdb.connect(str(tmp_path / "dl.duckdb")) as connection:
+            connection.execute('ALTER TABLE downloads DROP COLUMN "Ref Code"')
+            connection.execute('ALTER TABLE downloads ADD COLUMN "Ref Code" INTEGER DEFAULT -1')
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.query(
+                {
+                    "select": [INSTALLS],
+                    "where": [{"field": dimension, "op": "is", "value": -1.0}],
+                }
+            )
+        assert raised.value.code == "INVALID_QUERY"
+        assert f"-1.0 is how {dimension} records an unknown value" in str(raised.value)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("spelling", ["Ref Code", "ref code"])
+@pytest.mark.parametrize("op", ["is", "not"])
+def test_signed_zero_matching_an_unknown_literal_is_refused(tmp_path, spelling, op):
+    runtime = _references(tmp_path, {"Ref Code": {"unknown_values": [0.0]}})
+    try:
+        with duckdb.connect(str(tmp_path / "dl.duckdb")) as connection:
+            connection.execute('ALTER TABLE downloads DROP COLUMN "Ref Code"')
+            connection.execute('ALTER TABLE downloads ADD COLUMN "Ref Code" DECIMAL(5, 1)')
+            connection.execute('UPDATE downloads SET "Ref Code" = download_id - 1')
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.query(_installs_where(spelling, op, -0.0))
+        assert raised.value.code == "INVALID_QUERY"
+        assert "-0.0 is how dimension.dl_download_ref_0 records an unknown value" in str(
+            raised.value
+        )
     finally:
         runtime.close()
 
