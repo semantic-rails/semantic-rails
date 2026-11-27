@@ -1,13 +1,9 @@
-- An entity's key reads where the rows name it. Refunds reach their customer through their
-  order, so "net revenue by customer" and "goods refunded by customer" read the refunds'
-  customer from the order, as the orders do: a customer the customers table doesn't hold yet
-  keeps its refunds under its own key instead of a `NULL` customer (net revenue read `2` for
-  such a customer with a `1` refund on a `2` order, and the refund sat in a `NULL` row). The
-  same holds filtered by the key ("net revenue of one customer") and per entity in a
-  distribution, and where orders name a buyer and a referrer, both sides read the buyer the
-  package's route names. Grouped by the customer's tier, region or name, that customer stays in
-  the `NULL` group.
-- A recorded role reads its key from the column its relationship joins on, as a single role
-  does. "Seats by destination airport", with the legs' origin also recorded, reads a leg whose
-  code the airports table doesn't hold under that code (`SFO` `7`), where it read a `NULL`
-  airport; filtered by that code, it reads `7`, not `NULL`.
+- "Net revenue by customer" and "goods refunded by customer" use the customer key on the
+  refund's order when the order names one customer. For a customer who hasn't signed up, a
+  refund of `1` on an order of `2` now gives that customer net revenue of `1`. Previously
+  the customer had net revenue of `2` and the refund appeared under a `NULL` key. Grouping,
+  a filter in the call and a filter in a metric all use the same key. ClickHouse keeps the
+  inner join to customers and still drops refunds without a matching customer row.
+- A distribution per entity counts a key named by a row even when the entity's table has no
+  matching row. "Median order amount per region" goes from `11` to `12` in the example where
+  a customer names a region missing from the regions table.

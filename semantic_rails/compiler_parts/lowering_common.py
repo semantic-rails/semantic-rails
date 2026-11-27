@@ -485,7 +485,9 @@ def _require_filtered_series_operand(
     measure = _measure_index(config)[row.bound_measure.measure_id]
     conditions = []
     for item in _bound_filter_clauses(row.bound_measure, config):
-        conditions.append(_filter_condition_for_item(measure.entity, item, config))
+        conditions.append(
+            _filter_condition_for_item(measure.entity, item, config, row.path_selections)
+        )
     aggregate = next(
         field.expression for field in leaf.select if field.alias == row.bound_measure.alias
     )
@@ -739,7 +741,7 @@ def _dataset_scope(
         return None
     where = []
     for item in _bound_filter_clauses(bound, config):
-        where.append(_filter_condition_for_item(measure.entity, item, config))
+        where.append(_filter_condition_for_item(measure.entity, item, config, row.path_selections))
     authored = len(where)
     # Rows past a declared edge are never read, so they observe nothing either.
     where.extend(_edge_cap(measure, role_id, config))
@@ -922,7 +924,7 @@ def _filter_condition_for_item(
     measure_entity: str,
     item: dict[str, Any],
     config: PackageConfig,
-    path_selections: Iterable[PathSelection] = (),
+    path_selections: Iterable[PathSelection],
 ) -> Any:
     """``item``'s condition on the measure's own column when it has one, else on its dimension;
     an entity's key on ``path_selections`` reads as the leaf groups by it (``leaf_dimension_expr``)."""

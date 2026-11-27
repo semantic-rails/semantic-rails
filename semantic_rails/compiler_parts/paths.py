@@ -353,13 +353,10 @@ def route_key_source_expr(
     (``_direct_dimension_source_expr``). A refund reaches its customer through its order, so it
     reads ``orders.customer_id``, never the customers table's own column, which is NULL for a
     customer that table doesn't hold yet: the refund and the order then group under one key.
-    In one hop that model is the leaf's own: where orders name two customers (a buyer and a
-    referrer), the direct read can't tell which, and the route the leaf takes (the buyer) says.
-    An attribute of the entity (a tier, a region) still reads the entity's own table.
-
-    None when the leaf has no single route to the entity, when the last hop enters a validity
-    window (a version must be chosen there), or when this leaf replaces the near model's
-    table."""
+    A single hop can use the direct read. A last hop with several roles, a reverse hop, or a
+    one-to-one extension reads the joined entity. The joined read also applies when the leaf
+    has no single route, when the last hop enters a validity window, or when the leaf replaces
+    the near model's table."""
     dim = _dimension_index(config).get(dim_id)
     if dim is None:
         return None
@@ -371,7 +368,7 @@ def route_key_source_expr(
     if len(paths) != 1:
         return None
     path = next(iter(paths))
-    if not path:
+    if len(path) < 2:
         return None
     relationships = _relationship_index(config)
     near = source_entity
@@ -381,14 +378,15 @@ def route_key_source_expr(
     last = relationships[path[-1]]
     if near == dim.entity or near in (table_overrides or {}):
         return None
-    if last.source_entity == near and last.target_entity == dim.entity:
-        near_columns = last.source_columns or [last.source_column]
-        far_columns = last.target_columns or [last.target_column]
-    elif last.target_entity == near and last.source_entity == dim.entity:
-        near_columns = last.target_columns or [last.target_column]
-        far_columns = last.source_columns or [last.source_column]
-    else:
+    if (
+        last.source_entity != near
+        or last.target_entity != dim.entity
+        or last.cardinality == "1:1"
+        or _pair_has_several_pairings(near, dim.entity, config)
+    ):
         return None
+    near_columns = last.source_columns or [last.source_column]
+    far_columns = last.target_columns or [last.target_column]
     table = entities[near].table
     if enters_validity_window(last, table):
         return None

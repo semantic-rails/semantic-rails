@@ -194,15 +194,13 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
-An entity's key reads where the rows name the entity: the model the route reaches it from.
-Refunds reach their customer through their order, so "net revenue by customer" reads the
-refunds' customer from `orders.customer_id`, as the orders do. A customer the customers table
-doesn't hold yet (one who hasn't signed up) has its refunds beside its orders under its own key,
-grouped or filtered by it. Where orders name two customers (a buyer and a referrer), the route
-the package records (`graph.path_preferences`: an order's customer is its buyer) says which
-column, and the orders and their refunds both read the buyer's. The entity's other dimensions
-(its tier, region or name) read its own table, so grouped by one, that customer is in the `NULL`
-group.
+On a route that ends in one many-to-one relationship naming the entity, the preceding row can
+supply the entity's key. Refunds reach their customer through their order, so "net revenue by
+customer" reads the refunds' customer from `orders.customer_id`, as the orders do. A customer
+who hasn't signed up keeps their refunds and orders under the same key. Grouping, a filter in
+the call and a filter in a metric all use that key. The customer's tier, region and name still
+come from the customers table and read `NULL` for that customer. ClickHouse keeps the inner
+join to customers, which drops refunds without a matching customer row.
 
 ### Groups across a one-to-many hop
 
@@ -2037,9 +2035,8 @@ before SQL runs, through derived metrics too.
   filters, or a lookup from the child are refused with `MIXED_GRAIN_INVALID`.
 
 A lookup dimension (many-to-one) is NULL on a row whose lookup found no match: `missing: true`
-keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read. The
-looked-up entity's key is read from the row that names it ([`group_by`](#group_by)), so it is
-NULL only where that row names none.
+keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read. For
+keys supplied by the preceding row, see [`group_by`](#group_by).
 ClickHouse keeps lookups as inner joins, so it drops such a row from every call that reads the
 looked-up dimension.
 

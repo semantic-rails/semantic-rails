@@ -472,7 +472,9 @@ def _entity_in_terms_of_leaf_select(
             _filter_condition_for_item(anchor_entity, item, config, path_selections)
         )
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
-        where_clauses.append(_filter_condition_for_item(anchor_entity, item, config))
+        where_clauses.append(
+            _filter_condition_for_item(anchor_entity, item, config, path_selections)
+        )
     where_clauses.extend(
         _edge_cap(
             _measure_index(config)[measure_plan.bound_measure.measure_id],
@@ -1169,7 +1171,11 @@ def _measure_leaf_select(
             if preserve_buckets
             else where_clauses
         )
-        target.append(condition := _filter_condition_for_item(measure.entity, item, config))
+        target.append(
+            condition := _filter_condition_for_item(
+                measure.entity, item, config, measure_plan.path_selections
+            )
+        )
         filter_conditions.append(condition)
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
@@ -1629,7 +1635,9 @@ def _measure_group_leaf_select(
         )
     filter_conditions: list[Any] = []
     for item in _bound_filter_clauses(first_plan.bound_measure, config):
-        condition = _filter_condition_for_item(first_measure.entity, item, config)
+        condition = _filter_condition_for_item(
+            first_measure.entity, item, config, first_plan.path_selections
+        )
         (authored_conditions if preserve_buckets else where_clauses).append(condition)
         filter_conditions.append(condition)
     where_clauses.extend(_edge_cap(first_measure, leaf_time_role, config))
