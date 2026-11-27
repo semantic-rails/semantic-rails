@@ -556,21 +556,45 @@ def test_distinct_numeric_unknown_literals_conflict(tmp_path):
         runtime.close()
 
 
+def test_an_explicit_integer_is_distinct_from_a_decimal_unknown_literal(tmp_path):
+    runtime = _references(tmp_path, {"Ref Code": {"unknown_values": [1.0]}})
+    try:
+        with duckdb.connect(str(tmp_path / "dl.duckdb")) as connection:
+            connection.execute("DELETE FROM downloads")
+            connection.execute(
+                "INSERT INTO downloads VALUES (1, 'US', 10, '1.4'), (2, 'US', 5, '1.0')"
+            )
+        with pytest.raises(SemanticLayerError) as raised:
+            runtime.query(_installs_where("ref code", "is", 1.0))
+        assert raised.value.code == "INVALID_QUERY"
+        assert "1.0 is how dimension.dl_download_ref_0 records an unknown value" in str(
+            raised.value
+        )
+        assert runtime.query(_installs_where("ref code", "is", 1))["rows"] == [{"total": 10}]
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
-    ("spelling", "expected"),
+    ("date_spelling", "spelling", "expected"),
     [
-        ("Day Code", "\"Day Code\" = '2025-01-01'"),
-        ("DAY CODE", "\"DAY CODE\" = TIMESTAMP '2025-01-01'"),
-        ("day code", None),
+        ("DAY CODE", "Day Code", "\"Day Code\" = '2025-01-01'"),
+        ("DAY CODE", "DAY CODE", "\"DAY CODE\" = TIMESTAMP '2025-01-01'"),
+        ("DAY CODE", "day code", None),
+        pytest.param(
+            "Day Code", "Day Code", "\"Day Code\" = TIMESTAMP '2025-01-01'", id="shared-spelling"
+        ),
     ],
 )
-def test_athena_comparison_types_follow_the_declared_column_spelling(tmp_path, spelling, expected):
+def test_athena_comparison_types_follow_the_declared_column_spelling(
+    tmp_path, date_spelling, spelling, expected
+):
     root = _package(
         tmp_path,
         {},
         others={
             "day_text": {"kind": "categorical", "column": "Day Code"},
-            "day_date": {"kind": "date", "column": "DAY CODE"},
+            "day_date": {"kind": "date", "column": date_spelling},
             "delivery_date": {"kind": "date", "column": "Delivery Day"},
         },
     )
@@ -599,6 +623,50 @@ def test_athena_comparison_types_follow_the_declared_column_spelling(tmp_path, s
         assert (
             "\"delivery day\" = TIMESTAMP '2025-01-01'"
             in runtime.compile(_installs_where("delivery day", "is", "2025-01-01"))["rendered_sql"]
+        )
+    finally:
+        runtime.close()
+
+
+def test_an_authored_measure_keeps_temporal_typing_for_a_shared_spelling(tmp_path):
+    root = _package(
+        tmp_path,
+        {},
+        others={
+            "day_text": {"kind": "categorical", "column": "Day Code"},
+            "day_date": {"kind": "date", "column": "Day Code"},
+        },
+    )
+    model = root / "models" / "downloads.yml"
+    doc = yaml.safe_load(model.read_text(encoding="utf-8"))
+    condition = _installs_where("Day Code", "is", "2025-01-01")["select"][0]["expression"][
+        "condition"
+    ]
+    doc["model"]["measures"]["new_year_installs"] = {
+        "kind": "aggregate",
+        "expr": {
+            "kind": "case",
+            "whens": [{"when": condition, "then": {"kind": "column", "column": "installs"}}],
+            "else": {"kind": "literal", "value": 0},
+        },
+    }
+    model.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    with duckdb.connect(str(root / "dl.duckdb")) as connection:
+        connection.execute('ALTER TABLE downloads ADD COLUMN "Day Code" DATE')
+        connection.execute("UPDATE downloads SET \"Day Code\" = '2025-01-01'")
+        connection.execute("INSERT INTO downloads VALUES (7, 'US', 20, DATE '2025-01-02')")
+        [[gold]] = connection.execute(
+            "SELECT SUM(installs) FROM downloads WHERE \"Day Code\" = DATE '2025-01-01'"
+        ).fetchall()
+    runtime = Runtime.from_path(str(root))
+    try:
+        query = {"select": ["measure.dl.new_year_installs"]}
+        validation = runtime.validate(query)
+        assert validation["ok"], validation["errors"]
+        assert (
+            runtime.query(query)["rows"]
+            == [{"new_year_installs": gold}]
+            == [{"new_year_installs": 25}]
         )
     finally:
         runtime.close()

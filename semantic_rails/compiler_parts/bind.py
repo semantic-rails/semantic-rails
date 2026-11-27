@@ -500,8 +500,12 @@ def _word_comparison(
     value = _column_sql(column, measure, config, dims)
     if dims:
         value = unknown_as_null(value, dims[0])
-    typed = [dim for dim in dims if dim.column == column.column] or dims
+    exact = [dim for dim in dims if dim.column == column.column]
+    typed = exact or dims
     temporal_types = {dim.data_type in {"date", "timestamp"} for dim in typed}
+    if exact:
+        # A date or timestamp declaration on the written spelling makes it temporal.
+        temporal_types = {True in temporal_types}
     operands = (
         operators.values_of(word, expr.right.value) if word in {"is", "not"} else [expr.right.value]
     )

@@ -491,7 +491,8 @@ def refuse_unknown_spelling(
     spelling: the dimension reads it as no value, so ``is`` / ``not`` never sees it. The hint
     says ``missing`` as a where filter, or as a ``comparison``."""
     declared = list(getattr(dim, "unknown_values", None) or [])
-    unknown = [row for row in values_of(word, value) if row in declared]
+    declared_literals = set(map(repr, declared))
+    unknown = [row for row in values_of(word, value) if repr(row) in declared_literals]
     if not unknown:
         return
     flag = "true" if word == "is" else "false"
