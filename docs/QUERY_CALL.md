@@ -1856,10 +1856,10 @@ empty period inside the base relation's loaded range reads `0`; one before its f
 row or after its last row at or before `now` reads `NULL`. Coverage reads the
 whole base relation under policy row filters, ignoring measure and call filters, and is
 reported as `window.data_through`. Populated sums and positive counts always survive, including
-future-dated rows. On those warehouses, a scalar sum or count of one measure with no
-authored aggregate filter uses the same loaded-range rule for day bounds on its default
-DATE clock when the clock reads days as stored. An uncovered range before the first row
-reads `NULL` with `NO_DATA_IN_SCOPE` when only the date range limits observation.
+future-dated rows. Under dataset observation on those warehouses, a scalar sum or count of
+one measure with no authored aggregate filter uses the same loaded-range rule for day bounds
+on its default DATE clock when the clock reads days as stored. An uncovered range before the
+first row reads `NULL` with `NO_DATA_IN_SCOPE` when only the date range limits observation.
 `NO_DATA_YET` names each affected output and measure with its `edge`, the
 date of the measure's last row, and `edge_source` `last_row`: nothing says the data is loaded
 past that row. A table whose package declares its edge (`zero_through`, see

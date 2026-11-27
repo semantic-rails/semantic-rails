@@ -12,7 +12,6 @@ from semantic_rails import runtime as runtime_module
 from semantic_rails.config import load_package_config
 from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.embedding import RequestContext
-from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.runtime_parts import answer_warnings as answer_warnings_module
 from semantic_rails.schema import SeedSpec, SemanticPolicyConfig, ZeroThrough
@@ -296,7 +295,7 @@ def test_a_scalar_date_range_preserves_its_output_alias_and_source_relation(spar
 
 @pytest.mark.parametrize("sparse_runtime", ["date"], indirect=True)
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_scalar_date_coverage_obeys_allowed_temporal_roles(sparse_runtime):
+def test_scalar_date_coverage_keeps_day_filters_allowed_by_policy(sparse_runtime):
     rt, _, _ = sparse_runtime
     day, measure = "dimension.events_event_event_at", "measure.events.amount"
     policy = SemanticPolicyConfig(
@@ -310,25 +309,26 @@ def test_scalar_date_coverage_obeys_allowed_temporal_roles(sparse_runtime):
     query = {
         "select": [measure],
         "where": [
-            {"field": day, "op": "gte", "value": "2026-09-14"},
-            {"field": day, "op": "lt", "value": "2026-09-21"},
+            {"field": day, "op": "gte", "value": "2026-09-07"},
+            {"field": day, "op": "lt", "value": "2026-09-14"},
         ],
     }
     target = Runtime.from_config(config, source_path=rt.source_path)
     try:
-        with pytest.raises(SemanticLayerError) as refused:
-            target.query(query, context=RequestContext(audience="restricted"), now=NOW)
+        answer = target.query(query, context=RequestContext(audience="restricted"), now=NOW)
     finally:
         target.close()
-    assert refused.value.code == "POLICY_DENIED"
-    assert f"{measure} can't be read on {ROLE}." in str(refused.value)
+    assert answer["rows"] == [{"amount": 7}]
+    assert answer.get("warnings", []) == []
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb"])
 @pytest.mark.parametrize(
     "sparse_runtime", ["edge_1", "observed_1", "observed_1_rows"], indirect=True
 )
-def test_a_scalar_coverage_probe_can_share_a_name_with_a_source_table(sparse_runtime, monkeypatch):
+def test_query_observation_keeps_empty_day_filters_null_with_row_policies(
+    sparse_runtime, monkeypatch
+):
     rt, relation, _ = sparse_runtime
     day, measure = "dimension.events_event_event_at", "measure.events.amount"
     target = rt
@@ -341,11 +341,9 @@ def test_a_scalar_coverage_probe_can_share_a_name_with_a_source_table(sparse_run
             ),
         )
         target = Runtime.from_config(config, source_path=rt.source_path)
-        expected, code = 0, "ZERO_AFTER_LAST_ROW"
     else:
         monkeypatch.setattr(DuckDbDialect, "has_time_coverage", property(lambda self: False))
         monkeypatch.setattr(DuckDbDialect, "exists_in_select", False)
-        expected, code = None, "NO_DATA_YET"
     try:
         answer = target.query(
             {
@@ -362,8 +360,75 @@ def test_a_scalar_coverage_probe_can_share_a_name_with_a_source_table(sparse_run
     finally:
         if target is not rt:
             target.close()
-    assert answer["rows"] == [{"value": expected}]
-    assert [warning["code"] for warning in answer["warnings"]] == [code]
+    assert answer["rows"] == [{"value": None}]
+    [warning] = answer["warnings"]
+    assert warning["code"] == "NO_DATA_IN_SCOPE"
+    assert "nothing in this query's filters and time window holds a value" in warning["message"]
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("sparse_runtime", ["date"], indirect=True)
+@pytest.mark.parametrize("scope_source", ["call", "package"])
+def test_query_observation_keeps_a_quiet_week_null(sparse_runtime, scope_source):
+    rt, events, _ = sparse_runtime
+    _mutate(rt, f"INSERT INTO {events} VALUES (2, 'early', DATE '2026-09-21', 8)")
+    day = "dimension.events_event_event_at"
+    query = {
+        "select": [{"expression": "measure.events.amount", "as": "value"}],
+        "where": [
+            {"field": day, "op": "gte", "value": "2026-09-14"},
+            {"field": day, "op": "lt", "value": "2026-09-21"},
+        ],
+    }
+    if scope_source == "call":
+        query["observation_scope"] = "query"
+    config = rt.config
+    if scope_source == "package":
+        config = replace(config, package=replace(config.package, observation_scope="query"))
+    target = Runtime.from_config(config, source_path=rt.source_path)
+    try:
+        answer = target.query(query, now=NOW)
+    finally:
+        target.close()
+    assert answer["rows"] == [{"value": None}]
+    [warning] = answer["warnings"]
+    assert warning["code"] == "NO_DATA_IN_SCOPE"
+    assert "nothing in this query's filters and time window holds a value" in warning["message"]
+
+
+@pytest.mark.parametrize("sparse_runtime", ["date"], indirect=True)
+@pytest.mark.parametrize(
+    "backend_name,simulated",
+    [("duckdb", False), ("postgres", False), ("duckdb", True)],
+    ids=["duckdb", "postgres", "named-window-warehouses"],
+)
+def test_a_result_filter_keeps_the_empty_result_warning_for_day_bounds(
+    sparse_runtime, monkeypatch, simulated
+):
+    rt, _, _ = sparse_runtime
+    if simulated:
+        monkeypatch.setattr(DuckDbDialect, "has_time_coverage", property(lambda self: False))
+        monkeypatch.setattr(DuckDbDialect, "exists_in_select", False)
+    day = "dimension.events_event_event_at"
+    answer = rt.query(
+        {
+            "select": [{"expression": "measure.events.amount", "as": "event_count"}],
+            "where": [
+                {"field": day, "op": "gte", "value": "2026-09-14"},
+                {"field": day, "op": "lt", "value": "2026-09-21"},
+            ],
+            "having": [{"field": "event_count", "op": "is", "value": 0}],
+        },
+        now=NOW,
+    )
+    assert answer["rows"] == []
+    [warning] = answer["warnings"]
+    assert warning["code"] == "EMPTY_RESULT_WINDOW"
+    assert warning["message"].startswith("Query returned zero rows under the applied time filter.")
+    assert warning["details"]["requested_window"] == {
+        "start": "2026-09-14",
+        "end": "2026-09-21",
+    }
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])

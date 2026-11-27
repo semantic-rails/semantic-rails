@@ -437,34 +437,29 @@ def guard_empty_groups(
         for node in sql_nodes([list((scopes or {}).values()), list(observed.values())])
         if isinstance(node, (SqlCte, SqlTableRef))
     }
+    coverage_index = 0
     edges: dict[str, str] = {}
     probes: dict[str, str] = {}
-
-    def available_name(prefix: str, index: int, *, with_rows: bool = False) -> str:
-        name = f"{prefix}_{index}"
-        while name in occupied or (with_rows and f"{name}_rows" in occupied):
-            index += 1
-            name = f"{prefix}_{index}"
-        occupied.add(name)
-        if with_rows:
-            occupied.add(f"{name}_rows")
-        return name
 
     def probed(probe: SqlSelect) -> SqlBinary:
         """Whether ``probe`` finds a row, read once through plain CTEs the guard cross-joins."""
         name = probes.get(repr(probe))
         if name is None:
-            name = probes[repr(probe)] = available_name("observed", len(probes) + 1, with_rows=True)
+            name = probes[repr(probe)] = f"observed_{len(probes) + 1}"
             ctes.extend(_dataset_probe_ctes(name, probe))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
 
     def covered(scope: LeafScope) -> str:
         """The coverage CTE of the scope's base relation and bucket, read once."""
+        nonlocal coverage_index
         loaded = repr((scope.from_table, scope.raw_time, scope.storage_zone, scope.bucket))
         name = coverage.get(loaded)
         if name is None:
-            name = coverage[loaded] = available_name("coverage", len(coverage) + 1)
+            coverage_index += 1
+            while (candidate := f"coverage_{coverage_index}") in occupied:
+                coverage_index += 1
+            name = coverage[loaded] = candidate
             ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return name
@@ -570,9 +565,7 @@ def guard_empty_groups(
                         # never share it.
                         edge = edges.get(repr(scope.edge))
                         if edge is None:
-                            edge = edges[repr(scope.edge)] = available_name(
-                                "edge", len(edges) + 1, with_rows=scope.edge.rows is not None
-                            )
+                            edge = edges[repr(scope.edge)] = f"edge_{len(edges) + 1}"
                             ctes.extend(_edge_ctes(edge, scope.edge))
                             joins.append(SqlJoin("CROSS", SqlTableRef(name=edge)))
                         seen = SqlBinary(seen, "AND", _certified_bucket(key, name, edge))

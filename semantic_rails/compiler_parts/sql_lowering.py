@@ -53,7 +53,6 @@ from .dependencies import (
     plan_is_root,
     project_is_cut,
     record_retained_filtered_series,
-    record_temporal_role,
     settles_as_a_call,
 )
 from .distribution import _lower_agent_dag_to_sql
@@ -220,8 +219,6 @@ def lower_to_sql(
             "EMPTY_GROUPS_UNSETTLED", "A coverage-dependent plan must read the base relation."
         )
     if scalar:
-        bound = plan.measure_plans[0].bound_measure
-        record_temporal_role(bound.measure_id, scalar.time["temporal_role"], leaf_alias=bound.alias)
         with observing(scalar.query, config):
             select = _lower_query_to_sql(plan, config, guard_empty, scalar_window=scalar)
     else:

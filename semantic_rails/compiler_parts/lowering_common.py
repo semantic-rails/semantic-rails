@@ -92,6 +92,7 @@ from .empty_groups import (
     declared_edge,
     drops_rows_below_root,
     expr_resolves_to_zero,
+    observation_scope,
     reads_every_row,
     record_balance_scope,
     record_leaf_scope,
@@ -347,6 +348,7 @@ def scalar_date_window(plan: LogicalPlan, config: PackageConfig) -> LogicalPlan 
         or not plan.query.get("where")
         or len(plan.measure_plans) != 1
         or not _dialect(config).reads_coverage
+        or observation_scope(plan.query, config) == "query"
     ):
         return None
     query = plan.query
@@ -386,15 +388,6 @@ def scalar_date_window(plan: LogicalPlan, config: PackageConfig) -> LogicalPlan 
             continue
         comparison = operators.COMPARISON_SQL[op]
         value = item["value"]
-        midnight = _calendar_bound(value)
-        if (
-            midnight is not None
-            and midnight.tzinfo is None
-            and midnight.time() == datetime.min.time()
-            and isinstance(value, str)
-            and len(value) > 10
-        ):
-            value = midnight.date().isoformat()
         try:
             day = date.fromisoformat(value)
             if day.isoformat() != value:

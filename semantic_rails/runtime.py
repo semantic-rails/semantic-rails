@@ -2239,12 +2239,13 @@ class Runtime:
         )
         scalar = scalar_date_window(compiled["logical_plan"], self._config)
         covered = {**compiled, "logical_plan": scalar} if scalar else compiled
+        coverage_payload = {**payload, "time": scalar.time} if scalar else payload
         coverage_zone = (_time_zone(self._config, covered) if scalar else zone) or "UTC"
         coverage = _coverage_read(self, covered, payload) if covered["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
             covered,
             own_rows,
-            {**payload, "time": scalar.time} if scalar else payload,
+            coverage_payload,
             coverage,
             zone=coverage_zone,
             excluded_outputs=withheld,
@@ -2334,7 +2335,7 @@ class Runtime:
         # no signal to distinguish that from a silent row-drop. Surface
         # the applied time bounds and point at inspect for freshness.
         if not own_rows and not coverage_warnings:
-            time_block = dict(payload.get("time", {}) or {})
+            time_block = dict(coverage_payload.get("time", {}) or {})
             has_time_filter = (
                 time_block.get("start") or time_block.get("end") or time_block.get("temporal_role")
             )
@@ -2378,7 +2379,7 @@ class Runtime:
                     )
                 # The resolved bounds show where the filter landed: a relative window
                 # resolves against now, which can fall far outside historical data.
-                requested_window = _requested_window(compiled, payload)
+                requested_window = _requested_window(compiled, coverage_payload)
                 out["data_diagnostics"] = {
                     "rows_returned": 0,
                     "applied_time_filter": applied,

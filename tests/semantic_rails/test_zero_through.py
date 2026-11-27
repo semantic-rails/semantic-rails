@@ -82,6 +82,33 @@ def test_without_a_declaration_every_measure_reads_its_last_row(shop):
     assert edges["measure.shop.seats"] is None
 
 
+def test_a_result_filter_keeps_the_empty_window_warning_for_a_scalar(shop):
+    engine = Runtime.from_path(str(shop))
+    try:
+        day = "dimension.shop_clock_edge_source_day"
+        answer = engine.query(
+            {
+                "select": [{"expression": "measure.shop.day_amount", "as": "amount"}],
+                "where": [
+                    {"field": day, "op": "gte", "value": "2024-06-24"},
+                    {"field": day, "op": "lt", "value": "2024-07-01"},
+                ],
+                "having": [{"field": "amount", "op": "is", "value": 0}],
+            },
+            now=NOW,
+        )
+    finally:
+        engine.close()
+    assert answer["rows"] == []
+    [warning] = answer["warnings"]
+    assert warning["code"] == "EMPTY_RESULT_WINDOW"
+    assert warning["message"].startswith("Query returned zero rows under the applied time filter.")
+    assert warning["details"]["requested_window"] == {
+        "start": "2024-06-24",
+        "end": "2024-07-01",
+    }
+
+
 def test_a_mark_is_found_by_its_column_and_a_timestamp_keeps_its_stored_zone(shop):
     def logged_at(doc: dict[str, Any]) -> None:
         doc["model"]["times"] = {
