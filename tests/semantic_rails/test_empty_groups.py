@@ -1070,6 +1070,239 @@ def test_months_before_the_first_ticket_read_null_on_every_warehouse(
     assert opened() == expected
 
 
+ORDERS_THEN_TICKETS = [
+    ("2023-11", 2, None),
+    ("2023-12", 1, None),
+    ("2024-01", 1, None),
+    ("2024-03", 2, None),
+    ("2024-05", 2, None),
+    ("2024-06", 1, None),
+    ("2024-07", 1, None),
+    ("2024-08", 1, None),
+    ("2024-09", None, 3),
+    ("2024-10", None, 1),
+]
+
+
+@pytest.mark.parametrize(
+    ("time", "expected"),
+    [
+        ({"grain": "month"}, ORDERS_THEN_TICKETS),
+        ({"grain": "month", "start": "2024-07-01"}, ORDERS_THEN_TICKETS[-4:]),
+        ({"grain": "month", "end": "2024-10-21"}, ORDERS_THEN_TICKETS),
+        (
+            {"grain": "month", "end": "2024-10-21", "fill": True},
+            sorted([*ORDERS_THEN_TICKETS, ("2024-02", 0, None), ("2024-04", 0, None)]),
+        ),
+    ],
+    ids=["every_month", "since_july", "until_october_21", "filled_until_october_21"],
+)
+def test_a_period_past_a_measures_last_row_reads_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], expected: list
+) -> None:
+    """The last order is dated August 1 and the first ticket September 2; neither table declares
+    how far it is loaded. Each reads 0 only between its own first and last row, never in a month
+    the other one's rows put in the answer: NULL there on every warehouse that reads coverage,
+    as on DuckDB, and the orders past their last row say so with NO_DATA_YET."""
+
+    def months() -> tuple[list[tuple[Any, ...]], list[Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(orders=SHOP_ORDERS, tickets=TICKETS_BY_LAST_ROW),
+                    "time": {"temporal_role": "temporal_role.shop_ticket_row_opened_at", **time},
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        rows = [
+            (row["period"].strftime("%Y-%m"), row["orders"], row["tickets"])
+            for row in typed_rows(response)
+        ]
+        return rows, [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")]
+
+    answer = (expected, [["orders"]])
+    assert months() == answer
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert months() == answer
+
+
+@pytest.mark.parametrize("relation", ["coverage_1", "COVERAGE_1"])
+@pytest.mark.parametrize("start", [None, "2024-07-01"], ids=["warehouse_simulation", "duckdb"])
+def test_coverage_does_not_shadow_a_source_relation(
+    tmp_path: Path, request: pytest.FixtureRequest, relation: str, start: str | None
+) -> None:
+    package = _shop_package(tmp_path, f"CREATE TABLE {relation} AS SELECT * FROM tickets")
+    model_path = package / "models" / "ticket_rows.yml"
+    model = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    model["model"]["relation"] = relation
+    model_path.write_text(yaml.safe_dump(model), encoding="utf-8")
+
+    time = {"temporal_role": "temporal_role.shop_ticket_row_opened_at", "grain": "month"}
+    if start:
+        time["start"] = start
+    else:
+        request.getfixturevalue("coverage_for_named_windows_only")
+    rt = Runtime.from_path(str(package))
+    try:
+        response = rt.query(
+            {"select": _select(orders=SHOP_ORDERS, tickets=TICKETS_BY_LAST_ROW), "time": time},
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    assert [
+        (row["period"].strftime("%Y-%m"), row["orders"], row["tickets"])
+        for row in typed_rows(response)
+    ] == (ORDERS_THEN_TICKETS[-4:] if start else ORDERS_THEN_TICKETS)
+    assert [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")] == [
+        ["orders"]
+    ]
+    assert response["window"]["data_through"] == "2024-08-01"
+
+
+def test_coverage_does_not_shadow_a_schema_in_a_subtotal(tmp_path: Path) -> None:
+    package = _shop_package(
+        tmp_path,
+        "CREATE SCHEMA coverage_1",
+        "CREATE TABLE coverage_1.orders AS SELECT * FROM orders",
+    )
+    config = load_package_config(str(package))
+    config = replace(
+        config,
+        entities=[
+            replace(row, table="coverage_1.orders") if row.table == "orders" else row
+            for row in config.entities
+        ],
+    )
+    scans = {"kind": "measure", "measure": "measure.shop.scan_count"}
+    rt = Runtime.from_config(config, source_path=str(package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    orders=SHOP_ORDERS,
+                    scans=scans,
+                    scans_total={"kind": "total", "input": scans["measure"], "over": [SHOP_STORE]},
+                ),
+                "group_by": [SHOP_STORE],
+                "time": {"temporal_role": SHOP_ROLE, "grain": "quarter"},
+            },
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    rows = typed_rows(response)
+    assert (rows[0]["orders"], rows[0]["scans"], rows[0]["scans_total"]) == (2, 3, 4)
+    assert [(row["orders"], row["scans"], row["scans_total"]) for row in rows[-2:]] == [
+        (1, None, None),
+        (1, None, None),
+    ]
+
+
+def test_orders_per_ticket_past_the_last_order_read_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest
+) -> None:
+    """Orders per ticket, by week since July: the last order is dated August 1, so from the
+    first ticket's week on there are no orders to count and the ratio has no numerator. It reads
+    NULL there, never 0.0, on every warehouse that reads coverage, as on DuckDB."""
+
+    def weeks() -> tuple[list[tuple[Any, ...]], list[Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": [
+                        *_select(
+                            orders=SHOP_ORDERS, opened=TICKETS_OPENED, rows=TICKETS_BY_LAST_ROW
+                        ),
+                        {
+                            "as": "per_ticket",
+                            "expression": {
+                                "kind": "ratio",
+                                "numerator": "measure.shop.order_count",
+                                "denominator": {
+                                    "kind": "call",
+                                    "name": "COALESCE",
+                                    "args": [
+                                        "measure.shop.tickets_opened",
+                                        "measure.shop.tickets_by_last_row",
+                                    ],
+                                },
+                            },
+                        },
+                    ],
+                    "time": {
+                        "temporal_role": "temporal_role.shop_ticket_opened_at",
+                        "grain": "week",
+                        "start": "2024-07-01",
+                    },
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        rows = [
+            (
+                row["period"].strftime("%Y-%m-%d"),
+                *(row[name] for name in ("orders", "opened", "rows", "per_ticket")),
+            )
+            for row in typed_rows(response)
+        ]
+        return rows, [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")]
+
+    answer = (
+        [
+            ("2024-07-01", 1, None, None, None),
+            ("2024-07-29", 1, None, None, None),
+            ("2024-09-02", None, 2, 2, None),
+            ("2024-09-09", None, 1, 1, None),
+            ("2024-10-07", None, None, 1, None),
+        ],
+        [["orders", "opened"]],
+    )
+    assert weeks() == answer
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert weeks() == answer
+
+
+def test_a_month_the_rollup_could_answer_reads_as_its_base_rows_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest
+) -> None:
+    """Orders and store b's orders, by month since August, at the start of September: store b
+    has orders before August and none in it, so August reads 0, on every warehouse that reads
+    coverage, as on DuckDB. The monthly rollup could answer the orders, and the answer doesn't
+    depend on whether it does."""
+
+    def months() -> list[tuple[Any, ...]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(
+                        orders=SHOP_ORDERS,
+                        b_orders=_only(
+                            SHOP_ORDERS, [{"field": SHOP_STORE, "op": "is", "value": "b"}]
+                        ),
+                    ),
+                    "time": {"temporal_role": SHOP_ROLE, "grain": "month", "start": "2024-08-01"},
+                },
+                now=SHOP_NOW,
+            )
+        finally:
+            rt.close()
+        return [
+            (row["period"].strftime("%Y-%m"), row["orders"], row["b_orders"])
+            for row in typed_rows(response)
+        ]
+
+    assert months() == [("2024-08", 1, 0)]
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert months() == [("2024-08", 1, 0)]
+
+
 def test_a_window_total_without_coverage_reads_only_its_window(
     shop_package: Path, coverage_for_named_windows_only: None
 ) -> None:

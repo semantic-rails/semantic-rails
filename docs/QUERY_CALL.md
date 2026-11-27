@@ -1481,10 +1481,11 @@ apply before the per-entity aggregation.
 - `window` holds only the keys that apply: `start`/`end` as resolved (`last` becomes dates;
   `this` starts on a date and ends at `now`, stated with the clock zone's offset), `now` as
   used, `partial`, and `data_through` once loaded coverage has read the edge (DuckDB,
-  MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a named
-  window's series). `data_through_source` says where a declared edge comes from: the load log
-  as the package declares it (`export_runs.through_day`; `loaded` when the caller can't see
-  that model), or `now`; it is left out when the edge is the last row.
+  MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a series
+  whose empty periods it bounds, see [Empty groups](#empty-groups-null-or-0)).
+  `data_through_source` says where a declared edge comes from: the load log as the package
+  declares it (`export_runs.through_day`; `loaded` when the caller can't see that model), or
+  `now`; it is left out when the edge is the last row.
 - `read_from` comes first, before the rows, on a call that ran (not `validate` or `sql`). It
   lists, under each model's entity, the ids the answer read from it: each selected measure or
   metric (under each model a metric reads), and each `group_by` and `where` dimension. When the
@@ -1875,14 +1876,17 @@ reads `0` in a week the orders' load log covers with no order and `NULL` before 
 and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
 read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
 not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery,
-Databricks and Athena, an empty period of a series whose periods come from its rows (an open
-window's, or a named window's grouped by a date or time dimension) reads `0` where the
-measure has data in scope, inside the window or outside it, and the period lies inside the
-measure's own loaded range, as on DuckDB and Postgres: "revenue and refunds until
+Databricks and Athena, an empty period of a series whose periods come from its rows (with no
+window or an open one, or a named window's grouped by a date or time dimension) reads `0`
+where the measure has data in scope, inside the window or outside it, and the period lies
+inside the measure's own loaded range, as on DuckDB and Postgres: "revenue and refunds until
 mid-November" reads `0` refunds in a month with none when refunds were recorded later, and
 their average `NULL`, since an average of nothing has no value. Past the measure's own last
 row the period reads `NULL` with `NO_DATA_YET`, however many rows came before: orders and
-shipment scans since July read `NULL` scans when the scans, on their own clock, stop in June.
+shipment scans since July read `NULL` scans when the scans, on their own clock, stop in June,
+and orders beside tickets by month read `NULL` orders after the last order. A series that reads
+measures in separate parts like that reads each one from its own table there, never from a
+rollup, as on DuckDB and Postgres.
 A window total there, and a part of a joined call (whose periods can come from another part's
 clock), read `0` only while the measure has data inside the window, as every empty period on
 ClickHouse does. These five warehouses read the stored
