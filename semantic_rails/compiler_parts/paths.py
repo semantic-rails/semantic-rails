@@ -52,6 +52,7 @@ from ..sql_ast import (
     SqlTableRef,
     build_filter_condition,
 )
+from ..sql_preparation import bigquery_quoted_identifier
 from .dependencies import holding, record_bound_object
 from .indexes import (
     _default_temporal_role,
@@ -178,24 +179,23 @@ def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> l
 def column_key(name: str, config: PackageConfig) -> str:
     """A column name as the warehouse reads it: in ASCII lower case when the SQL leaves it
     unquoted (every warehouse but ClickHouse folds it) or quotes it on a warehouse that folds
-    quoted names too, else as it is. Never a Unicode casefold."""
+    quoted names too, else as it is. BigQuery compares the prepared field name."""
     from ..renderer import _quote_ident
 
     dialect = dialect_for_warehouse(config.package.warehouse)
     if _quote_ident(name) != name:
         sensitive = dialect.quoted_identifiers_case_sensitive
+        if dialect.name == "bigquery":
+            name = bigquery_quoted_identifier(name)
     else:
         sensitive = dialect.identifiers_case_sensitive
     return name if sensitive else name.translate(_ASCII_LOWER)
 
 
 def dimensions_sharing_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
-    """The dimensions ``column`` binds to (``dimensions_over_column``), first, then every other
-    dimension of ``entity`` over a spelling the warehouse reads as the same column
-    (``column_key``); none for a spelling that binds to no dimension, which reads as itself."""
+    """The dimensions over every spelling the warehouse reads as ``column``, with dimensions
+    from ``dimensions_over_column`` first when the written spelling has a match."""
     over = dimensions_over_column(entity, column, config)
-    if not over:
-        return []
     key, ids = column_key(column, config), {dim.id for dim in over}
     others = [dim for dim in _dimension_index(config).values() if dim.id not in ids]
     return over + [

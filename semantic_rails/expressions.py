@@ -2437,16 +2437,18 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
     raise _unsupported_expression_kind(expr.get("kind"), path or context)
 
 
-def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
-    """Every column ``expr`` reads, in the order they are written. One walk with its own stack,
-    so a deep expression takes no more of Python's than a shallow one."""
+def collect_column_refs(
+    expr: SemanticExpr, *, filter_words_only: bool = False
+) -> list[ColumnRefExpr]:
+    """Every column ``expr`` reads, in order, or just the operands of dimension filter words."""
     refs: list[ColumnRefExpr] = []
     stack: list[SemanticExpr] = [expr]
     while stack:
         node = stack.pop()
         parts: list[SemanticExpr | None]
         if isinstance(node, ColumnRefExpr):
-            refs.append(node)
+            if not filter_words_only:
+                refs.append(node)
             continue
         if isinstance(
             node,
@@ -2454,6 +2456,13 @@ def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
         ):
             continue
         if isinstance(node, (ArithmeticExpr, ComparisonExpr)):
+            if (
+                filter_words_only
+                and isinstance(node, ComparisonExpr)
+                and isinstance(node.left, ColumnRefExpr)
+                and (filter_word(node) or operators.word_of(node.op) in operators.TEXT_WORDS)
+            ):
+                refs.append(node.left)
             parts = [node.left, node.right]
         elif isinstance(node, (BooleanExpr, CallExpr)):
             parts = list(node.args)

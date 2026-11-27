@@ -34,6 +34,7 @@ from ..expressions import (
     ConversionExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
     validate_expression_shapes,
@@ -68,6 +69,7 @@ from ..sql_ast import (
 )
 from .bind import (
     _expression_alias,
+    _resolve_expr_entity,
     _synthetic_conditional_measure,
     refusing_fallible_calls,
 )
@@ -76,6 +78,7 @@ from .dependencies import (
     binding_dependencies,
     capture_objects,
     plan_bindings,
+    record_bound_object,
     record_temporal_role,
 )
 from .empty_groups import (
@@ -98,6 +101,7 @@ from .lowering_common import recording_stock_key_gaps
 from .parent_values import bind_parent_values
 from .paths import (
     _leaf_time_role,
+    dimensions_sharing_column,
     display_key,
 )
 from .plan_checks import _object_default_query_temporal_role
@@ -219,7 +223,7 @@ class BoundQuery:
 
 
 def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> frozenset[str]:
-    """Resolve metadata ownership and a valid default invocation for recipes."""
+    """Resolve metadata ownership, including the dimensions an authored comparison reads."""
     references: set[str] = set()
     for object_id in object_ids:
         recipe = _recipe_index(config).get(object_id)
@@ -229,9 +233,14 @@ def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> f
                     _dimension_index,
                     _temporal_role_index,
                     _entity_index,
-                    _measure_index,
                 ):
                     index(config).get(object_id)
+                measure = _measure_index(config).get(object_id)
+                if measure is not None and not measure.lookup_from:
+                    for ref in collect_column_refs(measure.expr, filter_words_only=True):
+                        entity = _resolve_expr_entity(ref, measure, config)
+                        for dimension in dimensions_sharing_column(entity, ref.column, config):
+                            record_bound_object(dimension, config)
             references.update(dependencies.object_ids)
             continue
         query: dict[str, Any] = {"select": [{"expression": {"metric": object_id}, "as": "value"}]}

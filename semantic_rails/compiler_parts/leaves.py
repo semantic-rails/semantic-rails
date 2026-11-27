@@ -26,6 +26,7 @@ from ..ast import (
 from ..config_parts.lookup_measures import lookup_links
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
+from ..expressions import collect_column_refs
 from ..fanout import recording_route_choices
 from ..ir import (
     LogicalPlan,
@@ -219,6 +220,10 @@ def _aggregate_relation_leaf_select(
 
     for measure_plan in measure_plans:
         measure_id = measure_plan.bound_measure.measure_id
+        measure = _measure_index(config)[measure_id]
+        if not measure.lookup_from and collect_column_refs(measure.expr, filter_words_only=True):
+            # Check the authored comparison and record its dependencies before using its rollup.
+            _config_expr_to_sql(measure.expr, measure, config)
         column = aggregate.measure_columns.get(measure_id)
         if not column:
             raise SemanticLayerError(

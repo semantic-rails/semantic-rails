@@ -1271,16 +1271,20 @@ as `<>` that keeps rows with no value; and `missing`, with a literal `true` or `
 a test for no value. A filter word whose `left` is a column and whose `right` is a literal is
 exactly the `where` filter on the dimension over that column: `is` or `not` with a list is
 membership (`is ["a", "b"]` keeps either, `not ["a"]` keeps every other row and those with no
-value), the dimension's `unknown_values` read as no value (so `missing` counts them, and `is` one
-of them is refused as in `where`), and a column no dimension declares reads as itself. A list
-anywhere else, or after a SQL comparison, is refused: write `in`. It also takes a text word as its
-`op`, with a text literal `right`
+value) and the dimension's `unknown_values` read as no value. `missing` counts them, and `is` one
+of them is refused as in `where`. The warehouse's identifier rules determine which spellings
+read the same column. All dimensions on that column must agree on `unknown_values`, or the
+comparison is refused with `INVALID_QUERY`. A column with no matching dimension reads as itself.
+A list anywhere else, or after a SQL comparison, is refused. Use `in`. A comparison also takes a
+text word as its `op`, with a text literal `right`
 (`{"kind": "comparison", "op": "starts_with", "left": <column>, "right": {"kind": "literal",
 "value": "K"}}`). Its `left` is a column that exactly one dimension declares, named as the
-warehouse names columns (the exact name first, then an unquoted name in any ASCII case on every
-warehouse but ClickHouse; never a Unicode casefold, so `straße` is not `strasse`). The word
-reads it as a filter on that dimension does: its `unknown_values` are unknown, and a `not_` form
-keeps unknown rows. A column that no dimension, or several, declares is refused.
+warehouse names columns. PostgreSQL, Snowflake and ClickHouse distinguish quoted names by case.
+The other warehouses fold ASCII case for quoted names. BigQuery assigns distinct field names to
+spellings that require rewriting, such as `Customer Ref` and `customer ref`. Every warehouse
+except ClickHouse folds ASCII case for unquoted names. The word reads the dimension's
+`unknown_values` as no value, and a `not_` form keeps unknown rows. A column that no dimension,
+or several, declares is refused.
 `LIKE` is refused there as in `where`. An `arithmetic` op other than `add`, `subtract`,
 `multiply` and `divide` (or `+`, `-`, `*`, `/`) is refused at its path with the closest op.
 

@@ -7,6 +7,7 @@ treat all three alike. Gold values come from plain SQL over the seed.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,13 @@ import yaml
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import (
+    AggregateRelationConfig,
+    EntityConfig,
+    RelationshipConfig,
+    SemanticPolicyConfig,
+    TemporalRoleConfig,
+)
 
 SEED = """
 CREATE TABLE downloads (download_id INTEGER, country VARCHAR, installs INTEGER);
@@ -198,7 +206,7 @@ def _gold_references(where: str) -> int:
     return int(total)
 
 
-@pytest.mark.parametrize("spelling", ["Ref Code", "REF CODE"])
+@pytest.mark.parametrize("spelling", ["Ref Code", "REF CODE", "ref code"])
 @pytest.mark.parametrize(
     ("op", "value", "message"),
     [
@@ -273,11 +281,12 @@ def test_spellings_whose_dimensions_agree_give_one_answer(tmp_path, declared, wh
     assert int(declared_row["unreferenced_installs"]) == gold
 
 
-def test_one_dimension_over_its_exact_spelling_reads_its_unknown_values(tmp_path):
+def _assert_one_dimension_reads_its_unknown_values(tmp_path, spelling):
     runtime = _references(tmp_path, {"Ref Code": SENTINEL})
     try:
-        missing = runtime.query(_installs_where("Ref Code", "missing", True))["rows"]
-        contains = runtime.query(_installs_where("Ref Code", "contains", "R"))["rows"]
+        missing = runtime.query(_installs_where(spelling, "missing", True))["rows"]
+        contains = runtime.query(_installs_where(spelling, "contains", "R"))["rows"]
+        [error] = runtime.validate(_installs_where(spelling, "is", "UNKNOWN"))["errors"]
     finally:
         runtime.close()
     assert (
@@ -290,3 +299,277 @@ def test_one_dimension_over_its_exact_spelling_reads_its_unknown_values(tmp_path
         == [_gold_references("\"Ref Code\" LIKE '%R%' AND \"Ref Code\" <> 'UNKNOWN'")]
         == [15]
     )
+    assert error["code"] == "INVALID_QUERY"
+    assert (
+        "'UNKNOWN' is how dimension.dl_download_ref_0 records an unknown value" in error["message"]
+    )
+
+
+def test_one_dimension_over_its_exact_spelling_reads_its_unknown_values(tmp_path):
+    _assert_one_dimension_reads_its_unknown_values(tmp_path, "Ref Code")
+
+
+def test_one_dimension_over_an_undeclared_spelling_reads_its_unknown_values(tmp_path):
+    _assert_one_dimension_reads_its_unknown_values(tmp_path, "ref code")
+
+
+@pytest.mark.parametrize(("op", "value"), [("missing", True), ("contains", "R")])
+def test_a_dimension_policy_governs_an_undeclared_spelling(tmp_path, op, value):
+    dimension = "dimension.dl_download_ref"
+    root = _package(
+        tmp_path,
+        {},
+        others={
+            "ref": {"kind": "categorical", "column": "Ref Code", **SENTINEL},
+        },
+    )
+    config = load_package_config(str(root))
+    policy = SemanticPolicyConfig(
+        id="policy.dl.ref_denied",
+        kind="object_access",
+        object_ids=[dimension],
+        action="deny",
+    )
+    runtime = Runtime.from_config(
+        replace(config, semantic_policies=[policy]), source_path=str(root)
+    )
+    try:
+        [error] = runtime.validate(_installs_where("ref code", op, value))["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == "POLICY_DENIED"
+    assert dimension in error["message"]
+    assert error["details"]["blocked_objects"] == [dimension]
+
+
+@pytest.mark.parametrize(
+    ("kind", "action", "code"),
+    [
+        ("object_access", "deny", "POLICY_DENIED"),
+        ("object_visibility", "hidden", "OBJECT_NOT_FOUND"),
+    ],
+)
+def test_an_authored_comparison_records_the_undeclared_spellings_dimension(
+    tmp_path, kind, action, code
+):
+    config = _references(tmp_path, {"Ref Code": SENTINEL})
+    package = config.package_config
+    config.close()
+    dimension = "dimension.dl_download_ref_0"
+    policy = SemanticPolicyConfig(
+        id="policy.dl.restricted_ref",
+        kind=kind,
+        action=action,
+        object_ids=[dimension],
+        audiences=["restricted"],
+    )
+    runtime = Runtime.from_config(
+        replace(package, semantic_policies=[policy]), source_path=str(tmp_path)
+    )
+    measure = "measure.dl.unreferenced_installs"
+    query = {"select": [measure]}
+    try:
+        assert runtime.query(query)["rows"] == [{"unreferenced_installs": 10}]
+        [error] = runtime.validate(query, context={"audience": "restricted"})["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == code
+    if action == "deny":
+        assert f"{dimension} is denied" in error["message"]
+    else:
+        assert measure in error["message"]
+        assert dimension not in repr(error)
+
+
+@pytest.mark.parametrize("conflict", [False, True], ids=["object-policy", "conflict"])
+def test_a_rollup_keeps_the_authored_comparisons_dimension_dependency(tmp_path, conflict):
+    fixture = _references(tmp_path, {"Ref Code": SENTINEL})
+    package = fixture.package_config
+    fixture.close()
+    ref_id = "dimension.dl_download_ref_0"
+    day_id = "dimension.dl_download_day"
+    role = TemporalRoleConfig(
+        "temporal_role.dl_day", day_id, "event_time", supported_grains=["day"]
+    )
+    measure_id = "measure.dl.unreferenced_installs"
+    date = replace(package.dimensions[0], id=day_id, column="day", data_type="date")
+    measures = [
+        replace(row, compatible_temporal_roles=[role.id], default_temporal_role=role.id)
+        if row.id == measure_id
+        else row
+        for row in package.measures
+    ]
+    rollup = AggregateRelationConfig(
+        "aggregate_relation.dl_daily",
+        "downloads_daily",
+        date.entity,
+        temporal_role=role.id,
+        grain="day",
+        time_column="day",
+        measure_columns={measure_id: "unreferenced_installs"},
+        measure_holds={measure_id: "sum"},
+    )
+    policy = SemanticPolicyConfig(
+        id="policy.dl.restricted_ref",
+        kind="object_access",
+        action="deny",
+        object_ids=[ref_id],
+        audiences=["restricted"],
+    )
+    dimensions = [*package.dimensions, date]
+    if conflict:
+        ref = next(row for row in dimensions if row.id == ref_id)
+        dimensions.append(replace(ref, id=f"{ref_id}_upper", column="Ref CODE", unknown_values=[]))
+    config = replace(
+        package,
+        dimensions=dimensions,
+        temporal_roles=[role],
+        measures=measures,
+        aggregate_relations=[rollup],
+        semantic_policies=[policy],
+    )
+    runtime = Runtime.from_config(config, source_path=str(tmp_path))
+    query = {"select": [measure_id], "time": {"temporal_role": role.id, "grain": "day"}}
+    try:
+        if conflict:
+            with pytest.raises(SemanticLayerError) as raised:
+                runtime.compile(query)
+            assert raised.value.code == "INVALID_QUERY"
+            assert "whose dimensions declare different unknown values" in str(raised.value)
+            assert raised.value.details["dimensions"] == [ref_id, f"{ref_id}_upper"]
+            return
+        assert "downloads_daily" in runtime.compile(query)["rendered_sql"]
+        [error] = runtime.validate(query, context={"audience": "restricted"})["errors"]
+    finally:
+        runtime.close()
+    assert error["code"] == "POLICY_DENIED"
+    assert f"{ref_id} is denied" in error["message"]
+
+
+@pytest.mark.parametrize(
+    ("spellings", "joined"),
+    [
+        pytest.param(("Customer Ref", "customer ref"), False, id="quoted"),
+        pytest.param(("Select", "select"), False, id="reserved"),
+        pytest.param(("Customer Ref", "customer ref"), True, id="joined-table"),
+    ],
+)
+@pytest.mark.parametrize("conflict", [False, True], ids=["agree", "conflict"])
+def test_undeclared_spelling_uses_the_columns_unknown_values(tmp_path, spellings, joined, conflict):
+    declared, undeclared = spellings
+    root = _package(tmp_path, {})
+    config = load_package_config(str(root))
+    download = "entity.dl_download"
+    if joined:
+        customer = "entity.dl_customer"
+        config = replace(
+            config,
+            entities=[*config.entities, EntityConfig(customer, "customers", ["id"])],
+            relationships=[
+                *config.relationships,
+                RelationshipConfig(
+                    "relationship.dl_download_customer",
+                    download,
+                    customer,
+                    "download_id",
+                    "id",
+                    "n:1",
+                    "safe",
+                ),
+            ],
+        )
+    dimension = replace(
+        config.dimensions[0],
+        id="dimension.dl_ref",
+        entity=customer if joined else download,
+        column=declared,
+        unknown_values=["UNKNOWN"],
+    )
+    alternate = replace(
+        dimension,
+        id="dimension.dl_ref_upper",
+        column=declared.upper(),
+        unknown_values=[] if conflict else ["UNKNOWN"],
+    )
+    config = replace(config, dimensions=[*config.dimensions, dimension, alternate])
+    with duckdb.connect(str(root / "dl.duckdb")) as connection:
+        connection.execute("DELETE FROM downloads")
+        connection.execute(
+            "INSERT INTO downloads VALUES (1, NULL, 5), (2, NULL, 10), (3, NULL, 20)"
+        )
+        if joined:
+            connection.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY)")
+            connection.execute("INSERT INTO customers SELECT download_id FROM downloads")
+            table, key = "customers", "id"
+        else:
+            table, key = "downloads", "download_id"
+        connection.execute(f'ALTER TABLE {table} ADD COLUMN "{declared}" VARCHAR')
+        connection.execute(
+            f"UPDATE {table} SET \"{declared}\" = CASE {key} WHEN 2 THEN 'UNKNOWN' WHEN 3 THEN 'R1' END"
+        )
+        source = "downloads JOIN customers ON download_id = id" if joined else "downloads"
+        predicate = (
+            f'"{declared}" IS NOT NULL AND "{declared}" <> \'UNKNOWN\''
+            if joined
+            else f'("{declared}" IS NULL OR "{declared}" = \'UNKNOWN\')'
+        )
+        [(gold,)] = connection.execute(
+            f"SELECT SUM(installs) FROM {source} WHERE {predicate}"
+        ).fetchall()
+
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        for spelling in (declared, undeclared):
+            query = _installs_where(spelling, "missing", not joined)
+            if joined:
+                query["select"][0]["expression"]["condition"]["left"] = {
+                    "kind": "column",
+                    "table": "customers",
+                    "column": spelling,
+                }
+            if conflict:
+                with pytest.raises(SemanticLayerError) as raised:
+                    runtime.query(query)
+                assert raised.value.code == "INVALID_QUERY"
+                assert "whose dimensions declare different unknown values" in str(raised.value)
+                assert raised.value.details["dimensions"] == [dimension.id, alternate.id]
+            else:
+                assert runtime.query(query)["rows"] == [{"total": gold}]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("warehouse", "identifiers"),
+    [
+        *(
+            (name, ('"Customer Ref"', '"customer ref"'))
+            for name in ("postgres", "snowflake", "clickhouse")
+        ),
+        ("bigquery", ("`Customer_Ref_", "`customer_ref_")),
+    ],
+)
+def test_quoted_spellings_for_case_sensitive_warehouses_read_distinct_columns(
+    tmp_path, warehouse, identifiers
+):
+    root = _package(
+        tmp_path,
+        {},
+        others={
+            "ref": {"kind": "categorical", "column": "Customer Ref", **SENTINEL},
+        },
+    )
+    config = load_package_config(str(root))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        declared = runtime.compile(_installs_where("Customer Ref", "missing", True))["rendered_sql"]
+        different = runtime.compile(_installs_where("customer ref", "missing", True))[
+            "rendered_sql"
+        ]
+    finally:
+        runtime.close()
+    assert identifiers[0] in declared
+    assert identifiers[1] in different
+    assert "'UNKNOWN'" in declared
+    assert "'UNKNOWN'" not in different
