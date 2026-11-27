@@ -194,6 +194,18 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
+When each hop reaches at most one row and the final many-to-one relationship is declared
+from the preceding row to the entity, that row can supply the entity's key. Refunds reach their customer through their order, so "net revenue by
+customer" reads the refunds' customer from `orders.customer_id`, as the orders do. A customer
+who hasn't signed up keeps their refunds and orders under the same key. Grouping, a filter in
+the call and a filter in a metric all use that key. The customer's tier, region and name still
+come from the customers table and read `NULL` for that customer. ClickHouse keeps the inner
+join to customers, which drops refunds without a matching customer row.
+
+When a row names several roles of the same entity, the chosen many-to-one role supplies
+the key. If the package records destination as the airport role, a leg with a destination
+code missing from the airports table groups and filters under that code.
+
 ### Groups across a one-to-many hop
 
 A dimension of a child entity (an order's items or tags, a department's courses) holds several
@@ -1268,8 +1280,10 @@ expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NU
 unknown. A `comparison`'s `op` is a SQL comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`) or a filter
 word, read as in `where`: `gt`, `gte`, `lt`, `lte` and `is` as `>`, `>=`, `<`, `<=` and `=`; `not`
 as `<>` that keeps rows with no value; and `missing`, with a literal `true` or `false` `right`, as
-a test for no value. A filter word whose `left` is a column and whose `right` is a literal is
-exactly the `where` filter on the dimension over that column: `is` or `not` with a list is
+a test for no value. With a column on the left and a literal on the right, a filter word uses
+the same operators and unknown-value rules as a dimension filter. The column reference reads
+the named entity's table. To filter on a key supplied by a preceding row, use its dimension
+in `where` or `aggregate.filter.all`. For either form, `is` or `not` with a list is
 membership (`is ["a", "b"]` keeps either, `not ["a"]` keeps every other row and those with no
 value) and the dimension's `unknown_values` read as no value. `missing` counts them, and `is` one
 of them is refused as in `where`. The warehouse's identifier rules determine which spellings
@@ -1475,10 +1489,11 @@ apply before the per-entity aggregation.
 - `window` holds only the keys that apply: `start`/`end` as resolved (`last` becomes dates;
   `this` starts on a date and ends at `now`, stated with the clock zone's offset), `now` as
   used, `partial`, and `data_through` once loaded coverage has read the edge (DuckDB,
-  MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a named
-  window's series). `data_through_source` says where a declared edge comes from: the load log
-  as the package declares it (`export_runs.through_day`; `loaded` when the caller can't see
-  that model), or `now`; it is left out when the edge is the last row.
+  MotherDuck, DuckLake and Postgres; on Snowflake, BigQuery, Databricks and Athena, for a series
+  whose empty periods it bounds, see [Empty groups](#empty-groups-null-or-0)).
+  `data_through_source` says where a declared edge comes from: the load log as the package
+  declares it (`export_runs.through_day`; `loaded` when the caller can't see that model), or
+  `now`; it is left out when the edge is the last row.
 - `read_from` comes first, before the rows, on a call that ran (not `validate` or `sql`). It
   lists, under each model's entity, the ids the answer read from it: each selected measure or
   metric (under each model a metric reads), and each `group_by` and `where` dimension. When the
@@ -1839,7 +1854,9 @@ refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GR
 naming it, as it refuses the call grouped by order. Its groups read their lookups as the call
 does: by store name, an order with no store, or whose store the stores table doesn't hold, is in
 the `NULL` group, alone or beside its count, as grouped by the store's id. Per store, an order
-with no store is no store of its own: "median revenue per store" reads only the stores.
+with no store is no store of its own: "median revenue per store" reads only the stores. An
+entity is the key its rows name: per region, a region a customer names that the regions table
+doesn't hold is a region of its own, as revenue grouped by region reads it.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an
@@ -1867,14 +1884,17 @@ reads `0` in a week the orders' load log covers with no order and `NULL` before 
 and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
 read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
 not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery,
-Databricks and Athena, an empty period of a series whose periods come from its rows (an open
-window's, or a named window's grouped by a date or time dimension) reads `0` where the
-measure has data in scope, inside the window or outside it, and the period lies inside the
-measure's own loaded range, as on DuckDB and Postgres: "revenue and refunds until
+Databricks and Athena, an empty period of a series whose periods come from its rows (with no
+window or an open one, or a named window's grouped by a date or time dimension) reads `0`
+where the measure has data in scope, inside the window or outside it, and the period lies
+inside the measure's own loaded range, as on DuckDB and Postgres: "revenue and refunds until
 mid-November" reads `0` refunds in a month with none when refunds were recorded later, and
 their average `NULL`, since an average of nothing has no value. Past the measure's own last
 row the period reads `NULL` with `NO_DATA_YET`, however many rows came before: orders and
-shipment scans since July read `NULL` scans when the scans, on their own clock, stop in June.
+shipment scans since July read `NULL` scans when the scans, on their own clock, stop in June,
+and orders beside tickets by month read `NULL` orders after the last order. A series that reads
+measures in separate parts like that reads each one from its own table there, never from a
+rollup, as on DuckDB and Postgres.
 A window total there, and a part of a joined call (whose periods can come from another part's
 clock), read `0` only while the measure has data inside the window, as every empty period on
 ClickHouse does. These five warehouses read the stored
@@ -2033,7 +2053,8 @@ before SQL runs, through derived metrics too.
   filters, or a lookup from the child are refused with `MIXED_GRAIN_INVALID`.
 
 A lookup dimension (many-to-one) is NULL on a row whose lookup found no match: `missing: true`
-keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read.
+keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read. For
+keys supplied by the preceding row, see [`group_by`](#group_by).
 ClickHouse keeps lookups as inner joins, so it drops such a row from every call that reads the
 looked-up dimension.
 

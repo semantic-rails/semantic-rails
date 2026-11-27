@@ -367,6 +367,8 @@ def guard_empty_groups(
     names: Mapping[str, Sequence[str]] | None = None,
     absent: Mapping[str, str] | None = None,
     probe_key: str = "",
+    own_range: bool = False,
+    relation_names: Collection[str] = (),
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -402,7 +404,9 @@ def guard_empty_groups(
     reads coverage only for a named window), names the time key whose bucket a scope's own
     loaded coverage must hold before its outside-the-window probe settles it: rows before the
     window never make a period past the measure's last row read 0. A scope with a declared
-    edge is gated there as under ``time_key``: only a period its edge certifies reads 0.
+    edge is gated there as under ``time_key``: only a period its edge certifies reads 0. With
+    ``own_range`` (another leaf's rows can show a period, ``_combines_leaves``), every scope
+    is: a period outside its own loaded range never reads 0.
     """
     if (scopes or time_key or probe_key) and not (dialect is not None and dialect.reads_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -424,6 +428,12 @@ def guard_empty_groups(
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
+    occupied = set(relation_names) | {
+        node.name.casefold().partition(".")[0]
+        for node in sql_nodes([list((scopes or {}).values()), list(observed.values())])
+        if isinstance(node, (SqlCte, SqlTableRef))
+    }
+    coverage_index = 0
     edges: dict[str, str] = {}
     probes: dict[str, str] = {}
 
@@ -438,10 +448,14 @@ def guard_empty_groups(
 
     def covered(scope: LeafScope) -> str:
         """The coverage CTE of the scope's base relation and bucket, read once."""
+        nonlocal coverage_index
         loaded = repr((scope.from_table, scope.raw_time, scope.storage_zone, scope.bucket))
         name = coverage.get(loaded)
         if name is None:
-            name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
+            coverage_index += 1
+            while (candidate := f"coverage_{coverage_index}") in occupied:
+                coverage_index += 1
+            name = coverage[loaded] = candidate
             ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return name
@@ -523,12 +537,18 @@ def guard_empty_groups(
                     if bounded_probe:
                         found = SqlBinary(found, "AND", _loaded_bucket(probe_key, covered(scope)))
                     seen = SqlBinary(seen, "OR", found)
-                # Ungated, a declared edge still bounds the series: the table's last row, or a
-                # value elsewhere in the answer, never makes a period its edge doesn't certify 0.
-                if gated or (probe_key and scope.edge is not None):
+                # Ungated, a declared edge still bounds the series, and so does the scope's own
+                # loaded range under ``own_range``: neither the table's last row nor a value
+                # elsewhere in the answer makes a period past it read 0.
+                if (
+                    gated
+                    or (probe_key and scope.edge is not None)
+                    or (own_range and scope.bucket is not None and known_zone(scope.storage_zone))
+                ):
                     name = covered(scope)
+                    key = time_key or probe_key
                     if scope.edge is None:
-                        seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
+                        seen = SqlBinary(seen, "AND", _loaded_bucket(key, name))
                     else:
                         # One edge per binding: two tables, or two bindings over one table,
                         # never share it.
@@ -537,7 +557,6 @@ def guard_empty_groups(
                             edge = edges[repr(scope.edge)] = f"edge_{len(edges) + 1}"
                             ctes.extend(_edge_ctes(edge, scope.edge))
                             joins.append(SqlJoin("CROSS", SqlTableRef(name=edge)))
-                        key = time_key or probe_key
                         seen = SqlBinary(seen, "AND", _certified_bucket(key, name, edge))
             if (
                 aggregation not in _COUNTING

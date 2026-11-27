@@ -123,6 +123,8 @@ from .paths import (
     _leaf_time_role,
     _resolve_dimension_expr,
     dimension_filter,
+    leaf_dimension_expr,
+    route_key_source_expr,
     unknown_as_null,
 )
 from .plan_checks import _validate_non_additive_sums, child_group_route
@@ -449,9 +451,7 @@ def _entity_in_terms_of_leaf_select(
     group_fields: list[Any] = []
     where_clauses: list[Any] = []
     for dim_id in plan.group_by:
-        expr, alias = _direct_dimension_source_expr(
-            anchor_entity, dim_id, config
-        ) or _resolve_dimension_expr(dim_id, config)
+        expr, alias = leaf_dimension_expr(anchor_entity, dim_id, path_selections, config)
         select_fields.append(SqlField(expr, alias))
         group_fields.append(expr)
     if plan.time:
@@ -473,9 +473,13 @@ def _entity_in_terms_of_leaf_select(
         group_fields.append(time_expr)
         where_clauses.extend(_source_time_window(raw_expr, time, config, role_id=role.id))
     for item in refuse_child_groups(plan.query.get("where"), "in a child-grain count"):
-        where_clauses.append(_filter_condition_for_item(anchor_entity, item, config))
+        where_clauses.append(
+            _filter_condition_for_item(anchor_entity, item, config, path_selections)
+        )
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
-        where_clauses.append(_filter_condition_for_item(anchor_entity, item, config))
+        where_clauses.append(
+            _filter_condition_for_item(anchor_entity, item, config, path_selections)
+        )
     where_clauses.extend(
         _edge_cap(
             _measure_index(config)[measure_plan.bound_measure.measure_id],
@@ -918,10 +922,17 @@ def _source_rollup_leaf_select(
     preagg_fields: dict[str, Any] = {
         column: _column_ref(source_table, column) for column in source_join_columns
     }
+    single_hop_targets = {
+        row.target_entity for row in measure_plan.path_selections if len(row.chosen_path) == 1
+    }
     local_group_aliases: list[str] = []
     for dim_id in plan.group_by:
         dim = dimensions[dim_id]
         direct = _direct_dimension_source_expr(measure.entity, dim_id, config)
+        if direct is None and dim.entity in single_hop_targets:
+            direct = route_key_source_expr(
+                measure.entity, dim_id, measure_plan.path_selections, config
+            )
         if dim.entity == measure.entity:
             preagg_fields[dim_id] = unknown_as_null(_column_ref(source_table, dim.column), dim)
             local_group_aliases.append(dim_id)
@@ -963,7 +974,13 @@ def _source_rollup_leaf_select(
             expr = SqlIdentifier(parts=[rollup_name, dim_id])
             alias = dim_id
         else:
-            expr, alias = _resolve_dimension_expr(dim_id, config)
+            expr, alias = route_key_source_expr(
+                measure.entity,
+                dim_id,
+                measure_plan.path_selections,
+                config,
+                table_overrides={measure.entity: rollup_name},
+            ) or _resolve_dimension_expr(dim_id, config)
         final_select_fields.append(SqlField(expr, alias))
         final_group_fields.append(expr)
     if time_alias:
@@ -1081,8 +1098,13 @@ def _measure_leaf_select(
         expr, alias = (
             (child_expr, dim_id)
             if child_expr is not None
-            else _direct_dimension_source_expr(measure.entity, dim_id, config)
-            or _resolve_dimension_expr(dim_id, config)
+            else leaf_dimension_expr(
+                measure.entity,
+                dim_id,
+                measure_plan.path_selections,
+                config,
+                table_overrides={child: child_cte.name} if child_cte else None,
+            )
         )
         select_fields.append(SqlField(expr, alias))
         group_fields.append(expr)
@@ -1143,7 +1165,11 @@ def _measure_leaf_select(
             if semijoin and (dimensions[item["field"]].entity, "where") in crossing_filters
             else where_clauses
         )
-        target.append(condition := _filter_condition_for_item(measure.entity, item, config))
+        target.append(
+            condition := _filter_condition_for_item(
+                measure.entity, item, config, measure_plan.path_selections
+            )
+        )
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     # The authored filter's conditions, wherever they apply: a declared edge's probe leaves
@@ -1157,7 +1183,11 @@ def _measure_leaf_select(
             if preserve_buckets
             else where_clauses
         )
-        target.append(condition := _filter_condition_for_item(measure.entity, item, config))
+        target.append(
+            condition := _filter_condition_for_item(
+                measure.entity, item, config, measure_plan.path_selections
+            )
+        )
         filter_conditions.append(condition)
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
@@ -1583,9 +1613,9 @@ def _measure_group_leaf_select(
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
     for dim_id in plan.group_by:
-        expr, alias = _direct_dimension_source_expr(
-            first_measure.entity, dim_id, config
-        ) or _resolve_dimension_expr(dim_id, config)
+        expr, alias = leaf_dimension_expr(
+            first_measure.entity, dim_id, first_plan.path_selections, config
+        )
         select_fields.append(SqlField(expr, alias))
         group_fields.append(expr)
     if plan.time:
@@ -1610,10 +1640,16 @@ def _measure_group_leaf_select(
     authored_conditions: list[Any] = []
     preserve_buckets = all(_preserves_filtered_series(plan, row, config) for row in measure_plans)
     for item in refuse_child_groups(query.get("where"), "in a folded leaf"):
-        where_clauses.append(_filter_condition_for_item(first_measure.entity, item, config))
+        where_clauses.append(
+            _filter_condition_for_item(
+                first_measure.entity, item, config, first_plan.path_selections
+            )
+        )
     filter_conditions: list[Any] = []
     for item in _bound_filter_clauses(first_plan.bound_measure, config):
-        condition = _filter_condition_for_item(first_measure.entity, item, config)
+        condition = _filter_condition_for_item(
+            first_measure.entity, item, config, first_plan.path_selections
+        )
         (authored_conditions if preserve_buckets else where_clauses).append(condition)
         filter_conditions.append(condition)
     where_clauses.extend(_edge_cap(first_measure, leaf_time_role, config))

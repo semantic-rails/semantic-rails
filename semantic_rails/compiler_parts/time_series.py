@@ -41,7 +41,13 @@ from .bind import (
     _freeze_payload,
     _parse_public_expr,
 )
-from .lowering_common import _calendar_bound, _dialect, _emits_time_coverage, _whole_day_window
+from .lowering_common import (
+    _calendar_bound,
+    _dialect,
+    _emits_time_coverage,
+    _gates_by_own_range,
+    _whole_day_window,
+)
 from .paths import (
     _column_ref,
 )
@@ -50,8 +56,9 @@ from .paths import (
 def coverage_base_plan(
     plan: LogicalPlan, config: PackageConfig, strategies: Sequence[str]
 ) -> LogicalPlan:
-    """A plan that emits base coverage reads the base, with each leaf's pre-routing strategy."""
-    if not _emits_time_coverage(plan, config):
+    """A plan that emits base coverage, or bounds each period by a measure's own loaded range,
+    reads the base, with each leaf's pre-routing strategy."""
+    if not (_emits_time_coverage(plan, config) or _gates_by_own_range(plan, config)):
         return plan
     return replace(
         plan,

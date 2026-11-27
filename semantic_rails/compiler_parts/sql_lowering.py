@@ -23,6 +23,7 @@ from ..expressions import (
 from ..ir import (
     LogicalPlan,
 )
+from ..relation_pipelines import relation_source_tables
 from ..schema import PackageConfig
 from ..sql_ast import (
     SqlBinary,
@@ -89,6 +90,7 @@ from .lowering_common import (
     _dialect,
     _emits_time_coverage,
     _entity_in_terms_of_anchor_plan,
+    _gates_by_own_range,
     _measure_plan_groups,
     _metric_filter_alias,
     _needs_time_scope,
@@ -207,7 +209,7 @@ def lower_to_sql(
             "row-based fan-out and parent-lookup rewrites cannot preserve that reading.",
             details=details,
         )
-    if _emits_time_coverage(plan, config) and any(
+    if (_emits_time_coverage(plan, config) or _gates_by_own_range(plan, config)) and any(
         row.aggregate_relation_id for row in plan.measure_plans
     ):
         raise SemanticLayerError(
@@ -275,10 +277,10 @@ def _refuse_per_period_total(plan: LogicalPlan) -> None:
     )
 
 
-def _cte_names(ctes: list[SqlCte]) -> set[str]:
+def _cte_names(nodes: object) -> set[str]:
     """The statement's CTE and table names so far, and those its projection adds, case-folded."""
     names = {
-        node.name.casefold() for node in sql_nodes(ctes) if isinstance(node, (SqlCte, SqlTableRef))
+        node.name.casefold() for node in sql_nodes(nodes) if isinstance(node, (SqlCte, SqlTableRef))
     }
     return names | {GUARDED_BASE, "projected"}
 
@@ -734,6 +736,22 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         )
 
     if zero:
+        relation_names: set[str] = set()
+        if scopes:
+            # A coverage CTE can be prefixed or sit beside pipeline reads added later.
+            # Namespacing rewrites the first qualifier, which can also be a schema or catalog.
+            package_relations = {
+                *(row.table for row in config.entities),
+                *(row.relation for row in config.aggregate_relations),
+                *(row.output_name for row in config.relations),
+                *(row.zero_through.relation for row in config.measures if row.zero_through),
+                *relation_source_tables(config, (row.id for row in config.relations)),
+            }
+            relation_names = {
+                name.partition(".")[0] for name in _cte_names([ctes, projected_fields, base_table])
+            } | {
+                name.casefold().partition(".")[0].rsplit("__", 1)[-1] for name in package_relations
+            }
         ctes.extend(
             guard_empty_groups(
                 base_table.name,
@@ -749,6 +767,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 probe_key=time_alias if _series_probe_reads_coverage(plan, config) else "",
+                own_range=_gates_by_own_range(plan, config),
                 dialect=_dialect(config),
                 observed=observed,
                 observed_buckets=retained,
@@ -761,6 +780,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     for measure in measure_aliases
                 },
                 absent=marked,
+                relation_names=relation_names,
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")

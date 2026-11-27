@@ -711,18 +711,19 @@ def _guard_probe_names(compiled, prefix):
 
     def probes(guard_name: str, start: str) -> dict[str, set[str]]:
         guard = ctes.get(guard_name)
-        return (
-            {
-                field.alias: {
-                    node.parts[0]
-                    for node in sql_nodes(field.expression)
-                    if isinstance(node, SqlIdentifier) and node.parts[0].startswith(start)
-                }
-                for field in guard.query.select
+        if guard is None:
+            return {}
+        return {
+            field.alias: {
+                node.parts[0]
+                for node in sql_nodes(field.expression, descend_into_queries=False)
+                if isinstance(node, SqlIdentifier)
+                and len(node.parts) == 2
+                and node.parts[0].startswith(start)
+                and node.parts[0] in ctes
             }
-            if guard is not None
-            else {}
-        )
+            for field in guard.query.select
+        }
 
     by_alias = probes(GUARDED_BASE, prefix)
     # Each coarser call's columns, by (its CTE, its column): the probes its own guard read.

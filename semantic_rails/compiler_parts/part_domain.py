@@ -70,6 +70,11 @@ def reading_part_domain() -> Iterator[PartDomain]:
         yield domain
 
 
+def in_joined_call() -> bool:
+    """Whether a joined call's part is being planned or lowered, nested plans included."""
+    return _domain.get() is not None
+
+
 def part_domain() -> PartDomain | None:
     """The part being lowered, when the query lowering now is a joined call's part."""
     domain = _domain.get()

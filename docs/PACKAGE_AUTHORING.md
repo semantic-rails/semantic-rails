@@ -2643,6 +2643,13 @@ condition is written: `missing: true` selects it, so "passengers excluding crew"
 crew-roster lookup is `crew_role` with `missing: true`; `is` never matches it and `not`
 keeps it.
 
+When each hop reaches at most one row and the final many-to-one relationship is declared
+from the preceding row to the entity, that row can supply the entity's key. Refunds reach their customer through their order, so grouping or
+filtering by the customer key reads `orders.customer_id`, as orders do. A customer who hasn't
+signed up keeps their refunds and orders under the same key. Their tier, region and name read
+NULL. ClickHouse keeps the inner join to customers, which drops refunds without a matching
+customer row.
+
 Only these reads join a lookup with an inner join, so a row with no match is left out:
 
 - a time role read through a lookup (a row with no time has no time bucket), and so any
@@ -3010,14 +3017,11 @@ Four guard rails back this up:
   A `path_preferences` row for the pair also decides a query from another
   entity whose routes pass through the pair, one that continues past the
   target, and one that starts at the target (walking the row backwards), unless
-  that query's start holds its own key to its target. A recorded role reads its
-  key through that relationship's join, like any other column of the airport,
-  so a leg whose code matches no airport row groups under a NULL key (a lookup
-  read, above); a package with a single role and no row for the pair reads the
-  key from the leg's own column and groups that leg under its code, when the
-  route rule takes that relationship. Every read of the key, a filter on it and
-  a metric predicate take the route the rule chose, so the key and the
-  airport's other columns always come from the same airport.
+  that query's start holds its own key to its target. A recorded many-to-one
+  role supplies its key from the column on the row that names the entity. A leg
+  with a destination code that has no matching airport groups under its code,
+  as it does with a single role. The airport's city and other lookup attributes
+  read NULL. Grouping and filters on the key use the chosen role.
 - **Route census** — parsing the package (`semantic-rails check`, `validate`)
   lists every entity pair a question can need that is still refused for want of
   a decision, role-playing keys included, and warns once with `ROUTES_UNDECIDED`

@@ -784,9 +784,10 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
     return SqlBinary(SqlLiteral(False), "=", arg)
 
 
-def sql_nodes(node: Any) -> Iterator[Any]:
+def sql_nodes(node: Any, *, descend_into_queries: bool = True) -> Iterator[Any]:
     """Every node of a SQL AST, parents first, found generically so no node type can hide a
-    read. An explicit stack keeps each node's cost constant however deep it sits."""
+    read. An explicit stack keeps each node's cost constant however deep it sits. When walking
+    an expression with ``descend_into_queries=False``, subqueries keep their own name scope."""
     stack = [node]
     while stack:
         node = stack.pop()
@@ -794,4 +795,5 @@ def sql_nodes(node: Any) -> Iterator[Any]:
             stack.extend(reversed(node))
         elif is_dataclass(node) and not isinstance(node, type):
             yield node
-            stack.extend(getattr(node, item.name) for item in reversed(fields(node)))
+            if descend_into_queries or not isinstance(node, SqlSelect):
+                stack.extend(getattr(node, item.name) for item in reversed(fields(node)))

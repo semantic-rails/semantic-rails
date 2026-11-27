@@ -17,6 +17,7 @@ ROLE = "temporal_role.shop_order_ordered_at"
 REVENUE = "measure.shop.revenue"
 REFUNDS = "measure.shop.refund_count"
 SIGNUPS = "measure.shop.signup_count"
+SCANS = "measure.shop.scan_count"
 
 
 def _query(*expressions, **time):
@@ -123,9 +124,10 @@ ROUTING_CASES = {
     ),
     "combined-unbounded": ((REVENUE, REFUNDS), {}, "duckdb", False),
     "postgres-fill": ((REVENUE,), {"fill": True}, "postgres", False),
-    # No coverage without execution evidence: routing and the in-window test stay as they were.
+    # One leaf without coverage: routing and the in-window test stay as they were.
     "snowflake-fill": ((REVENUE,), {"fill": True}, "snowflake", True),
-    "snowflake-combined": ((REVENUE, REFUNDS), {}, "snowflake", True),
+    # Combined leaves: each reads 0 only inside its own loaded range, from the base.
+    "snowflake-combined": ((REVENUE, REFUNDS), {}, "snowflake", False),
 }
 
 
@@ -159,27 +161,64 @@ def test_a_refused_route_keeps_the_leafs_own_strategy(tmp_path):
         strategies[warehouse] = (revenue.rewrite_strategy, revenue.aggregate_relation_id)
     assert strategies == {
         "duckdb": ("leaf_preaggregate_join", ""),
-        "snowflake": ("aggregate_relation", "aggregate_relation.orders_monthly"),
+        "snowflake": ("leaf_preaggregate_join", ""),
     }
 
 
-@pytest.mark.parametrize("window_total", [False, True])
-def test_injected_rollup_cannot_bypass_the_coverage_guard(tmp_path, window_total):
+def test_a_joined_calls_part_keeps_its_route_on_snowflake(tmp_path):
+    """A joined call's part keeps the in-window test there, read alike while it is planned and
+    lowered: its orders keep the monthly rollup beside the scans, and it reads no coverage."""
+    package = _write_variant(tmp_path, "utc_authored")
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse="snowflake"))
+    store = "dimension.shop_order_store_id"
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        compiled = runtime.compile(
+            {
+                "parts": [
+                    {"select": ["measure.shop.order_count", SCANS], "group_by": [store]},
+                    {"select": [REVENUE], "group_by": [store]},
+                ],
+                "join": {"on": [[store, store]]},
+                "time": {"temporal_role": ROLE, "grain": "month"},
+            },
+            now="2024-07-01T00:00:00Z",
+            verbosity="full",
+        )
+    finally:
+        runtime.close()
+    sql = compiled["rendered_sql"]
+    assert sql.count("FROM orders_monthly") == 2
+    assert "FROM orders\n" not in sql
+    assert "coverage_" not in sql
+
+
+@pytest.mark.parametrize("shape", ["fill", "window_total", "snowflake-combined"])
+def test_injected_rollup_cannot_bypass_the_coverage_guard(tmp_path, shape):
     config = load_package_config(str(_write_variant(tmp_path, "utc_authored")))
-    query = _query(start="2023-11-01", end="2023-12-01") if window_total else _query(fill=True)
-    if window_total:
+    query = {
+        "fill": _query(fill=True),
+        "window_total": _query(start="2023-11-01", end="2023-12-01"),
+        "snowflake-combined": _query(REVENUE, REFUNDS),
+    }[shape]
+    if shape == "window_total":
         query["time"].pop("grain")
+    if shape == "snowflake-combined":
+        config = replace(config, package=replace(config.package, warehouse="snowflake"))
     compiled = _compile(config, query)
     plan = compiled["logical_plan"]
     bypass = replace(
         plan,
         measure_plans=[
-            replace(plan.measure_plans[0], aggregate_relation_id=config.aggregate_relations[0].id)
+            replace(plan.measure_plans[0], aggregate_relation_id=config.aggregate_relations[0].id),
+            *plan.measure_plans[1:],
         ],
     )
     with pytest.raises(SemanticLayerError) as caught:
         lower_to_sql(bypass, config)
     assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert str(caught.value) == "A coverage-dependent plan must read the base relation."
 
 
 def test_an_open_window_ending_inside_a_month_reads_the_base(tmp_path):

@@ -108,7 +108,7 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
-from .part_domain import part_domain
+from .part_domain import in_joined_call, part_domain
 from .paths import (
     _apply_role_timezone,
     _column_ref,
@@ -117,10 +117,10 @@ from .paths import (
     _joins_for_paths,
     _leaf_time_role,
     _path_selection,
-    _resolve_dimension_expr,
     _role_conversion,
     clock_hops,
     dimension_filter,
+    leaf_dimension_expr,
     rollup_held_lookups,
 )
 from .post_aggregation import (
@@ -367,6 +367,12 @@ def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
         return True
     if _query_requires_dense_series(plan, config) or _retained_filtered_series(plan, config):
         return True
+    return _combines_leaves(plan, config)
+
+
+def _combines_leaves(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """Whether the call combines leaves, so one leaf's rows can show a period another never
+    reaches. Leaves are counted unrouted, so the answer never depends on routing."""
     unrouted = [replace(row, aggregate_relation_id="") for row in plan.measure_plans]
     return len(_measure_plan_groups(replace(plan, measure_plans=unrouted), config)) > 1
 
@@ -376,8 +382,10 @@ def _series_probe_reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bo
     for a named window (``reads_coverage`` without ``has_time_coverage``), and so bounds that
     probe by each measure's own loaded coverage (``guard_empty_groups``' ``probe_key``), as
     DuckDB and Postgres bound every settled period. A measure's declared edge bounds its
-    periods there too, with or without a window. A window total, or a joined call's part,
-    whose periods can come from another part's clock, keeps the in-window test there."""
+    periods there too, with or without a window, and so does its own loaded range wherever
+    another leaf's rows can show a period (``_combines_leaves``). A window total, or a joined
+    call's part, whose periods can come from another part's clock, keeps the in-window test
+    there."""
     time = plan.time or {}
     dialect = _dialect(config)
     declared = any(
@@ -385,13 +393,30 @@ def _series_probe_reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bo
         for row in plan.measure_plans
     )
     return bool(
-        (time.get("start") or time.get("end") or declared)
-        and time.get("grain")
+        time.get("grain")
         and not time.get("window_total")
         and dialect.reads_coverage
         and not dialect.has_time_coverage
         and not _emits_time_coverage(plan, config)
         and part_domain() is None
+        and (
+            time.get("start")
+            or time.get("end")
+            or declared
+            or (not in_joined_call() and _combines_leaves(plan, config))
+        )
+    )
+
+
+def _gates_by_own_range(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """Whether a series' guard there bounds every settled period by each measure's own loaded
+    range (``guard_empty_groups``' ``own_range``), as DuckDB and Postgres do, so that, as
+    there, its leaves read the base, never a rollup (``coverage_base_plan``). A joined call's
+    parts keep their reading, read the same way while planned and lowered."""
+    return (
+        not in_joined_call()
+        and _series_probe_reads_coverage(plan, config)
+        and _combines_leaves(plan, config)
     )
 
 
@@ -485,7 +510,9 @@ def _require_filtered_series_operand(
     measure = _measure_index(config)[row.bound_measure.measure_id]
     conditions = []
     for item in _bound_filter_clauses(row.bound_measure, config):
-        conditions.append(_filter_condition_for_item(measure.entity, item, config))
+        conditions.append(
+            _filter_condition_for_item(measure.entity, item, config, row.path_selections)
+        )
     aggregate = next(
         field.expression for field in leaf.select if field.alias == row.bound_measure.alias
     )
@@ -739,7 +766,7 @@ def _dataset_scope(
         return None
     where = []
     for item in _bound_filter_clauses(bound, config):
-        where.append(_filter_condition_for_item(measure.entity, item, config))
+        where.append(_filter_condition_for_item(measure.entity, item, config, row.path_selections))
     authored = len(where)
     # Rows past a declared edge are never read, so they observe nothing either.
     where.extend(_edge_cap(measure, role_id, config))
@@ -919,12 +946,14 @@ def _value_filter_condition(
 
 
 def _filter_condition_for_item(
-    measure_entity: str, item: dict[str, Any], config: PackageConfig
+    measure_entity: str,
+    item: dict[str, Any],
+    config: PackageConfig,
+    path_selections: Iterable[PathSelection],
 ) -> Any:
-    """``item``'s condition on the measure's own column when it has one, else on its dimension."""
-    expr, _ = _direct_dimension_source_expr(
-        measure_entity, str(item["field"]), config
-    ) or _resolve_dimension_expr(str(item["field"]), config)
+    """``item``'s condition on the measure's own column when it has one, else on its dimension;
+    an entity's key on ``path_selections`` reads as the leaf groups by it (``leaf_dimension_expr``)."""
+    expr, _ = leaf_dimension_expr(measure_entity, str(item["field"]), path_selections, config)
     return _value_filter_condition(expr, item, config)
 
 
