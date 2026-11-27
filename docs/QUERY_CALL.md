@@ -202,6 +202,10 @@ the call and a filter in a metric all use that key. The customer's tier, region 
 come from the customers table and read `NULL` for that customer. ClickHouse keeps the inner
 join to customers, which drops refunds without a matching customer row.
 
+When a row names several roles of the same entity, the chosen many-to-one role supplies
+the key. If the package records destination as the airport role, a leg with a destination
+code missing from the airports table groups and filters under that code.
+
 ### Groups across a one-to-many hop
 
 A dimension of a child entity (an order's items or tags, a department's courses) holds several

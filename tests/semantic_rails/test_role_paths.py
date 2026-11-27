@@ -728,45 +728,64 @@ def test_one_role_declared_from_both_sides_is_listed_because_its_queries_refuse(
 ORPHAN_LEG = "INSERT INTO legs VALUES (5, 'ORD', 'SFO', 7, 'LAX');\n"
 
 
-def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airport_groups_under_null(
-    tmp_path,
-):
-    """With several roles the key comes from the pinned relationship's join, like any other
-    airport column. That is a lookup read grouped through one many-to-one hop, so a leg whose
-    code matches no airport row is kept under a NULL key. A single role reads the key from the
-    leg's own column and groups the leg under its code."""
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+def test_a_pinned_role_reads_its_key_from_the_legs_column_as_a_single_role_does(tmp_path, reverse):
+    """A leg with an unmatched destination groups and filters under the destination code."""
+    extra_seed = ORPHAN_LEG + "INSERT INTO legs VALUES (6, 'JFK', NULL, 2, 'ORD');\n"
     query = _seats_query(group_by=[CODE])
-    con = duckdb.connect(":memory:")
-    con.execute(SEED_SQL + ORPHAN_LEG)
-    joined = sorted(
-        (
-            (code, int(total))
-            for code, total in con.execute(
-                "SELECT a.airport_code, SUM(l.seats) FROM legs l LEFT JOIN airports a "
-                "ON a.airport_code = l.destination_code GROUP BY 1"
-            ).fetchall()
-        ),
-        key=str,
-    )
-    own_column = sorted(
-        (
-            (code, int(total))
-            for code, total in con.execute(
-                "SELECT destination_code, SUM(seats) FROM legs GROUP BY 1"
-            ).fetchall()
-        ),
-        key=str,
-    )
-    assert (None, 7) in joined
+    with duckdb.connect(":memory:") as con:
+        con.execute(SEED_SQL + extra_seed)
+        own_column = sorted(
+            con.execute("SELECT destination_code, SUM(seats) FROM legs GROUP BY 1").fetchall(),
+            key=str,
+        )
+    assert (None, 2) in own_column
     assert ("SFO", 7) in own_column
-    assert ("SFO", 7) not in joined
 
-    _write_package(
-        tmp_path / "two", extra_seed=ORPHAN_LEG, **_pin("destination", "explicit_origin_first")
+    pin = _pin("destination", "explicit_origin_first")
+    if reverse:
+        pin["path_preferences"] = pin["path_preferences"].replace(
+            DESTINATION, f"{DESTINATION}_reverse"
+        )
+        pin.update(explicit=("origin",), reverse=("destination",))
+    country_seed = """
+CREATE TABLE countries (country_id VARCHAR, name VARCHAR);
+INSERT INTO countries VALUES ('US', 'United States');
+ALTER TABLE airports ADD COLUMN country_id VARCHAR DEFAULT 'US';
+"""
+    pkg = _write_package(tmp_path / "two", extra_seed=extra_seed + country_seed, **pin)
+    graph_path = pkg / "graph.yml"
+    graph = yaml.safe_load(graph_path.read_text())
+    graph["graph"]["entities"]["country"] = {
+        "label": "Country",
+        "key": ["country_id"],
+        "model": "countries",
+    }
+    graph_path.write_text(yaml.safe_dump(graph))
+    airports_path = pkg / "models" / "airports.yml"
+    airports = yaml.safe_load(airports_path.read_text())
+    airports["model"]["entities"]["country"] = {}
+    airports_path.write_text(yaml.safe_dump(airports))
+    (pkg / "models" / "countries.yml").write_text(
+        "model:\n  id: countries\n  relation: countries\n  entities: {country: {}}\n"
+        "  dimensions: {name: {label: Name, kind: categorical}}\n"
     )
-    two_roles = Runtime.from_path(str(tmp_path / "two" / "air"))
-    assert _rows(two_roles, query, [CODE], key=str) == joined
+    two_roles = Runtime.from_path(str(pkg))
+    try:
+        assert _rows(two_roles, query, [CODE], key=str) == own_column
+        for op, value, expected in [("is", "SFO", 7), ("missing", True, 2)]:
+            filtered = _seats_query(where=[{"field": CODE, "op": op, "value": value}])
+            assert _rows(two_roles, filtered, []) == [(expected,)]
+        by_country = [CODE, "dimension.air_country_name"]
+        groups = _rows(two_roles, _seats_query(group_by=by_country), by_country, key=str)
+        assert ("SFO", None, 7) in groups
+        assert (None, None, 2) in groups
+    finally:
+        two_roles.close()
 
-    _write_package(tmp_path / "one", explicit=("destination",), extra_seed=ORPHAN_LEG)
+    _write_package(tmp_path / "one", explicit=("destination",), extra_seed=extra_seed)
     one_role = Runtime.from_path(str(tmp_path / "one" / "air"))
-    assert _rows(one_role, query, [CODE], key=str) == own_column
+    try:
+        assert _rows(one_role, query, [CODE], key=str) == own_column
+    finally:
+        one_role.close()
