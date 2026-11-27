@@ -65,7 +65,7 @@ from .paths import (
     _direct_dimension_source_expr,
     _joins_for_paths,
     _outer_joins,
-    _resolve_dimension_expr,
+    leaf_dimension_expr,
 )
 from .plan_checks import (
     _WHOLE_GROUPED_AGGREGATIONS,
@@ -323,16 +323,11 @@ def parent_value_leaf_select(
         for index, column in enumerate(parent.key_columns)
     ]
     groups = [
-        SqlField(
-            *(
-                _direct_dimension_source_expr(rows, dim_id, config)
-                or _resolve_dimension_expr(dim_id, config)
-            )
-        )
+        SqlField(*leaf_dimension_expr(rows, dim_id, measure_plan.path_selections, config))
         for dim_id in plan.group_by
     ]
     where = [
-        _filter_condition_for_item(rows, item, config)
+        _filter_condition_for_item(rows, item, config, measure_plan.path_selections)
         for item in plain_filters(plan.query.get("where"))
     ]
     name = f"{measure_plan.cte_name}_parent_rows"

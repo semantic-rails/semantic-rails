@@ -194,6 +194,14 @@ comes just before the name, so two customers named Ann stay two rows, and the an
 key, when the entity declares no `display` and the call groups by none of its other dimensions,
 carries `SHOWN_BY_KEY {entity, dimension, message}`: its rows show only the key.
 
+When each hop reaches at most one row and the final many-to-one relationship is declared
+from the preceding row to the entity, that row can supply the entity's key. Refunds reach their customer through their order, so "net revenue by
+customer" reads the refunds' customer from `orders.customer_id`, as the orders do. A customer
+who hasn't signed up keeps their refunds and orders under the same key. Grouping, a filter in
+the call and a filter in a metric all use that key. The customer's tier, region and name still
+come from the customers table and read `NULL` for that customer. ClickHouse keeps the inner
+join to customers, which drops refunds without a matching customer row.
+
 ### Groups across a one-to-many hop
 
 A dimension of a child entity (an order's items or tags, a department's courses) holds several
@@ -1268,8 +1276,10 @@ expressions (`kind: comparison`, `in`, `between`) keep SQL's own semantics: a NU
 unknown. A `comparison`'s `op` is a SQL comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`) or a filter
 word, read as in `where`: `gt`, `gte`, `lt`, `lte` and `is` as `>`, `>=`, `<`, `<=` and `=`; `not`
 as `<>` that keeps rows with no value; and `missing`, with a literal `true` or `false` `right`, as
-a test for no value. A filter word whose `left` is a column and whose `right` is a literal is
-exactly the `where` filter on the dimension over that column: `is` or `not` with a list is
+a test for no value. With a column on the left and a literal on the right, a filter word uses
+the same operators and unknown-value rules as a dimension filter. The column reference reads
+the named entity's table. To filter on a key supplied by a preceding row, use its dimension
+in `where` or `aggregate.filter.all`. For either form, `is` or `not` with a list is
 membership (`is ["a", "b"]` keeps either, `not ["a"]` keeps every other row and those with no
 value), the dimension's `unknown_values` read as no value (so `missing` counts them, and `is` one
 of them is refused as in `where`), and a column no dimension declares reads as itself. A list
@@ -1831,7 +1841,9 @@ refuses a distribution that needs settling (revenue less refunds) with `EMPTY_GR
 naming it, as it refuses the call grouped by order. Its groups read their lookups as the call
 does: by store name, an order with no store, or whose store the stores table doesn't hold, is in
 the `NULL` group, alone or beside its count, as grouped by the store's id. Per store, an order
-with no store is no store of its own: "median revenue per store" reads only the stores.
+with no store is no store of its own: "median revenue per store" reads only the stores. An
+entity is the key its rows name: per region, a region a customer names that the regions table
+doesn't hold is a region of its own, as revenue grouped by region reads it.
 
 **The data's edge.** For a series or a window total on DuckDB, MotherDuck, DuckLake and
 Postgres, and for a named window's series on Snowflake, BigQuery, Databricks and Athena, an
@@ -2025,7 +2037,8 @@ before SQL runs, through derived metrics too.
   filters, or a lookup from the child are refused with `MIXED_GRAIN_INVALID`.
 
 A lookup dimension (many-to-one) is NULL on a row whose lookup found no match: `missing: true`
-keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read.
+keeps it (an anti-join), `is` drops it and `not` keeps it, wherever the dimension is read. For
+keys supplied by the preceding row, see [`group_by`](#group_by).
 ClickHouse keeps lookups as inner joins, so it drops such a row from every call that reads the
 looked-up dimension.
 
