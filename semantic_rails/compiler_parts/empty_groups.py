@@ -368,6 +368,7 @@ def guard_empty_groups(
     absent: Mapping[str, str] | None = None,
     probe_key: str = "",
     own_range: bool = False,
+    relation_names: Collection[str] = (),
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -427,6 +428,12 @@ def guard_empty_groups(
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
+    occupied = set(relation_names) | {
+        node.name.casefold()
+        for node in sql_nodes([list((scopes or {}).values()), list(observed.values())])
+        if isinstance(node, (SqlCte, SqlTableRef))
+    }
+    coverage_index = 0
     edges: dict[str, str] = {}
     probes: dict[str, str] = {}
 
@@ -441,10 +448,14 @@ def guard_empty_groups(
 
     def covered(scope: LeafScope) -> str:
         """The coverage CTE of the scope's base relation and bucket, read once."""
+        nonlocal coverage_index
         loaded = repr((scope.from_table, scope.raw_time, scope.storage_zone, scope.bucket))
         name = coverage.get(loaded)
         if name is None:
-            name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
+            coverage_index += 1
+            while (candidate := f"coverage_{coverage_index}") in occupied:
+                coverage_index += 1
+            name = coverage[loaded] = candidate
             ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return name

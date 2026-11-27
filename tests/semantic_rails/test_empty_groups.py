@@ -1129,6 +1129,40 @@ def test_a_period_past_a_measures_last_row_reads_null_on_every_warehouse(
     assert months() == answer
 
 
+@pytest.mark.parametrize("relation", ["coverage_1", "COVERAGE_1"])
+@pytest.mark.parametrize("start", [None, "2024-07-01"], ids=["warehouse_simulation", "duckdb"])
+def test_coverage_does_not_shadow_a_source_relation(
+    tmp_path: Path, request: pytest.FixtureRequest, relation: str, start: str | None
+) -> None:
+    package = _shop_package(tmp_path, f"CREATE TABLE {relation} AS SELECT * FROM tickets")
+    model_path = package / "models" / "ticket_rows.yml"
+    model = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    model["model"]["relation"] = relation
+    model_path.write_text(yaml.safe_dump(model), encoding="utf-8")
+
+    time = {"temporal_role": "temporal_role.shop_ticket_row_opened_at", "grain": "month"}
+    if start:
+        time["start"] = start
+    else:
+        request.getfixturevalue("coverage_for_named_windows_only")
+    rt = Runtime.from_path(str(package))
+    try:
+        response = rt.query(
+            {"select": _select(orders=SHOP_ORDERS, tickets=TICKETS_BY_LAST_ROW), "time": time},
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    assert [
+        (row["period"].strftime("%Y-%m"), row["orders"], row["tickets"])
+        for row in typed_rows(response)
+    ] == (ORDERS_THEN_TICKETS[-4:] if start else ORDERS_THEN_TICKETS)
+    assert [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")] == [
+        ["orders"]
+    ]
+    assert response["window"]["data_through"] == "2024-08-01"
+
+
 def test_orders_per_ticket_past_the_last_order_read_null_on_every_warehouse(
     shop_package: Path, request: pytest.FixtureRequest
 ) -> None:

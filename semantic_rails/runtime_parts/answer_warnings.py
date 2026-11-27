@@ -704,25 +704,32 @@ def _guard_probe_names(compiled, prefix):
     """The probes (CTEs named ``prefix``...) each guarded column reads, by the guard's column
     (``by_alias``), and by the answer's output (``by_output``). A total's output reads its
     coarser call, whose own guard (``<cte>__guarded_base``) and probes stand at the top too."""
-    from ..sql_ast import SqlIdentifier
+    from ..sql_ast import SqlIdentifier, SqlTableRef
 
     ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
     projection = ctes["projected"].query if "projected" in ctes else call_rows(compiled["sql_ast"])
 
     def probes(guard_name: str, start: str) -> dict[str, set[str]]:
         guard = ctes.get(guard_name)
-        return (
-            {
-                field.alias: {
-                    node.parts[0]
-                    for node in sql_nodes(field.expression)
-                    if isinstance(node, SqlIdentifier) and node.parts[0].startswith(start)
-                }
-                for field in guard.query.select
+        if guard is None:
+            return {}
+        joined = {
+            join.table.name
+            for join in guard.query.joins
+            if isinstance(join.table, SqlTableRef)
+            and join.table.name.startswith(start)
+            and join.table.name in ctes
+        }
+        return {
+            field.alias: {
+                node.parts[0]
+                for node in sql_nodes(field.expression)
+                if isinstance(node, SqlIdentifier)
+                and len(node.parts) == 2
+                and node.parts[0] in joined
             }
-            if guard is not None
-            else {}
-        )
+            for field in guard.query.select
+        }
 
     by_alias = probes(GUARDED_BASE, prefix)
     # Each coarser call's columns, by (its CTE, its column): the probes its own guard read.

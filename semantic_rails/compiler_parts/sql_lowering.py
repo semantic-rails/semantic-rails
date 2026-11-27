@@ -23,6 +23,7 @@ from ..expressions import (
 from ..ir import (
     LogicalPlan,
 )
+from ..relation_pipelines import relation_source_tables
 from ..schema import PackageConfig
 from ..sql_ast import (
     SqlBinary,
@@ -276,10 +277,10 @@ def _refuse_per_period_total(plan: LogicalPlan) -> None:
     )
 
 
-def _cte_names(ctes: list[SqlCte]) -> set[str]:
+def _cte_names(nodes: object) -> set[str]:
     """The statement's CTE and table names so far, and those its projection adds, case-folded."""
     names = {
-        node.name.casefold() for node in sql_nodes(ctes) if isinstance(node, (SqlCte, SqlTableRef))
+        node.name.casefold() for node in sql_nodes(nodes) if isinstance(node, (SqlCte, SqlTableRef))
     }
     return names | {GUARDED_BASE, "projected"}
 
@@ -735,6 +736,19 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         )
 
     if zero:
+        relation_names: set[str] = set()
+        if scopes:
+            # A coverage CTE can be prefixed or sit beside pipeline reads added later.
+            package_relations = {
+                *(row.table for row in config.entities),
+                *(row.relation for row in config.aggregate_relations),
+                *(row.output_name for row in config.relations),
+                *(row.zero_through.relation for row in config.measures if row.zero_through),
+                *relation_source_tables(config, (row.id for row in config.relations)),
+            }
+            relation_names = _cte_names([ctes, projected_fields, base_table]) | {
+                name.casefold().rsplit("__", 1)[-1] for name in package_relations
+            }
         ctes.extend(
             guard_empty_groups(
                 base_table.name,
@@ -763,6 +777,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     for measure in measure_aliases
                 },
                 absent=marked,
+                relation_names=relation_names,
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
