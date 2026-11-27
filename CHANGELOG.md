@@ -8,6 +8,166 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.8 — 2026-11-26 — Empty periods past the load log read NULL on every warehouse
+
+**Upgrading from 0.3.7:** only Snowflake, BigQuery, Databricks and Athena answers change, and only
+in a series (a call with a `grain`) over a model whose `zero_through` names a load log. A period
+the load log doesn't cover yet, or one before the measure's first row, now reads `NULL` with
+`NO_DATA_YET` where 0.3.7 read `0`. DuckDB, Postgres and ClickHouse answers and SQL are unchanged,
+and so is every metric constraint. One derived number can move the other way: a ratio whose
+denominator wraps such a measure, for example orders per ticket with tickets as
+`COALESCE(tickets opened, all tickets)`, can now read `0` for a period past both the load log and
+the numerator's last row, where 0.3.7 read `NULL`. The `0` comes from the known limit below (the
+numerator), which 0.3.7 also had; 0.3.7's `NULL` came from its own wrong `0` in the denominator.
+
+**Known limit (0.3.6 and 0.3.7 too):** on Snowflake, BigQuery, Databricks and Athena, a measure
+with no declared edge (no `zero_through`) can read `0` for a period past its last row when another
+measure in the call has rows there; DuckDB and Postgres read `NULL`. It is fixed in the next
+release. Until then, declare `zero_through` on models whose data stops before today.
+
+### Fixed
+
+- On Snowflake, BigQuery, Databricks and Athena, a series over a model whose `zero_through`
+  names a load log (or `now`) now reads `NULL` with `NO_DATA_YET`, not `0`, in a period the
+  load log doesn't cover yet, as DuckDB and Postgres already did. Such a period read `0`
+  whenever another measure in the call had rows in it: "tickets opened and all tickets, by
+  week" read `0` tickets opened for a week after the last load because a late ticket from that
+  week was already in the table. 0.3.6 did this when the measure had rows elsewhere in the
+  answer, and 0.3.7 also when it had rows only before the window. This holds with `start` or
+  `end` alone and with no window. A period before the measure's first row now reads `NULL`
+  there too, as on DuckDB and Postgres; other periods the load log covers read as before.
+
+## 0.3.7 — 2026-11-26 — Metric constraints hold every caller expression to a short list of shapes
+
+**Upgrading from 0.3.6:** under a metric constraint, some calls 0.3.6 answered are now refused
+with `POLICY_DENIED`, naming what it refuses. With no metric constraint, calls answer as before,
+apart from the items under Changed and Fixed and two refusals: an `aggregate_if` value that
+computes with or tests a `filterable: false` dimension's column, and, while anything is hidden
+from you, an aggregate over columns in a nested entity filter that your call or a segment it
+uses writes. One no-policy number changes: an ungrouped distinct count (a count of distinct
+customers with no `group_by` and no `time`) whose filters keep no row now reads `NULL` with a
+`NO_DATA_IN_SCOPE` warning, not `0`. No contract field is removed.
+
+- **Newly refused under a metric constraint**, over a number it governs:
+  - Any expression but ratios and `+ - * /` of allowed reads and numbers: a `case` showing
+    revenue only for stores with a large order, `nullif`, `coalesce`, `abs`, a conversion, a
+    window kind, `share`, `total`, `scoped_aggregate` or a distribution.
+  - Another statistic of a measure that isn't one bare column, and any `percentile`: revenue's
+    `max`.
+  - An `aggregate_if` value other than nothing, the measure's own bare column or, under a count
+    measure, a one-column key, and a `count_distinct` of anything but a whole one-column key:
+    `sum(order_total_cents / 100.0)`.
+  - A filter inside an expression on a field `allowed_where` doesn't list, on a computed column
+    such as `lower(name)`, or on a dimension declaring `unknown_values`. With no
+    `allowed_where`, none is listed: repeat customers' revenue inside the aggregate, under
+    grouping keys alone. Filters in one select item count for every number it shows.
+  - The same shapes in a segment's membership: a segment over `nullif(revenue, 0)`.
+- **Newly refused anywhere in a call under a metric constraint:**
+  - `having`, also in an entity filter, on anything but a governed measure or metric by id with
+    its declared statistic: revenue by store for stores with over 100 orders, under a constraint
+    on revenue alone. A predicate inside another predicate's input reads only such an id.
+  - With a `limit` or a row cap (every MCP `execute` run passes one), `order_by` on anything but
+    a measure or metric by id with its declared statistic, a dimension or the period: the top
+    five stores by an inline count of one customer's orders.
+  - A joined call with a constrained part whose `join.keep` isn't `"all"`, or that ranks under a
+    limit or row cap by anything but a key or an id from a part with no `where`.
+  - Output names that differ only in case.
+
+  Instead, select the measure or metric by id and filter in `where` on the dimensions the
+  constraint allows, as before. To allow a filter inside an aggregate, the package author lists
+  in `allowed_where` a dimension over the field with no `unknown_values`; the other shapes stay
+  refused.
+
+### Changed
+
+- **Agents.** The query MCP's `execute` description says which `time.temporal_role` to give:
+  with `time`, set it to the role the question names, else to the selected ids'
+  `default_temporal_role` from `inspect`; a measure whose card lists no time role takes no
+  time, so filter or group on a date dimension instead.
+- **Agents.** `SEMANTIC_CAVEAT_APPLIED` carries the caveat's `so_what` at every verbosity,
+  `minimal` included (the query MCP's default), so an agent reading the smallest answer still
+  sees what the package owner says to do. `owner` still comes at `compact` and `full`. See
+  [`caveats.yml`](docs/PACKAGE_AUTHORING.md#caveatsyml).
+
+### Fixed
+
+- On Snowflake, BigQuery, Databricks and Athena, a series over an open window (`start` or `end`
+  alone, with or without `fill`) now reads `0` in a period where a sum or count has no rows
+  while its measure has data outside the window and the period lies inside the measure's own
+  loaded range, as DuckDB and Postgres already did; it read `NULL`. Past the measure's own last
+  row it still reads `NULL`, now with `NO_DATA_YET`. "Revenue and refunds until mid-November"
+  reads `0` refunds in a month with none when refunds were recorded later, and their average
+  stays `NULL`: an average of nothing has no value. A window total there (no `grain`) and a
+  part of a joined call, which can lie past the data's edge, still read `0` only while the
+  measure has data inside the window, and so does every empty period on ClickHouse
+  ([issue #201](https://github.com/semantic-rails/semantic-rails/issues/201)).
+- A distinct-population count (a count of distinct customers) with no `group_by` and no `time`
+  now reads `NULL` with `NO_DATA_IN_SCOPE` when its filters keep no row, in either observation
+  scope; it read `0` with no warning. One that read rows keeps its count, `0` included, and one
+  beside an entity filter counts the entities the filter keeps, `0` when it keeps none
+  ([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+- MCP tool schemas and CLI help show how to include the closing day in a time
+  window. For “as of March 31, 2024” or “through March 31, 2024”, set the exclusive
+  `time.end` to `2024-04-01`.
+
+### Security
+
+- A metric constraint's `allowed_where` now also covers the rows an `aggregate_if` value picks,
+  not only its condition: a `case` in the value is read as a condition, and any other column
+  the value computes with counts as the dimensions over it. A field the policy doesn't list is
+  refused with `POLICY_DENIED` and the same `disallowed_where` violation
+  (`"source": "inline_expression"`) as a condition on that field. A `case` on an allowed field
+  and a column the value returns as it is still answer.
+- Under any metric constraint, a call reads a governed measure or metric only in a short list
+  of shapes: by id, with its own statistic; an `aggregate` filtered by dimensions `allowed_where`
+  lists; an `aggregate_if` whose condition reads listed dimensions and that counts a whole key or
+  aggregates its governed measure's own column; and a `ratio` or `+ - * /` of these and numbers.
+  A constraint with no `allowed_where` (`allow_metric_filters: false`, or only grouping keys)
+  lists no dimension, so it allows no filter inside an expression; its `where` is free as before.
+  No condition inside an expression uses a dimension that declares `unknown_values`. `having` and
+  entity filters read only a governed measure or metric by id with its declared statistic, and
+  with a `limit` or a row cap (`max_rows`, which every MCP `execute` run passes), `order_by` names
+  only such an id, a dimension or the period. A joined call with a part under a metric
+  constraint keeps every part's keys, and under a limit or a row cap it ranks only by a key or by
+  an id in a part with no `where` of its own. A constrained call's output names never differ only
+  in case, since DuckDB and other warehouses read quoted names in any case and would order, filter
+  or show one column by another. Anything else over a governed number, such as
+  `case`, `nullif`, `coalesce`, a window kind, `share` or `scoped_aggregate`, is refused with
+  `POLICY_DENIED` and a `disallowed_expression` violation whose message names the shapes
+  allowed. Callers no constraint applies to get the same answers as before.
+- Under a metric constraint with `allowed_where` (or `allow_metric_filters: false`), a column no
+  dimension declares is refused wherever an `aggregate_if` value computes with it, not only in
+  a condition, with the same `POLICY_DENIED` and `disallowed_where` violation, naming
+  `<entity>.<column>`. Listing that name in `allowed_where` allows nothing, even when a
+  dimension's id reads the same. Ordinary arithmetic is refused too, such as
+  `sum(order_total_cents / 100.0)` or a total net of tax: the refusal says the package author
+  can declare a dimension over the column and list it in `allowed_where` if the role may use
+  it. A `count`, `count_distinct` or `avg` of a column counts only the rows where that column
+  has a value, so it is held as a filter on that column unless the column is its entity's key
+  or the column the governed measure itself aggregates with no expression around it: a measure
+  over `coalesce(customer_id, 'guest')` or `order_total_cents / 100.0` exempts nothing. Each
+  aggregate is held only by the constraints on the measures that govern it, so two averages
+  that answer alone also answer together, under one constraint or one each. Inside one select
+  item, every aggregate's filters count for each aggregate the item shows, so a `case`
+  condition, `nullif` or a division by a count can't decide whether a governed value appears
+  under a filter its constraint doesn't allow, and once an `aggregate_if`'s value decides what
+  else appears (there, in `having` or in a predicate's input), each column it aggregates but a
+  key it counts is such a filter: `case when max(is_large_order) = true then revenue end` is
+  refused. A dimension allows a column on another entity only over the same relation, named in
+  full. A column meets a
+  dimension only when the SQL reads it as that dimension: a quoted name in another case reads
+  none of the dimension's unknown values, so it is refused as a column no dimension declares.
+  Callers no constraint applies to get the same answers as before.
+- An `aggregate_if` read inside an entity filter that is itself inside another entity filter
+  (such as a ratio a scoped aggregate's predicate reads) is now held to the metric constraints
+  on the measures over its columns as the same aggregate in `select` is, and refused where
+  that is refused. Its value decides which rows the entity filter keeps, so each column it
+  aggregates also counts as a filter there, but a key it counts. While
+  anything is hidden from a caller, such an aggregate over columns is refused as it is in
+  `select`. A package metric whose own definition reads such an aggregate still answers
+  wherever a call uses it: it is held by its policies and what it reads.
+  The same aggregate written in the call is held as the caller's wherever the call places it.
+
 ## 0.3.6 — 2026-11-25 — Metric constraints inside a call, and facts dated by a calendar key
 
 **Upgrading from 0.3.5:** 0.3.6 closes a gap in metric constraints. A measure limited to some

@@ -401,7 +401,8 @@ def guard_empty_groups(
     ``probe_key``, where no ``time_key`` gates the output (an open series on a warehouse that
     reads coverage only for a named window), names the time key whose bucket a scope's own
     loaded coverage must hold before its outside-the-window probe settles it: rows before the
-    window never make a period past the measure's last row read 0.
+    window never make a period past the measure's last row read 0. A scope with a declared
+    edge is gated there as under ``time_key``: only a period its edge certifies reads 0.
     """
     if (scopes or time_key or probe_key) and not (dialect is not None and dialect.reads_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -522,7 +523,9 @@ def guard_empty_groups(
                     if bounded_probe:
                         found = SqlBinary(found, "AND", _loaded_bucket(probe_key, covered(scope)))
                     seen = SqlBinary(seen, "OR", found)
-                if gated:
+                # Ungated, a declared edge still bounds the series: the table's last row, or a
+                # value elsewhere in the answer, never makes a period its edge doesn't certify 0.
+                if gated or (probe_key and scope.edge is not None):
                     name = covered(scope)
                     if scope.edge is None:
                         seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
@@ -534,7 +537,8 @@ def guard_empty_groups(
                             edge = edges[repr(scope.edge)] = f"edge_{len(edges) + 1}"
                             ctes.extend(_edge_ctes(edge, scope.edge))
                             joins.append(SqlJoin("CROSS", SqlTableRef(name=edge)))
-                        seen = SqlBinary(seen, "AND", _certified_bucket(time_key, name, edge))
+                        key = time_key or probe_key
+                        seen = SqlBinary(seen, "AND", _certified_bucket(key, name, edge))
             if (
                 aggregation not in _COUNTING
                 and not earlier_settlement_applies()

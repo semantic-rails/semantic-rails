@@ -772,6 +772,46 @@ kind names must match exactly.
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
   `where`, temporal role, `having` and entity filters.
+  **Under every metric constraint, a call reads a governed number only in these shapes.**
+  Each select item and predicate input that reads a measure or metric the constraint governs
+  (directly, through a metric, through a predicate inside it, or through an
+  `aggregate_if` over a column a governed measure reads) must be one of:
+  - the measure or metric by id, a measure with its own statistic;
+  - an `aggregate` (or `semi_additive`) whose `filter` uses only dimensions the
+    constraint's `allowed_where` lists, with no window and no predicate;
+  - an `aggregate_if` whose condition reads only listed dimensions' columns
+    (comparisons, `in`, `and`, `or`, `not`) and whose value is nothing (a count), the column
+    each governing measure is with no expression around it, or, when each governing
+    measure counts, a one-column key it counts; `count_distinct` counts only a whole
+    one-column key;
+  - a `ratio`, or `arithmetic` (`+ - * /`), of these and numbers.
+
+  A constraint with no `allowed_where` (with `allow_metric_filters: false`, or only
+  grouping and `required_where` keys) lists no dimension, so a call reads its numbers only
+  by id, in an unfiltered `aggregate`, in an `aggregate_if` with no condition, and in
+  ratios and arithmetic of these; its `where` is free as before. A condition inside an
+  expression never uses a dimension that declares `unknown_values`, whatever the operator,
+  since it reads the raw column: filter by that dimension in `where`, which reads its
+  unknown values. `having` and entity filters read only a measure or metric the constraint
+  governs, by id with its declared statistic; with a `limit` or a row cap (`max_rows`, which
+  every MCP `execute` run passes), `order_by` names only a measure or metric by id with its
+  declared statistic, a dimension or the period; a predicate inside another predicate's
+  input reads only such an id; and `where` uses only listed dimensions. A joined call with
+  any part under a metric constraint keeps every part's keys (`keep: all`), and under a
+  limit or a row cap it ranks only by a key or by a measure or metric by id in a part with
+  no `where` of its own. Two output names of a constrained call (select aliases, `group_by`
+  ids, the period, and a joined call's keys and part items) never differ only in case: a
+  warehouse that reads quoted names in any case would order, filter or show one by the
+  other. Anything else is refused with
+  `POLICY_DENIED` and a `disallowed_expression` violation that names the part and these
+  shapes: a measure with another statistic, `case`, `nullif`, `coalesce` and other calls,
+  `share`, `total`, `rolling`,
+  `cumulative` and other window kinds, `scoped_aggregate`, `having` on an inline
+  aggregate or another measure, a count of a column that is no key, a sum of a 0/1 flag
+  under a count, and a sum of `order_total_cents` under revenue, which divides it. When a
+  filter inside an expression also uses a field the constraint doesn't list, the refusal
+  names that field instead (the checks below). A caller no constraint applies to reads
+  calls as before.
   A package metric's own `filter:` is the package author's governed definition and is
   trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
   caller adds (its `where`, the conditions in its entity filters, and the filters inside
@@ -816,7 +856,9 @@ kind names must match exactly.
   can refuse a nested filter even when it affects only a sibling expression.
   Direct leaf filters retain the leaf rule above. A caller-created aggregate
   inherits every applicable constraint on any measure reading one of its source
-  columns, whether the column appears in its value or condition. Matching uses
+  columns, whether the column appears in its value or condition, and at any depth: one
+  an entity filter reads inside another entity filter inherits them as one in `select`
+  does, and its value is a filter there (below). Matching uses
   the relation and column SQL actually reads, including measure relation overrides,
   joined columns, lookup sources and entities sharing a relation name. Identifier
   case and quoting differences count as the same source, and only the last part of
@@ -827,20 +869,60 @@ kind names must match exactly.
   other form (a count, `avg`, another aggregation, or a literal, arithmetic, call or
   `case` value) follows the count measure's constraints. A column whose values happen
   to be constant cannot be told apart from a count, so constrain a measure reading it
-  to govern it too. An `aggregate_if` condition reads
-  columns: each counts as the dimensions over it, and a column no dimension declares
-  (named `<entity>.<column>`) is in no `allowed_where`, so a condition on it is refused
-  under either a package-wide or an inherited measure constraint. Its value can pick
-  rows too, so it is read the same way: a `case` in the value is a condition like the
-  `aggregate_if`'s own, and any other column the value computes with (arithmetic or a
-  call, 0 for every customer but one) counts as the dimensions over it (on its entity,
-  or, when it declares none, on another entity over the same table). A column the value
-  returns as it is (the whole value, or what a `case` branch returns) is what is
-  aggregated, as a measure's column is: it counts as no filter, though a count counts
-  only the rows where it has a value. With revenue limited to store filters, a `sum` of
-  `case when customer_id = '…' then order_total_cents else 0 end` by store is refused
-  as its condition form is: "measure.jaffle.revenue_usd can't be filtered by
-  dimension.jaffle_order_customer_id inside an expression". Its condition and value
+  to govern it too. An `aggregate_if` reads columns in its condition and its value,
+  and under `allowed_where` each read below counts as a filter field:
+  - **A condition**, and each `case` condition in the value: each column counts as the
+    dimensions over it, so a condition on a field the policy doesn't list is refused
+    under either a package-wide or an inherited measure constraint.
+  - **A column the value computes with** (arithmetic or a call, 0 for every customer
+    but one) counts as the dimensions over it, on its entity or, when it declares none,
+    on another entity over the same relation, named in full (a dimension over
+    `live.orders` allows nothing on `archive.orders`). With revenue limited to store
+    filters, a `sum` of `case when customer_id = '…' then order_total_cents else 0 end`
+    by store is refused as its condition form is: "measure.jaffle.revenue_usd can't be
+    filtered by dimension.jaffle_order_customer_id inside an expression".
+  - **A column the value returns as it is** (the whole value, or what a `case` branch
+    returns) is what is aggregated, as a measure's column is, and counts as no filter.
+  - **A count of a column.** A `count`, `count_distinct` or `avg` of a returned column
+    counts only the rows where it has a value, so the column counts as a filter unless
+    it is its entity's key or the column the governed measure itself aggregates with no
+    expression around it (each governed measure over the aggregate, when several are).
+    A measure over `coalesce(customer_id, 'guest')` counts the orders with no customer
+    id, and revenue's `order_total_cents / 100.0` is an expression too, so neither
+    exempts a column; declare a measure for a count you want callers to read. A
+    `count_distinct` is exempt only for a whole one-column key: the order's customer id
+    counts as a filter even under a constraint on the ordering-customer count, and so does
+    the order id on order lines keyed by order and item, which has fewer values than rows.
+  - **A spelling.** A column meets a dimension only when the SQL reads it as that
+    dimension, with the dimension's unknown values: spelled as the dimension spells it
+    or, for a name the SQL leaves unquoted, in another ASCII case (every warehouse but
+    ClickHouse). It then meets every dimension over the same warehouse column. A quoted
+    name in another case, `"CUSTOMER REF"` for a dimension over `"Customer Ref"`, reads
+    as a column no dimension declares, even on a warehouse that reads both spellings as
+    one column.
+  - **A column no dimension declares** is named `<entity>.<column>` and no policy can
+    allow it: listing that name allows nothing, even when a dimension's id reads the
+    same. Any use of it inside an expression other than returning it as it is is
+    refused, ordinary arithmetic included: `sum(order_total_cents / 100.0)` and a
+    net-of-tax `sum(order_total_cents - tax_paid_cents)`. The refusal says the package
+    author can declare a dimension over the column and list it in `allowed_where` if the
+    role may use it, and lists only the dimensions that can allow a filter there.
+
+  Each aggregate is held only by the constraints on the measures that govern it. Two
+  averages that answer alone also answer side by side, under one constraint or one each,
+  and another aggregate's condition beside a governed one counts for it only when it cuts
+  the whole query (in `having`, say). Inside one select item it counts for every aggregate
+  the item shows, since it can decide whether a value appears: with revenue limited to
+  store filters, `case when <count of large orders> > 0 then <order total> end` by store
+  is refused, as are `nullif` and a division by such a count. Once an `aggregate_if`'s
+  value decides what else appears (beside another aggregate in its select item, in
+  `having` or in a predicate's input), each column it aggregates counts as a filter too,
+  but a key it counts: `case when max(is_large_order) = true then <revenue> end` is
+  refused. The same aggregates as separate select items answer, and a measure in place of
+  the `aggregate_if` reads no column. A caller no constraint applies to reads such
+  columns as before. A constraint with `allowed_group_by` but no `allowed_where` names no
+  field to refuse here, and its allow-list (above) lists no dimension, so a condition or a
+  value that picks rows is refused there as a shape. Its condition and value
   also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to
@@ -1072,7 +1154,10 @@ whole package, so hiding an object never removes or changes a `deny`,
   entities goes through a hidden entity or relationship, that pair has no route for the
   caller (`PATH_NOT_FOUND`); an ambiguous pair offers only its visible routes.
 - **Raw columns:** while anything is hidden from a caller, that caller cannot aggregate raw
-  columns (`POLICY_DENIED`, naming nothing).
+  columns anywhere in a call, inside an entity filter included (`POLICY_DENIED`, naming
+  nothing). A metric whose own definition aggregates raw columns still answers: the policies
+  hold the metric and what its definition reads, and the same aggregate written in the call
+  is the caller's.
 - **Governance holds read the whole package:** a [building
   block](#building-block-measures) stays one when its metric is hidden, and `plan` still
   holds a draft over a measure that a metric narrows when that metric is hidden only because

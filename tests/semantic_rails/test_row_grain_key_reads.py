@@ -73,6 +73,10 @@ SWITCHED = {
     ("planner/groupings.py", "_entity_stand_ins"),
     # A model with no key has no key column for a relationship to join, so no column cuts as it.
     ("policies.py", "_cuts"),
+    # A metric constraint exempts a count of a key; a model with no key exempts no column, so
+    # its counts are held to the allow-list.
+    ("policies.py", "_counted_operands"),
+    ("policies.py", "_shape_refusal"),
     ("planner/unmatched_words.py", "_grouped_entities"),
     ("runtime.py", "_named_key_refusal"),
     ("runtime.py", "_unknown_rows_kept_warnings"),

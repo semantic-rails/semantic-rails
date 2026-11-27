@@ -8,6 +8,7 @@ finance role gets the reference-SQL number.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections.abc import Callable, Iterable, Iterator
@@ -181,6 +182,57 @@ BYPASSES = {
                         },
                         "right": {"kind": "literal", "value": 0},
                     },
+                },
+                "as": "r",
+            }
+        ],
+        "group_by": [STORE],
+    },
+    # The total's average, read by an entity filter inside another (each over the stock).
+    "conditional_raw_nested": {
+        "select": [
+            {
+                "expression": {
+                    "kind": "scoped_aggregate",
+                    "measure": "measure.jaffle.order_count",
+                    "predicates": [
+                        {
+                            "entity": "entity.jaffle_store",
+                            "input": {
+                                "kind": "ratio",
+                                "numerator": {
+                                    "kind": "scoped_aggregate",
+                                    "measure": "measure.jaffle.inventory_on_hand_sop",
+                                    "aggregation": "sum",
+                                    "predicates": [
+                                        {
+                                            "entity": "entity.jaffle_store",
+                                            "input": {
+                                                "kind": "aggregate_if",
+                                                "aggregation": "avg",
+                                                "value": {
+                                                    "kind": "column",
+                                                    "entity": "entity.jaffle_order",
+                                                    "column": "order_total_cents",
+                                                },
+                                            },
+                                            "op": "gt",
+                                            "value": 0,
+                                            "over": "all_time",
+                                        }
+                                    ],
+                                },
+                                "denominator": {
+                                    "kind": "scoped_aggregate",
+                                    "measure": "measure.jaffle.inventory_on_hand_sop",
+                                    "aggregation": "sum",
+                                },
+                            },
+                            "op": "gt",
+                            "value": 0,
+                            "over": "all_time",
+                        }
+                    ],
                 },
                 "as": "r",
             }
@@ -489,6 +541,246 @@ def test_raw_conditional_aggregate_cannot_bypass_gate_without_binding(engine, by
             }
         ],
     }
+
+
+# A published order count at the stores the nested call above keeps: its author's definition
+# averages the order total two entity filters deep.
+COHORT = "metric.sales.cohort_store_orders"
+COHORT_EXPRESSION = BYPASSES["conditional_raw_nested"]["select"][0]["expression"]
+ORDERS = "measure.jaffle.order_count"
+STORES = "entity.jaffle_store"
+SUPPORT = {"roles": ["support"]}
+# Support's policies, none on anything the cohort's definition binds.
+UNRELATED = {
+    "hidden_tax": {
+        "id": "policy.test.hide_tax",
+        "kind": "object_visibility",
+        "action": "hidden",
+        "object_ids": ["measure.jaffle.tax_paid_usd"],
+        "roles": ["support"],
+    },
+    "hidden_product_type": {
+        "id": "policy.test.hide_product_type",
+        "kind": "object_visibility",
+        "action": "hidden",
+        "object_ids": ["dimension.jaffle_product_type"],
+        "roles": ["support"],
+    },
+    "revenue_by_store": {
+        "id": "policy.test.revenue_by_store",
+        "kind": "metric_constraint",
+        "object_ids": [REVENUE],
+        "roles": ["support"],
+        "config": {"allowed_where": [STORE]},
+    },
+}
+
+
+def _copy_reading(read: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+    """The cohort's definition as a caller writes it, its average read through ``read``."""
+    expression = copy.deepcopy(COHORT_EXPRESSION)
+    predicate = expression["predicates"][0]["input"]["numerator"]["predicates"][0]
+    predicate["input"] = read(predicate["input"])
+    return expression
+
+
+# placement -> (a call reading the cohort metric, the same call as the caller writes it)
+COHORT_CALLS = {
+    "select": (
+        {"select": [{"expression": COHORT, "as": "orders"}]},
+        {"select": [{"expression": COHORT_EXPRESSION, "as": "orders"}]},
+    ),
+    # A where[].having, and the engine form it lowers to with the definition written inline.
+    "having": (
+        {
+            "select": [{"expression": ORDERS, "as": "orders"}],
+            "where": [
+                {
+                    "entity": STORES,
+                    "over": "all_time",
+                    "having": [{"field": COHORT, "op": "gt", "value": 0}],
+                }
+            ],
+        },
+        {
+            "select": [{"expression": {"measure": ORDERS}, "as": "orders"}],
+            "metric_filters": [
+                {
+                    "expression": {
+                        "kind": "metric_predicate",
+                        "entity": STORES,
+                        "scope_mode": "entity_only",
+                        "input": COHORT_EXPRESSION,
+                        "op": ">",
+                        "value": 0,
+                    },
+                    "op": "=",
+                    "value": True,
+                }
+            ],
+        },
+    ),
+    # An in-process caller's copy whose average is a call's argument, held in a tuple.
+    "tuple_argument": (
+        {"select": [{"expression": COHORT, "as": "orders"}]},
+        {
+            "select": [
+                {
+                    "expression": _copy_reading(
+                        lambda average: {"kind": "call", "name": "abs", "args": (average,)}
+                    ),
+                    "as": "orders",
+                }
+            ]
+        },
+    ),
+    # A caller's copy whose average sits in a case arm tagged literal: the case reads the arm.
+    "case_arm_tagged_literal": (
+        {"select": [{"expression": COHORT, "as": "orders"}]},
+        {
+            "select": [
+                {
+                    "expression": _copy_reading(
+                        lambda average: {
+                            "kind": "case",
+                            "whens": [
+                                {
+                                    "kind": "literal",
+                                    "when": {
+                                        "kind": "comparison",
+                                        "op": ">",
+                                        "left": average,
+                                        "right": {"kind": "literal", "value": 0},
+                                    },
+                                    "then": average,
+                                }
+                            ],
+                            "else": {"kind": "literal", "value": 0},
+                        }
+                    ),
+                    "as": "orders",
+                }
+            ]
+        },
+    ),
+    # The caller's own copy of the definition beside the metric.
+    "beside_the_metric": (
+        {"select": [{"expression": COHORT, "as": "orders"}]},
+        {
+            "select": [
+                {"expression": COHORT, "as": "orders"},
+                {"expression": COHORT_EXPRESSION, "as": "copy"},
+            ]
+        },
+    ),
+}
+
+
+@pytest.fixture(scope="module")
+def cohort_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = copy_package_config(tmp_path_factory.mktemp("cohort"), "jaffle_shop", preseed_db=True)
+    metric = {
+        "as": COHORT,
+        "label": "Cohort store orders",
+        "description": "Orders at stores whose stock at stores with order totals is above 0.",
+        "kind": "derived",
+        "value_type": "count",
+        "expression": COHORT_EXPRESSION,
+    }
+    _write(root / "metrics" / "core" / "cohort.yml", {"metrics": {"sales.cohort": metric}})
+    return root
+
+
+def _checked(runtime: Runtime, query: dict[str, Any]) -> dict[str, Any]:
+    """Validated for support: a call as it is, an engine-form query with its policy context."""
+    if "metric_filters" in query:
+        return runtime.validate_internal({**query, "policy_context": SUPPORT})
+    return runtime.validate(query, context=SUPPORT)
+
+
+@pytest.mark.parametrize("placement", COHORT_CALLS)
+@pytest.mark.parametrize("policy", UNRELATED)
+def test_a_metric_that_averages_columns_answers_where_the_callers_copy_is_refused(
+    cohort_package, policy, placement
+):
+    """A package metric's own aggregate over columns is held by the metric and what its
+    definition binds. The same aggregate written by the caller is the caller's, even beside the
+    metric: refused while anything is hidden, and held to the revenue rule."""
+    published, written = COHORT_CALLS[placement]
+    plain = _engine(cohort_package)
+    runtime = _engine(cohort_package, UNRELATED[policy])
+    try:
+        assert all(_checked(plain, query)["ok"] for query in (published, written))
+        assert _checked(runtime, published)["ok"] is True
+        refused = _checked(runtime, written)
+    finally:
+        plain.close()
+        runtime.close()
+    assert refused["ok"] is False
+    issue = refused["errors"][0]
+    assert issue["code"] == "POLICY_DENIED"
+    hidden = UNRELATED[policy]["kind"] == "object_visibility"
+    assert issue["details"]["blocked_objects"] == ([] if hidden else [REVENUE])
+
+
+def test_a_metric_that_averages_columns_is_refused_when_its_definition_binds_a_hidden_object(
+    cohort_package,
+):
+    """Hiding the stock the cohort's definition reads still refuses the metric, as before."""
+    stock = "measure.jaffle.inventory_on_hand_sop"
+    hidden = {**UNRELATED["hidden_tax"], "id": "policy.test.hide_stock", "object_ids": [stock]}
+    runtime = _engine(cohort_package, hidden)
+    try:
+        for published, _ in COHORT_CALLS.values():
+            report = _checked(runtime, published)
+            assert report["ok"] is False
+            assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("policy", UNRELATED)
+def test_a_callers_copy_in_a_predicate_tagged_literal_is_refused(cohort_package, policy):
+    """An engine-form scoped aggregate's predicate is read whatever its kind, so a literal tag
+    on it leaves the caller's copy of the cohort's average the caller's."""
+    tagged = copy.deepcopy(COHORT_EXPRESSION)
+    tagged["predicates"][0]["input"]["numerator"]["predicates"][0]["kind"] = "literal"
+    query = {"select": [{"expression": tagged, "as": "orders"}]}
+    plain = _engine(cohort_package)
+    runtime = _engine(cohort_package, UNRELATED[policy])
+    try:
+        assert plain.validate_internal({**query, "policy_context": SUPPORT})["ok"] is True
+        refused = runtime.validate_internal({**query, "policy_context": SUPPORT})
+    finally:
+        plain.close()
+        runtime.close()
+    assert refused["ok"] is False
+    issue = refused["errors"][0]
+    assert issue["code"] == "POLICY_DENIED"
+    hidden = UNRELATED[policy]["kind"] == "object_visibility"
+    assert issue["details"]["blocked_objects"] == ([] if hidden else [REVENUE])
+
+
+def test_a_metric_beside_a_literal_shaped_like_an_aggregate_answers(cohort_package):
+    """A literal's value is data: one shaped like an aggregate over columns is none."""
+    shaped = {
+        "kind": "aggregate_if",
+        "aggregation": "avg",
+        "value": {"kind": "column", "entity": "entity.unknown", "column": "x"},
+    }
+    literal = {"kind": "literal", "value": shaped}
+    plus = {"kind": "arithmetic", "op": "add", "left": ORDERS, "right": literal}
+    query = {
+        "select": [
+            {"expression": COHORT, "as": "orders"},
+            {"expression": plus, "as": "plus"},
+        ]
+    }
+    runtime = _engine(cohort_package, UNRELATED["hidden_tax"])
+    try:
+        assert _checked(runtime, query)["ok"] is True
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("name", CONTEXTS)
