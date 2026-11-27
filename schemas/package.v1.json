@@ -108,7 +108,22 @@
       "type": [
         "object",
         "array"
-      ]
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "description": "The fact the reader should know."
+          },
+          "so_what": {
+            "type": "string",
+            "description": "What the reader should do about the fact. With owner, it is stated in the caveat's warning at compact and full verbosity."
+          },
+          "owner": {
+            "description": "Who to ask about the caveat."
+          }
+        }
+      }
     },
     "examples": {
       "type": [

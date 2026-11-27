@@ -139,8 +139,8 @@ def test_core_cli_commands_use_the_opted_in_local_profile(
     )
     monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(home))
 
-    profiled = _run_cli("catalog", "--verbosity", "summary")
-    explicit = _run_cli("catalog", "--package", "jaffle_shop", "--verbosity", "summary")
+    profiled = _run_cli("catalog", "--view", "summary")
+    explicit = _run_cli("catalog", "--package", "jaffle_shop", "--view", "summary")
 
     assert profiled["catalog"]["meta"]["package"]["package_id"] == "tpch_sf1_showcase"
     assert explicit["catalog"]["meta"]["package"]["package_id"] == "jaffle_shop"

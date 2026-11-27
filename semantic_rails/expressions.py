@@ -193,6 +193,20 @@ def validate_boolean_argument_count(op: str, count: int) -> None:
         raise SemanticLayerError("INVALID_EXPRESSION_AST", "and/or need at least two arguments")
 
 
+# The most arguments a boolean's SQL joins one after another (``sql_ast.boolean_chain``); a longer
+# one joins its two halves, so the SQL the compiler copies, aliases and renders by recursion
+# nests with the logarithm of a boolean's width rather than the width.
+CHAIN_WIDTH = 16
+
+
+def boolean_chain_depth(count: int) -> int:
+    """How many ``AND`` or ``OR`` levels the SQL of a boolean of ``count`` arguments puts above its
+    deepest argument."""
+    if count > CHAIN_WIDTH:
+        return 1 + boolean_chain_depth((count + 1) // 2)
+    return max(count - 1, 0)
+
+
 @dataclass(frozen=True)
 class CallExpr:
     name: str
@@ -1389,6 +1403,12 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
     """``raw`` parsed; a malformed-shape error names the innermost kind that holds it and,
     from the top call, the ``path`` the expression came from."""
     operators.check_strings(raw, path or "expression")
+    return _parse_named(raw, context=context, path=path)
+
+
+def _parse_named(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
+    """``raw`` parsed, its strings already checked once by the top call (checking them again at
+    every level would read a deep expression's leaves once per level above them)."""
     try:
         return _parse_semantic_expression(raw, context=context, path=path)
     except SemanticLayerError as exc:
@@ -1447,11 +1467,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         # No condition reads every row.
         raw_condition = expr.get("condition")
-        condition = (
-            None
-            if raw_condition is None
-            else parse_semantic_expression(raw_condition, context=context)
-        )
+        condition = None if raw_condition is None else _parse_named(raw_condition, context=context)
         raw_value = expr.get("value")
         if raw_value is None:
             if aggregation.lower() != "count":
@@ -1465,7 +1481,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 )
             value = None
         else:
-            value = parse_semantic_expression(raw_value, context=context)
+            value = _parse_named(raw_value, context=context)
         return ConditionalAggregateExpr(aggregation=aggregation, condition=condition, value=value)
     # ``prior_period`` (and other window kinds) accept ``measure`` as part
     # of a shorthand shape — falling into the MeasureRefExpr arm here
@@ -1564,14 +1580,14 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             raise _unsupported_arithmetic_op(str(expr.get("op", "")).strip(), context)
         return ArithmeticExpr(
             op=op,
-            left=parse_semantic_expression(expr.get("left"), context=context),
-            right=parse_semantic_expression(expr.get("right"), context=context),
+            left=_parse_named(expr.get("left"), context=context),
+            right=_parse_named(expr.get("right"), context=context),
         )
     if kind == "comparison":
         return _comparison(
             str(expr.get("op", "")).strip(),
-            parse_semantic_expression(expr.get("left"), context=context),
-            parse_semantic_expression(expr.get("right"), context=context),
+            _parse_named(expr.get("left"), context=context),
+            _parse_named(expr.get("right"), context=context),
             path or "expression",
         )
     if kind == "boolean":
@@ -1602,7 +1618,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         raw_args = list(expr.get("args", []) or [])
         validate_boolean_argument_count(op, len(raw_args))
-        args = [parse_semantic_expression(arg, context=context) for arg in raw_args]
+        args = [_parse_named(arg, context=context) for arg in raw_args]
         if not args:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
         if op == "not" and len(args) != 1:
@@ -1633,10 +1649,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Call expressions require 'name'")
         return CallExpr(
             name=name,
-            args=[
-                parse_semantic_expression(arg, context=context)
-                for arg in list(expr.get("args", []) or [])
-            ],
+            args=[_parse_named(arg, context=context) for arg in list(expr.get("args", []) or [])],
             distinct=bool(expr.get("distinct", False)),
         )
     if kind == "date_add":
@@ -1651,8 +1664,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         return DateAddExpr(
             unit=unit,
-            value=parse_semantic_expression(expr.get("value"), context=context),
-            date=parse_semantic_expression(expr.get("date"), context=context),
+            value=_parse_named(expr.get("value"), context=context),
+            date=_parse_named(expr.get("date"), context=context),
         )
     if kind in {"in", "not_in"}:
         raw_values = list(expr.get("values", []) or [])
@@ -1661,13 +1674,11 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", "in expressions require non-empty 'values'"
             )
         values = [
-            parse_semantic_expression(value, context=context)
-            if isinstance(value, dict)
-            else LiteralExpr(value)
+            _parse_named(value, context=context) if isinstance(value, dict) else LiteralExpr(value)
             for value in raw_values
         ]
         return InExpr(
-            expr=parse_semantic_expression(expr.get("expr"), context=context),
+            expr=_parse_named(expr.get("expr"), context=context),
             values=values,
             negated=bool(expr.get("negated", False)) or kind == "not_in",
         )
@@ -1683,9 +1694,9 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", f"{kind} expressions require 'low' and 'high'"
             )
-        target = parse_semantic_expression(expr.get("expr"), context=context)
-        low = parse_semantic_expression(expr.get("low"), context=context)
-        high = parse_semantic_expression(expr.get("high"), context=context)
+        target = _parse_named(expr.get("expr"), context=context)
+        low = _parse_named(expr.get("low"), context=context)
+        high = _parse_named(expr.get("high"), context=context)
         negated = bool(expr.get("negated", False)) or kind == "not_between"
         if negated:
             return BooleanExpr(
@@ -1706,8 +1717,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         return CallExpr(
             name="NULLIF",
             args=[
-                parse_semantic_expression(expr.get("value"), context=context),
-                parse_semantic_expression(expr.get("null_value"), context=context),
+                _parse_named(expr.get("value"), context=context),
+                _parse_named(expr.get("null_value"), context=context),
             ],
         )
     if kind == "case":
@@ -1720,8 +1731,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         for row in rows:
             whens.append(
                 CaseWhenExpr(
-                    when=parse_semantic_expression(row.get("when"), context=context),
-                    then=parse_semantic_expression(row.get("then"), context=context),
+                    when=_parse_named(row.get("when"), context=context),
+                    then=_parse_named(row.get("then"), context=context),
                 )
             )
         if not whens:
@@ -1729,13 +1740,11 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
         else_expr = expr.get("else")
         return CaseExpr(
             whens=whens,
-            else_expr=parse_semantic_expression(else_expr, context=context)
-            if else_expr is not None
-            else None,
+            else_expr=_parse_named(else_expr, context=context) if else_expr is not None else None,
         )
     if kind == "cumulative":
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="cumulative",
             aggregate="sum",
             frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
@@ -1783,7 +1792,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "Rolling expressions require a positive window.unit and window.value",
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="rolling",
             aggregate="sum",
             frame="rows",
@@ -1934,7 +1943,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 },
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="prior_period",
             aggregate="lag",
             unit=unit,
@@ -1947,7 +1956,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", "Period-to-date expressions require 'period'"
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             kind="period_to_date",
             aggregate="sum",
             frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
@@ -2051,6 +2060,26 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             if value_kind == "percentile":
                 # Validate p ∈ [0, 1] at parse time so the error fires
                 # at validate, not at compile/execute.
+                unread = sorted(
+                    str(key) for key in raw_value if key not in {"kind", "p", "measure"}
+                )
+                if unread:
+                    # A key it doesn't read would leave the plain percentile as the threshold.
+                    raise SemanticLayerError(
+                        "INVALID_EXPRESSION_AST",
+                        "metric_predicate inline percentile threshold takes only 'p' and "
+                        f"'measure': {unread} would be ignored",
+                        details={
+                            "received_value": dict(raw_value),
+                            "unknown_keys": unread,
+                            "recovery_hints": [
+                                {
+                                    "kind": "remove_unread_parameters",
+                                    "message": f"Remove {unread} from the threshold.",
+                                }
+                            ],
+                        },
+                    )
                 if "p" not in raw_value:
                     raise SemanticLayerError(
                         "INVALID_EXPRESSION_AST",
@@ -2101,7 +2130,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                     },
                 )
         return MetricPredicateExpr(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             entity=entity,
             op=op,
             value=validated_value,
@@ -2235,8 +2264,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", "ratio expressions require numerator and denominator"
             )
         return RatioExpr(
-            numerator=parse_semantic_expression(expr.get("numerator"), context=context),
-            denominator=parse_semantic_expression(expr.get("denominator"), context=context),
+            numerator=_parse_named(expr.get("numerator"), context=context),
+            denominator=_parse_named(expr.get("denominator"), context=context),
         )
     if kind in {"share", "total"}:
         over = expr.get("over")
@@ -2250,7 +2279,7 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                 "INVALID_EXPRESSION_AST", f"{kind} expressions require input and a list over"
             )
         return (ShareExpr if kind == "share" else TotalExpr)(
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             over=[str(item) for item in over],
         )
     if kind == "entity_value":
@@ -2261,11 +2290,11 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
             )
         return EntityValueExpr(
             entity=entity,
-            input=parse_semantic_expression(expr.get("input"), context=context),
+            input=_parse_named(expr.get("input"), context=context),
             where=_entity_value_where(expr.get("where")),
         )
     if kind == "distribution":
-        over = parse_semantic_expression(expr.get("over"), context=context)
+        over = _parse_named(expr.get("over"), context=context)
         if not isinstance(over, EntityValueExpr):
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "distribution expressions require entity_value in 'over'"
@@ -2394,8 +2423,8 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
                     details={"dimension": dim_id, "binding": binding},
                 )
         return ConversionExpr(
-            base=parse_semantic_expression(expr.get("base"), context=context),
-            converted=parse_semantic_expression(expr.get("converted"), context=context),
+            base=_parse_named(expr.get("base"), context=context),
+            converted=_parse_named(expr.get("converted"), context=context),
             entity=entity,
             window_unit=unit,
             window_value=window_value,
@@ -2409,64 +2438,43 @@ def _parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sem
 
 
 def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:
+    """Every column ``expr`` reads, in the order they are written. One walk with its own stack,
+    so a deep expression takes no more of Python's than a shallow one."""
     refs: list[ColumnRefExpr] = []
-
-    def _walk(node: SemanticExpr) -> None:
+    stack: list[SemanticExpr] = [expr]
+    while stack:
+        node = stack.pop()
+        parts: list[SemanticExpr | None]
         if isinstance(node, ColumnRefExpr):
             refs.append(node)
-            return
+            continue
         if isinstance(
             node,
             (MeasureRefExpr, AggregateExpr, MetricRecipeRefExpr, LiteralExpr, ScopedAggregateExpr),
         ):
-            return
+            continue
         if isinstance(node, (ArithmeticExpr, ComparisonExpr)):
-            _walk(node.left)
-            _walk(node.right)
-            return
-        if isinstance(node, (BooleanExpr, CallExpr)):
-            for arg in node.args:
-                _walk(arg)
-            return
-        if isinstance(node, DateAddExpr):
-            _walk(node.value)
-            _walk(node.date)
-            return
-        if isinstance(node, InExpr):
-            _walk(node.expr)
-            for value in node.values:
-                _walk(value)
-            return
-        if isinstance(node, CaseExpr):
-            for item in node.whens:
-                _walk(item.when)
-                _walk(item.then)
-            if node.else_expr is not None:
-                _walk(node.else_expr)
-            return
-        if isinstance(
-            node,
-            (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr),
-        ):
-            _walk(node.input)
-            return
-        if isinstance(node, RatioExpr):
-            _walk(node.numerator)
-            _walk(node.denominator)
-            return
-        if isinstance(node, DistributionExpr):
-            _walk(node.over)
-            return
-        if isinstance(node, ConversionExpr):
-            _walk(node.base)
-            _walk(node.converted)
-            return
-        if isinstance(node, ConditionalAggregateExpr):
-            for part in (node.condition, node.value):
-                if part is not None:
-                    _walk(part)
-            return
-        raise TypeError(f"Unsupported expression node: {type(node)!r}")
-
-    _walk(expr)
+            parts = [node.left, node.right]
+        elif isinstance(node, (BooleanExpr, CallExpr)):
+            parts = list(node.args)
+        elif isinstance(node, DateAddExpr):
+            parts = [node.value, node.date]
+        elif isinstance(node, InExpr):
+            parts = [node.expr, *node.values]
+        elif isinstance(node, CaseExpr):
+            parts = [part for item in node.whens for part in (item.when, item.then)]
+            parts.append(node.else_expr)
+        elif isinstance(node, (OffsetWindowExpr, MetricPredicateExpr, EntityValueExpr)):
+            parts = [node.input]
+        elif isinstance(node, RatioExpr):
+            parts = [node.numerator, node.denominator]
+        elif isinstance(node, DistributionExpr):
+            parts = [node.over]
+        elif isinstance(node, ConversionExpr):
+            parts = [node.base, node.converted]
+        elif isinstance(node, ConditionalAggregateExpr):
+            parts = [node.condition, node.value]
+        else:
+            raise TypeError(f"Unsupported expression node: {type(node)!r}")
+        stack.extend(part for part in reversed(parts) if part is not None)
     return refs

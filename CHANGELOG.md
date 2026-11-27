@@ -8,6 +8,939 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
+## 0.3.8 — 2026-11-26 — Empty periods past the load log read NULL on every warehouse
+
+**Upgrading from 0.3.7:** only Snowflake, BigQuery, Databricks and Athena answers change, and only
+in a series (a call with a `grain`) over a model whose `zero_through` names a load log. A period
+the load log doesn't cover yet, or one before the measure's first row, now reads `NULL` with
+`NO_DATA_YET` where 0.3.7 read `0`. DuckDB, Postgres and ClickHouse answers and SQL are unchanged,
+and so is every metric constraint. One derived number can move the other way: a ratio whose
+denominator wraps such a measure, for example orders per ticket with tickets as
+`COALESCE(tickets opened, all tickets)`, can now read `0` for a period past both the load log and
+the numerator's last row, where 0.3.7 read `NULL`. The `0` comes from the known limit below (the
+numerator), which 0.3.7 also had; 0.3.7's `NULL` came from its own wrong `0` in the denominator.
+
+**Known limit (0.3.6 and 0.3.7 too):** on Snowflake, BigQuery, Databricks and Athena, a measure
+with no declared edge (no `zero_through`) can read `0` for a period past its last row when another
+measure in the call has rows there; DuckDB and Postgres read `NULL`. It is fixed in the next
+release. Until then, declare `zero_through` on models whose data stops before today.
+
+### Fixed
+
+- On Snowflake, BigQuery, Databricks and Athena, a series over a model whose `zero_through`
+  names a load log (or `now`) now reads `NULL` with `NO_DATA_YET`, not `0`, in a period the
+  load log doesn't cover yet, as DuckDB and Postgres already did. Such a period read `0`
+  whenever another measure in the call had rows in it: "tickets opened and all tickets, by
+  week" read `0` tickets opened for a week after the last load because a late ticket from that
+  week was already in the table. 0.3.6 did this when the measure had rows elsewhere in the
+  answer, and 0.3.7 also when it had rows only before the window. This holds with `start` or
+  `end` alone and with no window. A period before the measure's first row now reads `NULL`
+  there too, as on DuckDB and Postgres; other periods the load log covers read as before.
+
+## 0.3.7 — 2026-11-26 — Metric constraints hold every caller expression to a short list of shapes
+
+**Upgrading from 0.3.6:** under a metric constraint, some calls 0.3.6 answered are now refused
+with `POLICY_DENIED`, naming what it refuses. With no metric constraint, calls answer as before,
+apart from the items under Changed and Fixed and two refusals: an `aggregate_if` value that
+computes with or tests a `filterable: false` dimension's column, and, while anything is hidden
+from you, an aggregate over columns in a nested entity filter that your call or a segment it
+uses writes. One no-policy number changes: an ungrouped distinct count (a count of distinct
+customers with no `group_by` and no `time`) whose filters keep no row now reads `NULL` with a
+`NO_DATA_IN_SCOPE` warning, not `0`. No contract field is removed.
+
+- **Newly refused under a metric constraint**, over a number it governs:
+  - Any expression but ratios and `+ - * /` of allowed reads and numbers: a `case` showing
+    revenue only for stores with a large order, `nullif`, `coalesce`, `abs`, a conversion, a
+    window kind, `share`, `total`, `scoped_aggregate` or a distribution.
+  - Another statistic of a measure that isn't one bare column, and any `percentile`: revenue's
+    `max`.
+  - An `aggregate_if` value other than nothing, the measure's own bare column or, under a count
+    measure, a one-column key, and a `count_distinct` of anything but a whole one-column key:
+    `sum(order_total_cents / 100.0)`.
+  - A filter inside an expression on a field `allowed_where` doesn't list, on a computed column
+    such as `lower(name)`, or on a dimension declaring `unknown_values`. With no
+    `allowed_where`, none is listed: repeat customers' revenue inside the aggregate, under
+    grouping keys alone. Filters in one select item count for every number it shows.
+  - The same shapes in a segment's membership: a segment over `nullif(revenue, 0)`.
+- **Newly refused anywhere in a call under a metric constraint:**
+  - `having`, also in an entity filter, on anything but a governed measure or metric by id with
+    its declared statistic: revenue by store for stores with over 100 orders, under a constraint
+    on revenue alone. A predicate inside another predicate's input reads only such an id.
+  - With a `limit` or a row cap (every MCP `execute` run passes one), `order_by` on anything but
+    a measure or metric by id with its declared statistic, a dimension or the period: the top
+    five stores by an inline count of one customer's orders.
+  - A joined call with a constrained part whose `join.keep` isn't `"all"`, or that ranks under a
+    limit or row cap by anything but a key or an id from a part with no `where`.
+  - Output names that differ only in case.
+
+  Instead, select the measure or metric by id and filter in `where` on the dimensions the
+  constraint allows, as before. To allow a filter inside an aggregate, the package author lists
+  in `allowed_where` a dimension over the field with no `unknown_values`; the other shapes stay
+  refused.
+
+### Changed
+
+- **Agents.** The query MCP's `execute` description says which `time.temporal_role` to give:
+  with `time`, set it to the role the question names, else to the selected ids'
+  `default_temporal_role` from `inspect`; a measure whose card lists no time role takes no
+  time, so filter or group on a date dimension instead.
+- **Agents.** `SEMANTIC_CAVEAT_APPLIED` carries the caveat's `so_what` at every verbosity,
+  `minimal` included (the query MCP's default), so an agent reading the smallest answer still
+  sees what the package owner says to do. `owner` still comes at `compact` and `full`. See
+  [`caveats.yml`](docs/PACKAGE_AUTHORING.md#caveatsyml).
+
+### Fixed
+
+- On Snowflake, BigQuery, Databricks and Athena, a series over an open window (`start` or `end`
+  alone, with or without `fill`) now reads `0` in a period where a sum or count has no rows
+  while its measure has data outside the window and the period lies inside the measure's own
+  loaded range, as DuckDB and Postgres already did; it read `NULL`. Past the measure's own last
+  row it still reads `NULL`, now with `NO_DATA_YET`. "Revenue and refunds until mid-November"
+  reads `0` refunds in a month with none when refunds were recorded later, and their average
+  stays `NULL`: an average of nothing has no value. A window total there (no `grain`) and a
+  part of a joined call, which can lie past the data's edge, still read `0` only while the
+  measure has data inside the window, and so does every empty period on ClickHouse
+  ([issue #201](https://github.com/semantic-rails/semantic-rails/issues/201)).
+- A distinct-population count (a count of distinct customers) with no `group_by` and no `time`
+  now reads `NULL` with `NO_DATA_IN_SCOPE` when its filters keep no row, in either observation
+  scope; it read `0` with no warning. One that read rows keeps its count, `0` included, and one
+  beside an entity filter counts the entities the filter keeps, `0` when it keeps none
+  ([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+- MCP tool schemas and CLI help show how to include the closing day in a time
+  window. For “as of March 31, 2024” or “through March 31, 2024”, set the exclusive
+  `time.end` to `2024-04-01`.
+
+### Security
+
+- A metric constraint's `allowed_where` now also covers the rows an `aggregate_if` value picks,
+  not only its condition: a `case` in the value is read as a condition, and any other column
+  the value computes with counts as the dimensions over it. A field the policy doesn't list is
+  refused with `POLICY_DENIED` and the same `disallowed_where` violation
+  (`"source": "inline_expression"`) as a condition on that field. A `case` on an allowed field
+  and a column the value returns as it is still answer.
+- Under any metric constraint, a call reads a governed measure or metric only in a short list
+  of shapes: by id, with its own statistic; an `aggregate` filtered by dimensions `allowed_where`
+  lists; an `aggregate_if` whose condition reads listed dimensions and that counts a whole key or
+  aggregates its governed measure's own column; and a `ratio` or `+ - * /` of these and numbers.
+  A constraint with no `allowed_where` (`allow_metric_filters: false`, or only grouping keys)
+  lists no dimension, so it allows no filter inside an expression; its `where` is free as before.
+  No condition inside an expression uses a dimension that declares `unknown_values`. `having` and
+  entity filters read only a governed measure or metric by id with its declared statistic, and
+  with a `limit` or a row cap (`max_rows`, which every MCP `execute` run passes), `order_by` names
+  only such an id, a dimension or the period. A joined call with a part under a metric
+  constraint keeps every part's keys, and under a limit or a row cap it ranks only by a key or by
+  an id in a part with no `where` of its own. A constrained call's output names never differ only
+  in case, since DuckDB and other warehouses read quoted names in any case and would order, filter
+  or show one column by another. Anything else over a governed number, such as
+  `case`, `nullif`, `coalesce`, a window kind, `share` or `scoped_aggregate`, is refused with
+  `POLICY_DENIED` and a `disallowed_expression` violation whose message names the shapes
+  allowed. Callers no constraint applies to get the same answers as before.
+- Under a metric constraint with `allowed_where` (or `allow_metric_filters: false`), a column no
+  dimension declares is refused wherever an `aggregate_if` value computes with it, not only in
+  a condition, with the same `POLICY_DENIED` and `disallowed_where` violation, naming
+  `<entity>.<column>`. Listing that name in `allowed_where` allows nothing, even when a
+  dimension's id reads the same. Ordinary arithmetic is refused too, such as
+  `sum(order_total_cents / 100.0)` or a total net of tax: the refusal says the package author
+  can declare a dimension over the column and list it in `allowed_where` if the role may use
+  it. A `count`, `count_distinct` or `avg` of a column counts only the rows where that column
+  has a value, so it is held as a filter on that column unless the column is its entity's key
+  or the column the governed measure itself aggregates with no expression around it: a measure
+  over `coalesce(customer_id, 'guest')` or `order_total_cents / 100.0` exempts nothing. Each
+  aggregate is held only by the constraints on the measures that govern it, so two averages
+  that answer alone also answer together, under one constraint or one each. Inside one select
+  item, every aggregate's filters count for each aggregate the item shows, so a `case`
+  condition, `nullif` or a division by a count can't decide whether a governed value appears
+  under a filter its constraint doesn't allow, and once an `aggregate_if`'s value decides what
+  else appears (there, in `having` or in a predicate's input), each column it aggregates but a
+  key it counts is such a filter: `case when max(is_large_order) = true then revenue end` is
+  refused. A dimension allows a column on another entity only over the same relation, named in
+  full. A column meets a
+  dimension only when the SQL reads it as that dimension: a quoted name in another case reads
+  none of the dimension's unknown values, so it is refused as a column no dimension declares.
+  Callers no constraint applies to get the same answers as before.
+- An `aggregate_if` read inside an entity filter that is itself inside another entity filter
+  (such as a ratio a scoped aggregate's predicate reads) is now held to the metric constraints
+  on the measures over its columns as the same aggregate in `select` is, and refused where
+  that is refused. Its value decides which rows the entity filter keeps, so each column it
+  aggregates also counts as a filter there, but a key it counts. While
+  anything is hidden from a caller, such an aggregate over columns is refused as it is in
+  `select`. A package metric whose own definition reads such an aggregate still answers
+  wherever a call uses it: it is held by its policies and what it reads.
+  The same aggregate written in the call is held as the caller's wherever the call places it.
+
+## 0.3.6 — 2026-11-25 — Metric constraints inside a call, and facts dated by a calendar key
+
+**Upgrading from 0.3.5:** 0.3.6 closes a gap in metric constraints. A measure limited to some
+cuts could still be read per customer or per order inside a call, because a distribution, an
+entity filter or one row's statistic grouped it more finely than the policy allows. Those calls
+are now refused with `POLICY_DENIED`. If you query as a role a metric constraint applies to,
+some calls 0.3.5 answered are refused. If no constraint applies to you, your calls answer as
+before, with the same SQL. No query answer changes: a call that still answers returns the rows
+0.3.5 returned. No contract field is removed or changes type, and no dependency range changes.
+Run `semantic-rails check` on each package with 0.3.6 before you deploy: an example, or a test
+that expects such a call to answer, fails there when it runs as a role the constraint applies
+to.
+
+- **Newly refused for a caller under a metric constraint**, where 0.3.5 answered from a
+  grouping the policy doesn't allow. The code is `POLICY_DENIED`; a caller under a resource
+  grant gets `RESOURCE_ACCESS_DENIED` ("Resource access is not permitted."), as for any policy
+  refusal. The first two examples use the `sales` role of the bundled jaffle_shop package,
+  which may group revenue only by store name.
+  - A `distribution` over an entity's values: the median revenue per customer by store read
+    `487.75` for Brooklyn and is now refused: "measure.jaffle.revenue_usd can't be grouped by
+    dimension.jaffle_customer_id, as the distribution over entity.jaffle_customer groups it; it
+    can be grouped only by dimension.jaffle_store_name." The hint says to remove the
+    distribution over entity.jaffle_customer from the call.
+  - A `min`, `max`, `median` or `percentile` asked in place of the measure's default
+    aggregation, also as an `aggregate_if` over the measure's columns: the largest order's
+    revenue by store
+    (`{"kind": "measure", "measure": "measure.jaffle.revenue_usd", "aggregation": "max"}`) read
+    `99.84` for Brooklyn and is now refused: "measure.jaffle.revenue_usd can't be grouped by
+    dimension.jaffle_order_id, as the max over entity.jaffle_order's rows groups it; …". The
+    hint says to read the measure with its default aggregation (`sum`) in place of `max`.
+    `sum`, `avg` and the measure's default still answer, and so does `count` where the measure
+    allows it.
+  - A lookup measure read from the measure ("as the lookup measure … groups it"), and, under a
+    constraint that allows metric filters, an entity filter, a scoped-aggregate predicate or an
+    aggregate's `filter` predicate on the measure, also through an `aggregate_if` over its
+    columns ("as the entity filter on entity.jaffle_customer groups it"). A package metric
+    that holds one of these is refused the same way, and so is a call that reads one inside a
+    package metric a constraint names. Each part of a joined call is held the same way.
+  - Under `required_group_by` or `required_where`, an inner read that drops the required
+    grouping or filter (`missing_required_group_by`, `missing_required_where`): an entity
+    filter over all time that reads each customer across stores when the measure must be
+    grouped by store, a package metric's own entity filter read without a required filter, a
+    conversion operand read without the call's filter on the other operand's side, a lookup
+    whose source is read without the required filter, and a share beside an entity filter,
+    under a route decision or inside a package metric.
+
+  To let a role read a per-customer statistic, add the entity's key
+  (`dimension.jaffle_customer_id`) to the measure's `allowed_group_by`. A listed name that
+  labels an entity's rows (its `display`) allows the inner grouping by that entity's key, such
+  as a distribution over it; a `group_by` on the key itself still needs the key listed.
+- **Refusals and offers that read differently.**
+  - A call 0.3.5 already refused can now be refused for the inner grouping, beside or in place
+    of what 0.3.5 named (another cut, a total's or a share's grouping, or another code such as
+    `EMPTY_GROUPS_UNSETTLED`), with a hint that says how to change the call. An entity filter
+    on revenue under the `sales` role adds "measure.jaffle.revenue_usd can't be grouped by
+    dimension.jaffle_customer_id, as the entity filter on entity.jaffle_customer groups it; …"
+    after the sentence 0.3.5 gave.
+  - What the engine offers a constrained caller is checked the same way. A clarification
+    (`AMBIGUOUS_CHILD_SCOPE`) with a reading that is now refused becomes `MIXED_GRAIN_INVALID`,
+    naming that reading. A `PATH_NOT_FOUND` no longer lists a same-named measure in
+    `details.lookalike_measures` when the call on it would be refused. `plan` checks its drafts
+    the same way, so a draft that would be refused is not offered ready to run (under a
+    resource grant, `plan` can answer `NO_AUTHORIZED_PLAN`), and segment previews and
+    explanations check the calls they make. `valid-values` reads its values with a call of its
+    own: it reads them through the next measure the policy allows, so its values and counts
+    can come from another measure, and it refuses with `POLICY_DENIED` when none is allowed.
+    The `UNKNOWN_ROWS_KEPT` warning, which the engine counts with a call of its own, is left
+    out when the policy refuses that call.
+  - `INCOMPATIBLE_TEMPORAL_ROLE` for a measure with no time role gives the line that dates it:
+    "'measure.shop.amount' has no time role declared, so it can't be placed on
+    'temporal_role.shop_day_day'. Its rows reach that clock by to-one links: if it dates them,
+    add `times: [temporal_role.shop_day_day]` to measure.shop.amount in model sales; or drop
+    `time` from the query." When its own model declares that clock, the message also offers
+    marking it `default: true`; when its rows reach no such clock, it says to link its model
+    first. The code is the same.
+- **Clients that read responses.** A violation from an inner grouping can add `inside` (the
+  inner read in the call's words, such as "the distribution over entity.jaffle_customer"),
+  `object` (the measure or package metric it holds), `aggregation` and `default_aggregation`
+  (for a statistic of single rows) and `share` (for a share's grouping).
+  `INCOMPATIBLE_TEMPORAL_ROLE` adds `details.declare` (`model`, `measure`, `times`) when the
+  measure's rows reach the clock asked for, and its hint carries the same. No field is
+  retyped.
+- **Package authors.** `suggest_model` with `project_path` dates a fact's measures through its
+  one calendar key (`order_date_key` into `dim_date`), and `time_roles` says when the choice is
+  yours. Validation and `promotion_check` warn `MEASURE_WITHOUT_TIME_ROLE` for a measure with no
+  time role whose rows reach a clock of its own model or a calendar's. It is a warning: the
+  package still loads.
+
+### Added
+
+- A package built with the Architect can answer by month when a fact keeps its date as a key into
+  a calendar. `suggest_model` with `project_path` dates the measures of a table that keeps its
+  date as one key into a calendar: the draft links the key and lists the calendar's role in each
+  measure's `times:`. With several such keys and none the package's model already links (also
+  one the calendar mostly lacks, a snapshot's day, or a key named for another date), one beside
+  a date column of the table's own, or one that is part of the table's grain (a daily inventory
+  by product, or by product and store, whose stock a sum by month would count once per day),
+  the draft dates none and `time_roles` says the choice is
+  yours; a table's own date columns are drafted as before. Only a calendar (`kind: time`, or
+  named for a day, date, week, month or calendar with one row per day) dates through a key,
+  never another entity's own date, and a calendar's
+  unknown-member rows (a NULL or pre-1901 date, a key that is not positive) don't hide it. An
+  `INCOMPATIBLE_TEMPORAL_ROLE` for a measure with no time role gives the line that dates it
+  (`details.declare`), and validation and `promotion_check` warn `MEASURE_WITHOUT_TIME_ROLE` for
+  such a measure whose rows reach a clock. See [suggest_model](docs/ARCHITECT_MCP.md).
+
+### Fixed
+
+- Project validation is faster on packages where many entities share dimensions. A validation
+  summary builds the route questions it displays, and the full report lists every option.
+
+### Security
+
+- A metric constraint now holds inside the call, not only in its own `group_by` and `where`. A
+  `distribution` over an entity's values, an entity filter or scoped-aggregate predicate whose
+  input is the measure, and a lookup measure read from it all group the measure by an entity's
+  keys; that grouping must be in the measure's `allowed_group_by`, must keep its
+  `required_group_by`, and must read it under its `required_where`, or the call is refused with
+  `POLICY_DENIED` and the usual violation kind (`disallowed_group_by`,
+  `missing_required_group_by`, `missing_required_where`), naming the measure, the grouping and
+  the cuts the policy allows. With revenue limited to store cuts, the median of revenue per
+  customer is refused: "measure.jaffle.revenue_usd can't be grouped by
+  dimension.jaffle_customer_id, as the distribution over entity.jaffle_customer groups it; it
+  can be grouped only by dimension.jaffle_store_name." The same holds for a conversion's
+  converted events (read without the call's filter on the base side), for a share beside an
+  entity filter or inside a package metric, and for a policy on a package metric's id. A
+  package metric with such an entity filter is refused the same way for a caller the constraint
+  applies to; add the entity's key to `allowed_group_by` where a per-entity statistic is meant
+  to be read.
+- A `min`, `max`, `median` or `percentile` the call asks of such a measure in place of its
+  default aggregation (in a `measure`, `aggregate` or `scoped_aggregate` read, or an
+  `aggregate_if` over its columns) returns single rows' values, so it is held the same way, as
+  a grouping by the measure's row key (a stock's series key): "measure.jaffle.revenue_usd can't
+  be grouped by dimension.jaffle_order_id, as the max over entity.jaffle_order's rows groups
+  it". `sum`, `avg` and `count` still answer, and so does the measure's own default.
+- A name that labels an entity's rows (its `display`) groups by the entity's key too, one row
+  per entity, so listing the name in `allowed_group_by` allows that grouping: a call grouped by
+  the name answers as before, and so does a distribution or entity filter over that entity.
+  Callers no constraint applies to get the same SQL as before.
+
+## 0.3.5 — 2026-11-11 — Statistic fixes, deep and joined calls, and discover by model
+
+**Upgrading from 0.3.4:** 0.3.5 fixes four kinds of wrong answer, so some numbers move toward
+what the call states, and it refuses a few calls 0.3.4 answered as if part of the call were not
+there. Run `semantic-rails check` on each package with 0.3.5 before you deploy: an example, a
+test or a package metric that uses a newly refused shape fails there. No contract field is
+removed or changes type.
+
+- **Check the answers that change.**
+  - A statistic of a balance asked with no time window reads the last closing day, like the
+    balance itself, and says so with `BALANCE_CLOSING_DAY`: the average inventory per store
+    reads `925` (the closing day), where it read `967.2` by counting a store whose last snapshot
+    is from 2016. A series with no snapshot on that day is left out.
+  - A scoped aggregate's predicate compares the statistic it states: revenue from customers
+    whose *average* order is at least $30 reads `74,055.23`, where it read `745,646.63` by
+    comparing each customer's total.
+  - `plan` keeps the time grain on a metric that declares no clock: "total amount by month" on a
+    new package drafts a monthly series, where it drafted one total. A metric no one clock dates
+    (a ratio of two models' counts) is held with `PLAN_UNMATCHED_TERMS` instead of drafted as
+    one total, and "total amount for monthly billing period" stays one total, not a monthly
+    series.
+- **Newly refused, where 0.3.4 answered without part of the call:**
+  - an aggregation parameter the aggregation doesn't read (`UNSUPPORTED_AGGREGATION`, naming
+    it in `details.unread_parameters`): an `avg` of revenue with `"parameters": {"p": 0.9}`, or
+    an `avg` of a row count with `"parameters": {"expression": "LENGTH(title)"}` (which answered
+    `1.0`). Only `percentile` reads a parameter (`p`); the same holds beside a predicate's input,
+    in a `distribution`, and in a package metric;
+  - in a scoped aggregate's predicate, a statistic beside a metric input or one that contradicts
+    the input's own (`INVALID_METRIC_PREDICATE`), and a key the predicate doesn't read
+    (`INVALID_QUERY`): `{"input": "metric.sales.aov_usd", "aggregation": "avg", ...}` used to
+    compare the metric and ignore `avg`;
+  - on DuckDB and Postgres, a no-window statistic of a balance dated in another time zone than
+    the call's (`MIXED_TIME_ROLES`, `closing_day_zone`): give the call a window on that clock;
+  - the CLI's `catalog`, `discover`, `inspect` and `build-options` refuse a `--verbosity` they
+    don't support, where they ignored it.
+- **Refused by name, where 0.3.4 failed with an internal error:**
+  - a call nested more than 250 levels deep (`INVALID_QUERY`, with `details.depth` and
+    `details.max_depth`): a sum of 300 measures, each added to the sum before it, is refused
+    at its deepest field;
+  - on Postgres, a joined call wider than 1,664 columns (`INVALID_QUERY`, `details.reason`
+    `parts_over_column_limit`), saying how many of its parts fit: 53 parts of one metric by one
+    key fit.
+- **Newly answered:**
+  - a joined call whose parts group by identifier columns of one name that one of the models
+    keys, with no relationship between them: headcount beside assigned area per department code
+    answers, and `PARTS_JOINED` says the join is the caller's choice (0.3.4 refused it with
+    `join_key_not_shared`);
+  - a division nested in its divisor 100 times, and an `and` or `or` with hundreds of
+    arguments, which failed with an internal error. An `and` or `or` of more than 16 arguments
+    groups its halves in parentheses in the SQL (`mode: "sql"`); the answer is the same.
+- **Same answers, sooner:** a joined call of 200 parts compiles in about a second (about 13 s
+  before), a deeply nested `select` validates in 2 s (44 s before), and a `where` listing 10,000
+  values of one dimension answers in about a second (about 30 s before).
+- **Clients that read responses.**
+  - `discover` with empty `terms` lists ids by model (each model's measures, metrics, segments
+    and dimensions, with `counts` and the package `description`), where it listed them by kind,
+    so the default call on a large package fits instead of failing with `RESULT_TOO_LARGE`. It
+    no longer repeats the package's settings and capability flags (read them from the
+    `semantic-rails://catalog/index` resource), and lists relationship, temporal role and value
+    domain ids only when `kinds` names them. Over 100 dimensions, each model gives
+    `dimension_count` with `DISCOVER_DIMENSIONS_COUNTED`; page their ids with
+    `kinds: ["dimension"]`. With `kinds`, or under a resource grant, the listing is by kind as
+    before.
+  - `discover` answers a call with the same bytes in every process: a score's last digit, and so
+    the order of two tied rows, no longer varies between server processes.
+  - `SEMANTIC_CAVEAT_APPLIED` carries the caveat's `so_what` and `owner` at the default
+    `compact` verbosity when the caveat sets them.
+- **Package authors.** `REVIEW_METADATA_MISSING` comes only from the promotion check, so
+  parse and validate report fewer warnings; their messages name files by relative paths; and
+  every Architect MCP write starts with a three-line `outcome`. A `seed.kind: external`
+  `default_db` may name a file inside the dbt project around the package with `..`.
+- **Install.** The `postgres`, `snowflake-adbc` and `all` extras pin `adbc-driver-manager`
+  1.13.0 (from 1.12.0). No other dependency range changes.
+
+### Added
+
+- Caveats take an optional `so_what`: what the reader should do about the fact the
+  `message` states. The `SEMANTIC_CAVEAT_APPLIED` warning carries `so_what` and `owner` at
+  the default `compact` verbosity (and at `full`) when the caveat sets them. A non-string
+  `so_what` is refused with `INVALID_CONFIG`. See
+  [`caveats.yml`](docs/PACKAGE_AUTHORING.md#caveatsyml).
+- A package test kind, `caveat_applies`, pins whether a call states a caveat: `caveat:`
+  names it, and `applies: false` asserts that it is not stated. A failure reports
+  `CAVEAT_APPLIES_MISMATCH` with the caveats the call did state; a refused call fails the
+  test in either form. See [Examples and tests](docs/PACKAGE_AUTHORING.md#examples-and-tests).
+- Parts of a joined call also join on identifier columns of one name and type that one of the
+  models declares in its key, when no relationship links them. The answer states the join as
+  the caller's choice (no relationship says the codes name the same things). See
+  [Calls side by side](docs/QUERY_CALL.md#calls-side-by-side-parts-and-join).
+- The query MCP can be served without `plan`: set `SEMANTIC_RAILS_MCP_HIDE_PLAN=1` (or pass
+  `hide_plan=True` to `SemanticLayerMCPAdapter`). `plan` is then neither listed nor callable, and
+  the instructions, tool descriptions, prompts and hints describe discover, inspect, execute in
+  `validate` mode, then execute. Unset, the server is unchanged.
+
+### Changed
+
+- The `postgres`, `snowflake-adbc` and `all` extras now pin `adbc-driver-manager` 1.13.0.
+- Missing review metadata (`meta.owner_team`, `meta.review_priority`, `meta.change_risk`) is
+  reported only by the promotion check, as one `REVIEW_METADATA_MISSING` advisory per measure or
+  metric; parse and validate leave it out, so a new package's first warnings are the ones that
+  change answers.
+- Parse and validate messages name files relative to the current directory when the package
+  lies under it (`semantic_rails/jaffle/models/customers.yml` from a dbt project root), else
+  relative to the package directory, instead of repeating its absolute path.
+- Every Architect MCP write starts with `outcome`: three lines saying what happened, the
+  package's state after it, and what to do next, with the whole revision to send. A summary shows repeated warnings only while
+  they fit 2,000 characters, after the first warning of each code.
+- A package inside a dbt project reads the DuckDB file `dbt build` writes: the `default_db` of
+  a `seed.kind: external` package may use `..` to name a file inside that dbt project, with no
+  environment variable. Other paths outside the package still fail to load.
+- The Architect MCP's workspace root defaults to the directory it starts in, not the installed
+  package's folder. `semantic-rails mcp setup --mcp architect` needs no package, and without
+  `--client` it sets up every MCP client installed here (Claude Code included). The preview
+  and the install report name each existing server entry of the same name that it replaces.
+- `setup_project_dialog` reads a dbt project in the workspace: dbt answers the warehouse, the
+  database path, the first model and, when column types name one, its time column; the dialog
+  asks only what is left, and it names the `import_dbt_project` call that brings in the rest
+  (one dbt model per model id: a mart wins over the staging model that drafts the same id).
+  `create_project` writes an absolute `default_db` inside the workspace root relative to the
+  package.
+- `discover` with empty `terms` lists the ids to start from by model: each model the caller sees,
+  with its measure, metric, segment and dimension ids, under `counts` and the package
+  `description`. When the caller sees more than 100 dimensions, each model gives its
+  `dimension_count` (the note `DISCOVER_DIMENSIONS_COUNTED`) and `kinds: ["dimension"]` pages
+  their ids. `limit` and `offset` page the models, and a page ends at the models that fit the
+  response budget, so the default call on a large package no longer fails with
+  `RESULT_TOO_LARGE`. With `kinds`, or under a resource grant, the listing is by kind as before.
+  The listing no longer repeats the package's settings and capability flags (read them from the
+  `semantic-rails://catalog/index` resource), and leaves out relationship, temporal role and
+  value domain ids unless `kinds` names them. The jaffle_shop default listing is 6,475
+  characters, from 9,393.
+- The `discover` tool's `limit` argument says that `has_more` counts what a list left out.
+- Every statistic of a balance asked with no time window reads the last closing day, as the
+  balance itself (`last_value`, `sum`) and a `distribution` over its series already did, and
+  the answer names that day with `BALANCE_CLOSING_DAY`. `avg`, `median`, `percentile`, `min`
+  and `max` of a stock on an `as_of_time` clock used to read each series' own last snapshot,
+  however old, so one stock gave two numbers: the average inventory per store read `967.2`,
+  counting a store whose last snapshot is from 2016, beside a closing-day inventory of `925`;
+  it now reads `925`. A series with no snapshot on that day is left out of every statistic
+  (`NULL` when it is the only one filtered to). On DuckDB and Postgres, such a statistic of a
+  balance on a timestamp clock in another zone than the call's is refused with
+  `MIXED_TIME_ROLES` (`closing_day_zone`), as the balance already was; give the call a window
+  on that clock, over which the statistic reads each series' last snapshot in it, as the
+  message says. Answers with a window, a grain or a grouping by the clock are unchanged, as
+  are an entity filter or a metric predicate read `over: "window"` and a statistic of a
+  balance keyed by its clock alone (one series: over its snapshots). See
+  [Balances](docs/QUERY_CALL.md#balances).
+
+### Fixed
+
+- An aggregation given a parameter it doesn't read is refused with `UNSUPPORTED_AGGREGATION`
+  naming it, instead of answering without it. "Average title length" written as an `avg` of a
+  row count with `"parameters": {"expression": "LENGTH(title)"}` answered `1.0`, the average of
+  the count itself; an `avg` with a `p`, or a `percentile` with a second key, likewise answered
+  as if the key were absent. Only `percentile` reads a parameter (`p`). The same holds for a
+  `distribution`'s `p` and `parameters`, and for a metric that names a measure. To aggregate a
+  row expression, write `{"kind": "aggregate_if", "aggregation": "avg", "value": <expression>}`.
+  See [The aggregation override](docs/QUERY_CALL.md#the-aggregation-override).
+- A call nested more than 250 levels deep is refused at the field where it is deepest
+  (`INVALID_QUERY`, with `details.depth` and `details.max_depth`) before any work, instead of
+  failing with an internal error. 250 levels is what the compiler fits in Python's default
+  stack with room for the program calling it: copying a compiled plan, and turning it into the
+  answer's fields, no longer take a frame of the stack for each level, and neither do the
+  checks of a timed call's clocks, so a monthly call that deep answers on Python 3.11 as well.
+  A division nested in its
+  divisor 100 times, which failed with an internal error, now compiles. See
+  [Refusals](docs/QUERY_CALL.md#refusals).
+- A boolean `and` or `or` with hundreds of arguments compiles: from about 250 arguments it
+  failed with an internal error, and from about 1,000 with `INVALID_CONFIG`. Up to 16
+  arguments its SQL reads as before; a longer one groups its halves in parentheses.
+- A `where` that lists thousands of values for one dimension answers in about a second: the
+  check that warns about a value no row has ran one warehouse query per value, so 10,000
+  values took about 30 seconds. It now reads them in one query, and its warnings are unchanged,
+  however few rows the answer itself may return.
+- `discover` answers a call with the same bytes in every process. The reasons a row matched a
+  plural term and its singular, and the order their amounts add to its score, no longer follow
+  Python's per-process hash seed, so a score can't move in its last digit and break a tie
+  between two rows the other way. `plan` ranks with the same scores.
+- The docs name `plan`'s argument `query` (not `partial_query`), use one local port (8091),
+  count five query tools (six with segments), and show `record_route_decision` taking
+  `decisions`. The Architect tool table in [Architect MCP](docs/ARCHITECT_MCP.md#tool-surface) is
+  generated from the server's own tool list, and CI fails when they differ.
+- `catalog`, `discover`, `inspect` and `build-options` refuse a `--verbosity` they don't
+  support instead of ignoring it.
+- A joined call compiles in time and SQL that grow with its parts and their keys, plus one
+  count per pair of parts (the `unmatched` counts of `PARTS_JOINED`), and answers as before.
+  Each count read every part's key columns, so 200 parts of one metric by one key compiled
+  385 MB of SQL in about 13 s; they now compile 5.6 MB in about a second. See
+  [Calls side by side](docs/QUERY_CALL.md#calls-side-by-side-parts-and-join).
+- On Postgres, which reads at most 1,664 columns in one select, a joined call wider than that
+  is refused before it is sent (`INVALID_QUERY`, `details.reason`: `parts_over_column_limit`),
+  saying how many columns it needs and how many of its parts fit, instead of failing in the
+  warehouse with a generic execution error. 53 parts of one metric by one key fit.
+- `plan` keeps the time grain a question asks for on a metric that declares no
+  `temporal_role`, reading it on the clock its measures share: "total amount by month" on a
+  new package (`semantic-rails init`, or an Architect scaffold over a dbt warehouse) is a monthly
+  series, not one total. A metric that no one clock dates, such as a ratio of two models' counts,
+  is held with `PLAN_UNMATCHED_TERMS` naming the grain instead of answering one total as ready.
+- `plan` reads a series' grain without the words the draft already spends: a filter value it
+  keeps ("total amount for monthly billing period" is one total, not a monthly series) or the
+  name of what it selects ("revenue per day by month" is monthly, not daily). This also fixes
+  measures and metrics that declare a clock. A derived metric whose parts share no one clock is
+  held instead of drafted on one part's clock, and the hold's hint says each part keeps its own.
+- A call whose `select` nests expressions deeply (a long arithmetic chain, nested `case`,
+  `boolean` or `prior_period`, or an `aggregate_if` condition with many terms) now validates,
+  compiles and runs in time proportional to its size. Seventeen 200-level arithmetic chains
+  took 44 seconds to validate and now take 2; the compiled SQL is unchanged.
+- A `scoped_aggregate` predicate compares the statistic it states. A predicate written
+  `{"input": "measure.<id>", "aggregation": "avg", ...}` (or with the `measure` shorthand)
+  compared each entity's default statistic, usually its total, and so answered a different
+  question: revenue from customers whose average order is at least $30 returned about ten times
+  too much on jaffle_shop. Its `aggregation`, `parameters` and `temporal_role` now apply to the
+  measure, in calls and in package metrics. A statistic beside a metric input, or one that
+  contradicts the input's own, is refused `INVALID_METRIC_PREDICATE`, and a key a predicate does
+  not read is refused `INVALID_QUERY`.
+
+## 0.3.4 — 2026-11-01 — Joined calls, look-alike models and empty-group fixes
+
+**Upgrading from 0.3.3:** 0.3.4 answers several calls 0.3.3 refused, refuses a few it answered
+wrongly, and moves some answers toward the stated semantics ("All NULL reads NULL"; a loaded
+period with nothing in it reads 0). Run `semantic-rails check` on each package with 0.3.4 before
+you deploy: an example or test that uses a newly refused shape fails there.
+
+- **Check the answers that change.**
+  - A group, a summing window or a distribution whose rows all have a NULL amount reads `NULL`,
+    where it read `0`.
+  - Over a table that declares how far it is loaded (`zero_through`), a filtered count or sum,
+    and a ratio over a filtered sum, read `0` in a loaded period with no matching row, where they
+    read `NULL`. A measure dated by another model's clock, and an `aggregate_if` with no time
+    window, read only the rows inside that edge.
+  - A ratio over a `prior_period` or `rolling` window reads `NULL` in the period after an empty
+    one, where it reused the last period that had rows.
+  - A distribution over several measures counts an entity with no row of the other measure as
+    `0` (a median net order value after refunds), and one grouped by a lookup keeps its `NULL`
+    group.
+  - A sum grouped two hops away reads its empty weeks as the same sum grouped one hop away does.
+- **Newly refused, where 0.3.3 answered wrongly:** a share over a grouping across a one-to-many
+  hop (`MIXED_GRAIN_INVALID`; select a `total` beside the groups instead), a list after `=`,
+  `<>` or `!=` in a `comparison`, a live `valid-values` `search` on a dimension that isn't text
+  (`INVALID_QUERY`), and, under the `dataset` scope, a distribution that needs settling with a
+  `where` beside an entity filter (`EMPTY_GROUPS_UNSETTLED`). On ClickHouse, a ratio over a
+  `prior_period` or `rolling` window and an `aggregate_if` with no time window are refused.
+- **Newly answered,** each with a note saying how: a sum, count or average grouped across a
+  one-to-many hop, a child's values after a lookup, a parent's measure on its children's rows, a
+  listing of dimensions through a one-to-many route, the text words on an id, and a Postgres
+  `uuid` column in the results.
+- **Grants.** A caller limited to some metrics gets the same answer for an id outside its grant
+  as for an id the package doesn't have.
+- **Clients that read responses.** `execute` answers in mode `run` start with `read_from`. Over
+  MCP, rows too wide as records that fit as columns come back in the columnar form with
+  `ROW_FORMAT_COLUMNS` instead of `RESULT_TOO_LARGE`, so read `row_format` before `rows`.
+  `discover` takes `terms` as a list too, adds `has_more` when a list was cut, and its minimal
+  and compact responses leave out empty buckets and `stage`. `AMBIGUOUS_PATH` groups its route
+  options (`details.clarification.groups`). `plan`'s `PLAN_SUBJECT_UNMATCHED` is
+  `low_confidence`, not `unrealizable`, when other kinds of objects match the words. The
+  Architect MCP pages its long answers: pass `offset` and `limit`, and a page's `revision` as
+  `expected_revision` on the next page.
+- **Packages.** Validation warns with `LOOKALIKE_MODELS` for each group of models an agent can
+  read for one another; settle a group with `prefer_over:` or `distinct_from:`. Every package's
+  semantic fingerprint changes once, because the parsed semantics record each model's
+  `prefer_over:`; no answer changes because of it.
+- **Install.** No dependency range changes.
+
+### Added
+
+- `execute` answers in mode `run` now start with `read_from`: under each model's entity, the
+  ids the answer read from it (each selected measure or metric, and each `group_by` and `where`
+  dimension), and the relationship ids the SQL took to reach a dimension's model when nothing
+  else in the response states that route. A model `routes` already names is left out, and so is
+  an empty `read_from`. Two models can hold the same kind of value (a staging copy, a history,
+  another system's table), so the answer now says which one it read. It never changes an answer,
+  names only what the caller sees, and a metric grant's response leaves it out. See
+  [The answer](docs/QUERY_CALL.md#the-answer).
+- A call grouped by a child's column reached by lookups, then one one-to-many hop (rooms by the
+  cities of their building's addresses, sessions by the product types of their order's items)
+  now answers where the route is decided, instead of being refused with `MIXED_GRAIN_INVALID`.
+  Each stored row counts once, with its whole value, in every group of values its parent's child
+  rows hold (two child rows with the same values count once), a row whose parent has no child
+  row, or that names no parent, is the NULL group, and a total is the call without the grouping.
+  `REWRITE_APPLIED` (`child_values`) says the groups overlap and don't add up to the total. A
+  median, a non-additive measure, a conditional aggregate, a distribution over entity values, a
+  share, another entity's measure in the call, a filter on the child, a call with `time` or
+  `having`, and any such call on ClickHouse (which joins lookups inner) keep their refusal. See
+  [Groups by a child's values after a lookup](docs/QUERY_CALL.md#groups-by-a-childs-values-after-a-lookup).
+- A count measure's `inspect` card says what it counts, from the measure's definition:
+  `count_unit` is `"rows of <entity>"` for a sum of `1`, or `"distinct <column> across rows of
+  <entity>"` for a distinct count, with `" where its condition holds"` for a conditional count;
+  a stock, which reads one snapshot per series, has none.
+  A count of distinct customers and a count of their orders no longer look alike. See
+  [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- `discover` lists a canonical model's first row ahead of the rows of the look-alike models its
+  `prefer_over:` lists, and otherwise keeps its match order, so a weak match from the canonical
+  model never moves ahead of a better match from another model. It marks each look-alike's card
+  with `look_alike`: `history copy of <entity>` when its key is the canonical model's plus time
+  columns of its own, else `prefer <entity>`. Slim cards mark a look-alike's measures, metrics,
+  segments and entity; full cards mark every one. A package without `prefer_over:` gets the
+  same response; a caller who can't see either model gets neither; `plan` and `execute` are
+  unchanged. See [MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+- `discover` says when a list was cut: when a bucket had more matches than `limit`, `has_more`
+  names it with how many more it has (`"has_more": {"dimensions": 5}`), at every verbosity, over
+  MCP and REST. It counts only objects the caller may see, so a hidden or ungranted object never
+  counts. To keep the default MCP response within its budget, the minimal and compact responses
+  now leave out empty buckets and the ranking `stage`. See
+  [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- `discover` takes `terms` as a list (`["revenue", "region"]`) over MCP and REST: each term is
+  ranked on its own, exactly as a call with that term alone, and the results come back keyed by
+  term under `by_term`, with the call's own fields once beside them. The agent splits its
+  question into terms; a list's terms are never ranked together, and a string is one search as
+  before. When the terms' results don't fit the response budget, the leading terms that fit are
+  returned and a `DISCOVER_TERMS_TRUNCATED` warning names the rest to send in another call. See [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- A query call can now be several calls answered side by side, each with its own `where`:
+  `{"parts": [call, ...], "join": {"on": [[dimension of each part], ...], "keep": ...}}`, with
+  one `time` block, `order_by` and `limit` for the whole. Each part is answered as the call it
+  is (the caller's view, policies, row filters, routes, display keys and every disclosure,
+  tagged with its part), and the parts are joined on their keys in one statement: a key only
+  another part has reads 0 or NULL as an empty group does, a NULL key stays its own row, and
+  `join.keep` keeps only the keys of the parts it names. Parts join on the same dimension or on
+  the two columns a declared relationship joins. `PARTS_JOINED` names the keys and counts each
+  part's rows, NULL-key rows and unmatched keys over the whole result, and says which columns
+  add up down the rows. A part with `having`, an entity filter in a part `join.keep` doesn't
+  name, a part grouped finer than the join keys and a part with no clock beside a timed call
+  are refused. See [Calls side by side](docs/QUERY_CALL.md#calls-side-by-side-parts-and-join).
+- A call of dimensions alone whose entities connect only through a one-to-many hop (a
+  department's buildings through its rooms, a store's supplies through its orders' items)
+  answers with the distinct rows along that route instead of `PATH_NOT_FOUND` or
+  `MIXED_GRAIN_INVALID`. It starts at the first entity the call reads, chooses each route by
+  the usual route rules (two routes ask with `AMBIGUOUS_PATH`, when the question fits the
+  response), lists a start row that reaches nothing once with NULL and one that reaches rows
+  with those rows only, and names its route in `assumptions` (`LISTED_THROUGH`). Hidden objects,
+  row filters and denied objects on the route hold as for any call, and a call with a measure
+  or metric keeps every fan-out guard. See
+  [Listings through one-to-many routes](docs/QUERY_CALL.md#listings-through-one-to-many-routes).
+- A model's `distinct_from:` lists, by model id, models whose rows are different things though
+  validation groups them as look-alikes, such as stores and their daily inventory snapshots.
+  Either model listing the other takes the pair out of its same-rows `LOOKALIKE_MODELS` group;
+  a count group stays until each count is labelled for its rows. `discover` marks neither as the
+  other's look-alike, and a `PATH_NOT_FOUND` refusal or a measure's card never names a measure
+  of one as the other's look-alike. An unknown model id, and a pair in both a `prefer_over:` and
+  a `distinct_from:`, are `INVALID_CONFIG`. A package that declares none keeps its semantic
+  fingerprint. See
+  [PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md#distinct_from--models-that-only-look-alike).
+- Validation names each group of models an agent can read for one another, with a
+  `LOOKALIKE_MODELS` warning asking which one is canonical: models whose rows are the same things
+  (the same key, that key plus time columns of its own, such as a history, or keyless with one
+  reading every column of the other), and models whose rows aren't, each with a published count
+  of the same label over the same column (relabelling one for the rows it counts takes it out).
+  `parse-config`, `validate-config`, `check`, `validate_project` and `project_status` report it,
+  and `project_status` adds a next action counting the groups. A table and the one that holds
+  its key, a calendar, and two tables' row counts are never a group. See
+  [look-alike models](docs/PACKAGE_AUTHORING.md#look-alike-models).
+- A model's `prefer_over:` lists the look-alike models, by model id, whose questions it answers
+  instead. A group of look-alike models is decided once one model lists every other, directly or
+  through another model's list, and its `LOOKALIKE_MODELS` warning clears. An unknown id, the
+  model itself, or lists that run in a circle are `INVALID_CONFIG`. The Architect's
+  `upsert_model` writes it (`prefer_over`; `[]` removes it, and `replace` keeps it). The warning
+  now names models by model id, with their entities in `details.entities`. See
+  [`prefer_over:`](docs/PACKAGE_AUTHORING.md#prefer_over--the-canonical-model-of-look-alikes).
+- A metric's `inspect` card names the unit of the counts it reads, as a count measure's card
+  does: `count_unit` for a metric that is one count (with `" where its filter holds"` when its
+  filter keeps only some rows), and `count_units` with the `numerator` and `denominator` of a
+  ratio that are counts. "Average order value" says its denominator is distinct orders, not
+  order rows. A stock names no unit. See
+  [Catalog And Metadata](docs/MCP_INTERFACE.md#catalog-and-metadata).
+- A call grouped by a child's columns can select a measure of the parent each child row names
+  (each order with its customer's lifetime order count, each room with its building's area)
+  instead of being refused with `PATH_NOT_FOUND` or asked `AMBIGUOUS_PATH` from the parent's
+  side. It is read on the children's rows by the route the call or package records from them,
+  else their own key: each parent counts once, with its whole value, in every group that holds
+  one of its child rows, a group whose rows name no parent reads NULL, and a total is the call
+  without the grouping. `REWRITE_APPLIED` (`parent_value`) says the column doesn't add up across
+  groups. A route recorded from the parent's side stands, and a median, a non-additive measure,
+  a ratio against the child's measure, a call with `time`, `having` or no `group_by`, and any
+  such call on ClickHouse (which joins lookups inner) keep their refusal. See
+  [A parent's value on its children's rows](docs/QUERY_CALL.md#a-parents-value-on-its-childrens-rows).
+- A call refused with `PATH_NOT_FOUND` because its measure's model can't reach a grouped or
+  filtered dimension now names the same measure on another model that answers the call as it
+  stands, when one does: `details.lookalike_measures` (each once, with the first sentence of its
+  model's description and the result columns to rename) and a `use_lookalike_measure` hint. A
+  look-alike has the same name and the same column expression, on a model whose rows are the
+  same things: keyed by the same key (a copy), or by that key and its own time columns (a
+  history), or, with no declared key on either, reading every column the other's dimensions
+  read (a keyless copy or history). A table's row count never has one, and invoices and their
+  payments are not alike. Each is checked by compiling the call with it, under
+  the caller's own visibility and policies; a measure the caller can't see or read is never
+  named, and none is chosen for the caller. See the `PATH_NOT_FOUND` row in
+  [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+- A measure's `inspect` card names its look-alikes on other models, when it has any:
+  `lookalike_measures`, each by id with the first sentence of its model's description and
+  which of the seed call's dimensions it reaches, with the card's own `grouping_entities`,
+  `model_description` and a fixed `lookalike_notice`. Only models the caller sees and may read
+  are named; cards without look-alikes are unchanged.
+- A call refused with `PATH_NOT_FOUND` because no relationship chain joins its start to its
+  target now names the key columns the two share (`details.shared_key_columns`) and whether
+  they hold the target's whole key (`shared_key_unique_on_target`). The message says when they
+  share no key column, or when one start row can match many target rows on the columns they
+  share, and the split hint says so too: a total across rows matched on a key that isn't
+  unique on the far side counts a start row once per match. A load or snapshot date on both
+  tables is not a shared key, unless it is one side's whole key (a calendar's date). The
+  author hint gives the relationship row on the shared columns with both cardinalities it can
+  declare: many-to-one when no two far-side rows hold the same values, otherwise many-to-many,
+  which a call can't group or filter through; with no shared key, it says where a
+  relationship goes in a `graph.yml` package. See the `PATH_NOT_FOUND` row in
+  [docs/MCP_INTERFACE.md](docs/MCP_INTERFACE.md).
+- **Postgres pinned address:** `postgres_native` connections accept `hostaddr`, one IP address
+  of the server `host` names. The connection dials it on every connect without looking `host`
+  up, while TLS still sends `host` as the server name and `sslmode: verify-full` checks the
+  certificate against it ([ADBC profiles](docs/ADDING_A_DIALECT.md#adbc-profiles)).
+- Architect's route census lists the routes of a group with too many to ask among
+  (`decide_first.parts`): each from the entity the group passes through, read from there, with
+  the pair's own row for that whole route to pass to `record_route_decision`. Recording it
+  decides the pair that was asked and leaves the shorter pair undecided; the summary pages a
+  group's parts on their own.
+- An `AMBIGUOUS_PATH` refusal groups its route options by the entity each route reaches first
+  (`details.clarification.groups`), so a pair with many routes asks among a few meanings: an
+  account that reaches a brand by 212 routes is asked among 14 groups, 11 with an option to
+  send and 3 counted for a package author to decide (`decide_first`). Two roles one hop down,
+  such as a work order's billing building and its serviced room's building, stay two options.
+  The message, `plan`'s route question, an entity's `inspect` card (`routes` and `groups`) and
+  Architect's route census read the same groups. Every option and every answer stays as it was:
+  grouping only changes how the question is shown.
+- A route question over the answer's budget is shortened step by step (the options its groups
+  list, then one call and a route per option, then the first groups, then the question and its
+  counts), with a `note` saying which, instead of being replaced by `RESULT_TOO_LARGE`.
+- A `row_filter` on a UUID column (an account or owner key) takes `type: uuid`, and filters
+  rows on Postgres, where a row filter on a `uuid` column refused every call before. The
+  trusted attribute may hold the UUID in any case, with or without hyphens or braces, and
+  binds as its lower-case text; a value that isn't a UUID is denied before any SQL runs. See
+  [docs/PACKAGE_AUTHORING.md](docs/PACKAGE_AUTHORING.md).
+- `execute` adds the note `ZERO_FILLED_GROUPS` when a count or sum reads `0` in groups its own
+  rows never reach while another selected measure's rows hold them ("signups and orders by
+  customer": a customer who never ordered reads 0 orders). It counts those groups among the
+  returned rows ("at least" for a truncated answer), names the entity with no rows, and gives
+  the `having` condition that leaves them out when one leaves out exactly those groups. The
+  answer's own statement marks the groups, so
+  no other query runs; a group that reads `NULL` (no data) or read rows that sum to 0 is never
+  counted, and a series' empty periods are not groups. See
+  [Empty groups](docs/QUERY_CALL.md#empty-groups-null-or-0).
+
+### Changed
+
+- The Architect MCP pages its long answers: on a warehouse of about 100 tables, answers that ran
+  from 20,000 to 1.9 million characters now come in pages of about 16,000. `list_tables`,
+  `describe_table`, `profile_columns`, `suggest_model`, `suggest_links`,
+  `suggest_models_from_dbt` and `list_project_files` take `offset` and `limit` and return
+  `total_count`, `has_more` and `next_offset`, as `valid-values` does; `list_tables` no longer
+  stops at 200 tables, nor `suggest_models_from_dbt` at 20 models. Summaries (writes,
+  `validate_project`, `project_status`, `promotion_check`, and now `diff_project` and
+  `impact_project`) fit one page and name each list they cut short in `pages`; `page` reads that
+  list. Every item stays reachable, and `full_report: true` still returns everything. A
+  release's blockers and the next actions are never cut, and a route pair's options are cut only
+  with a note saying which of how many they are and where the rest are. Pass a page's `revision` as
+  `expected_revision` on the next page: a package that changed in between refuses with
+  `CONFIG_CONFLICT` instead of skipping items. See [Paging](docs/ARCHITECT_MCP.md#paging).
+- A write without `expected_revision` says which values it takes, and `suggest_links` names the
+  entity whose model reads a relation the warehouse lacks, with `list_tables` as the next step.
+- Deterministic notes now say exactly what they checked. `REWRITE_APPLIED` for measures of
+  different models reads "Each model's measures were aggregated to the call's groups before the
+  join, so the join counts no row twice. It does not check that these models answer the
+  question." (`details.rewrite_classification`: `independent_leaf_alignment`). A
+  row-grain model's `key_note` on `inspect` says no model can join to one of its rows by key,
+  and what its measures still group and filter by. `TOTAL_OVER` names what a total rolls up
+  and the grain it keeps ("with period rolled up: one value per store, repeated on each of its
+  rows"), and the call schema describes a total's `over` the same way. The `execute` tool
+  description and the HTTP docs say `ok` means the call is valid and ran, not that it answers
+  the question.
+- A sum, count or average of an entity's own measure grouped by a dimension across a
+  one-to-many hop is answered instead of refused with `MIXED_GRAIN_INVALID`: each row counts
+  once, with its whole value, in every group it has a child row in (departments by course
+  level; the revenue of the orders that included each product type), as a distinct count
+  already did. The groups can overlap; `REWRITE_APPLIED` names the hop and says so
+  (`details.overlapping_groups`), and `plan` repeats it for a sum or average of a value. A
+  median or other statistic, a non-additive measure and an item that sets the measure against
+  one of another entity stay refused, with the same message as before. See
+  [Groups across a one-to-many hop](docs/QUERY_CALL.md#groups-across-a-one-to-many-hop).
+- The text words `contains`, `starts_with` and `ends_with` (and their `not_` forms) read an id as
+  its text on every warehouse, whatever type it is stored as, so a product or order code is
+  found by a fragment (`JAF-` in `JAF-003`), a UUID by its first characters and a numeric id by
+  its digits (`ends_with` `"03"` matches 103 and 203). They used to refuse an id. `valid-values`
+  `search` reads an id the same way, with the same paging and counts as text, over the values
+  the caller's row filters leave. `is` and `not` still compare an id as it is stored.
+- MCP `execute` returns rows that exceed the response budget as records but fit as columns in
+  the columnar form, with the note `ROW_FORMAT_COLUMNS`, from its one warehouse run. It used to
+  refuse them with `RESULT_TOO_LARGE` and a hint to run the call again with
+  `row_format: "columns"`. This applies only when the call sends no `row_format`; a response
+  that fits as records is unchanged. Read `row_format` before reading `rows`.
+
+### Fixed
+
+- A group whose rows all have a NULL amount reads `NULL` in two more shapes, as it already did
+  elsewhere ("All NULL reads NULL"), in single periods and windows alike. Beside a
+  `distribution`, "revenue and median order by store by month" read `0` for a store's month whose
+  only order has no amount, and "trailing three-month revenue beside the median order" did so
+  for the windows that hold only that order. A sum measure with a `CASE` that has an `ELSE`
+  below its root, such as a tax multiplier (`amount * CASE WHEN store_id = 'a' THEN 1.1 ELSE 1.2
+  END`), read `0` there too. A group with no rows still reads `0`.
+- Beside a distribution, each output answers as it does alone: a conditional `CASE` measure
+  there reads its base table, not a rollup, as it does without the distribution.
+- A `comparison` takes the filter words as `where` reads them: `gt`, `gte`, `lt`, `lte` and
+  `is` as `>`, `>=`, `<`, `<=` and `=`, `not` keeping rows with no value, and `missing` with a
+  literal `true` or `false`. They were refused as an unsafe SQL token. On a column against a
+  literal the word is the `where` filter on its dimension: `is` / `not` with a list is
+  membership, and the dimension's `unknown_values` are no value. A list after `=`, `<>` or `!=`,
+  which compared the column with the list's text, is refused.
+- `aggregate_if`'s `condition` is optional: without one it aggregates every row, so a sum or
+  average of a column or a row expression (a `case`, `LENGTH`) needs no `1 = 1` condition.
+- A raw `column` in `select` is refused with the `aggregate_if` call that aggregates it,
+  instead of saying a query reads only measures and metrics. The hint offers no such call to
+  a caller that a `deny` or `withhold_values` policy keeps a measure over that column from.
+- A `PATH_NOT_FOUND` for measures on several entities names each measure's own entity in its
+  `anchor`; it named the first measure's entity for all of them.
+- A measure's `verbosity: "full"` discover card lists its `allowed_aggregations`, as `inspect`
+  does.
+- `discover` accepts every kind its tool schema lists. `temporal_role` and `value_domain` (or
+  their plurals) with `terms` used to be refused with "valid kinds: …" although the schema
+  offered them; they are now ranked when named, in `temporal_roles` cards (the `dimension` each
+  role times and its `supported_grains`) and `value_domains` cards (the `dimensions` each
+  describes). With empty `terms`, `dimension_value` lists `dimension_value_ids`.
+- `plan` with a one-item seed, such as `{"select": ["metric.<id>"]}` over a measure of the same
+  name, no longer fails with `DUPLICATE_OUTPUT_ALIAS` "('' is taken)": the seed stands for that
+  measure, and a question whose pieces don't connect gets `PLAN_UNCONNECTED` naming them, as it
+  does without the seed.
+- Several `dimension.` ids in a call's `select` move to `group_by` the way one does, with one
+  `QUERY_SHORTHAND_NORMALIZED` notice listing them all. The second one used to be refused with
+  "a dimension splits the answer; it belongs in group_by".
+- A distribution grouped by a lookup reads every group the call does. "Median net order value
+  and orders by store name" read `NULL` for the order with no store, beside its count of 1,
+  where its net value is `6`, and alone it left that group out. By customer channel, the
+  customers with no signup were left out of the `NULL` group, so "median customer revenue by
+  channel" read `NULL` there instead of `2`. Per store, an order with no store is no store of
+  its own: "median revenue per store" reads `34` (Elm `43`, Oak `25`), where it read `25`,
+  counting that order as a third store.
+- A `distribution` over several measures settles each entity's operands before it aggregates,
+  as a sum grouped by that entity does. "Median net order value after refunds" (revenue less
+  goods refunds per order) left out every order with no refund row, so November read `-1`
+  where it is `4.5`, and a month with no refund at all read `NULL`. An order with no refund now
+  refunded nothing (`0`) wherever refunds have data in scope, under a `where` and a bounded
+  window too; percentiles, `min` and `max` read the same values. An order whose amount is
+  unknown still reads `NULL` and is left out, and a distribution over one measure is unchanged.
+  A sum whose CASE has no ELSE settles beside another measure too: "median revenue excluding
+  store b" per repeat customer reads `20`, where a customer with no store b order dropped out
+  and it read `12`. Under the `dataset` scope, a distribution that needs settling (revenue less
+  refunds) with a `where` beside an entity filter is now refused with `EMPTY_GROUPS_UNSETTLED`,
+  naming it, as the call grouped by order is; it read `NULL` in every month. Measures that read
+  the same rows, every one of them (the declared average order value), still answer.
+- A share over a grouping across a one-to-many hop is refused with `MIXED_GRAIN_INVALID`. A
+  share of a distinct count there (orders by item product type) divided by the sum of the
+  overlapping groups, so it read below each group's true fraction. Select a `total` beside the
+  groups instead: it counts each row once.
+- An `aggregate_if` with no time window reads its table's rows only through the table's
+  declared edge (`zero_through`), as the table's measures do. "The value of orders over 50 we
+  have ever had, by region" counted an order after the load log: east read `1179` where
+  revenue beside it read `180`, and the count read `3` for `2`. Under an empty load log it now
+  reads no row, where it read every row. On ClickHouse, which reads no loaded coverage, such a
+  call is refused (`INVALID_CONFIG`), as the table's measures are.
+- `plan`'s `PLAN_SUBJECT_UNMATCHED` no longer says "Nothing in the catalog mentions them, so the
+  package may not hold this" after checking only measures and metrics. It now checks every kind
+  the caller can see: words that dimensions, time roles, segments or entities mention are named
+  in `why.details.other_matches` with their `kind` ("These words match dimension Customer type
+  (dimension.customer_type), which can group or filter but isn't a measure"), and the status is
+  `low_confidence` instead of `unrealizable`. The message says nothing in the catalog mentions
+  the words only when no visible object of any kind does, and no longer adds that the package
+  may not hold them. An object hidden from the caller is never matched. The recovery hint points
+  to `discover`.
+- On Postgres, a native `uuid` column can now be grouped by, listed and searched. Its values read
+  back as their lower-case hyphenated text, with `column_types` `{"type": "uuid"}`, as on DuckDB.
+  Before, any call that returned a uuid column (a `group_by`, a `valid-values` listing or
+  `search`) was refused with `RESULT_TYPE_UNSUPPORTED`. Filters and counts on it already worked.
+- QUERY_CALL now says how an id stored as a float reads as text: `203.0` on DuckDB, Databricks
+  and Athena, and `203` elsewhere. Store ids as integers or text.
+- A `ratio` over a `prior_period` or `rolling` window, inline or in a metric's `expression:`,
+  now reads every period, as `arithmetic` division already did. The month after a month with no
+  rows read the ratio over the last month that had any ("revenue vs the previous month" by store
+  gave 1.6 for a store's March over its November); it now reads `NULL` there, and the answer
+  returns the empty months. Such a ratio is refused on ClickHouse and as a distribution's
+  input, as an arithmetic division over a prior period already was.
+- When two models' keys spell the column they share with different capitals (`instructor_key`
+  on one, `INSTRUCTOR_KEY` on the other), the `PATH_NOT_FOUND` author hint now spells `via:` as
+  the start's key does and `target:` as the target's does, so the relationship row it suggests
+  loads as written. Before, it used the target's spelling for both, and the row failed to load.
+  `details.shared_key_columns_on_start` gives the start's spelling when it differs.
+- A `rolling`, `cumulative` or `period_to_date` window whose rows all have a NULL amount now
+  reads `NULL`, as one sum over those rows does ("All NULL reads NULL"). It read `0`, the sum of
+  its empty periods: "each store's trailing three-month revenue" (or average order value) read
+  `0` for a store whose only order in those months has no amount. A window with no rows still
+  reads `0` inside the data, and a window with any amount reads the sum of the amounts it has.
+- A sum grouped two hops away reads its empty weeks as the same sum grouped one hop away.
+  "Weekly revenue by customer region" (orders, then customers, then regions) read `0` before
+  the first order and past the orders' load log, where revenue by customer tier reads `NULL`,
+  and refunds and the refund rate by region read `NULL` in every week, all time too, before the
+  first refund, where by tier they read `0` under the orders' log. Only the measure's own
+  table's edge covers its weeks: a load log declared only on the customers table covers
+  signups, so the orders read with no declared edge. An order whose customer the customers
+  table doesn't hold yet still reads under no region.
+- `valid-values` with `allow_live_query` searches, pages and counts every value of the
+  dimension. It used to read only the first `max(limit + offset, 100)` values, so a `search`
+  for a value sorting past them answered `total_count: 0`, and a longer list ended with
+  `has_more: false` as if complete. `search` now runs in the warehouse as the `contains` filter
+  word's match (literal, ignoring case; `_` and `%` are text), over the values the caller's
+  row filters leave, and `offset` and `limit` page there. `has_more` is exact, and
+  `total_count` is the number of matching values once a page holds the last of them, or `null`
+  before that; it is also `null` on a `needs_live_query` answer, which reads no values.
+- A declared value domain matches `search` the same way: literal, ignoring case, in a value, its
+  label or an alias. A search made only of punctuation, such as `_`, used to match every value.
+- A live `search` on a dimension that isn't text (a number or a date) is refused with
+  `INVALID_QUERY` at `search` before any read: list its values without `search`.
+- A filtered count or sum asked with no time window, over a table that declares how far it is
+  loaded (`zero_through`), reads `0` when its filter has never matched a loaded row, such as
+  "how many enterprise accounts have we ever had?" before the first one. It read `NULL` with
+  `NO_DATA_IN_SCOPE`, although the same table's loaded weeks already read `0`. An empty load
+  log still reads `NULL`, and so does a model whose edge is `data`.
+- A filtered metric over a table that declares how far it is loaded (`zero_through`) reads `0`
+  in every loaded period even when its filter has never matched a row, such as a count of
+  enterprise accounts before the first one signs up; it read `NULL` with `NO_DATA_IN_SCOPE`.
+  Periods after the edge still read `NULL` with `NO_DATA_YET`, so no `COALESCE(..., 0)` is
+  needed. See [Empty periods](docs/PACKAGE_AUTHORING.md#empty-periods).
+- A ratio over a filtered sum of a table that declares how far it is loaded (`zero_through`)
+  reads `0.0` in each loaded period with no matching row, even before the summed column holds
+  any value. "Each week's refund rate", refunds over revenue, read `NULL` in every week before
+  the first refund, because no row had a refund amount yet. A refunded row whose amount is NULL
+  still reads `NULL`, and periods after the edge still read `NULL` with `NO_DATA_YET`.
+- A measure dated by another model's clock (refunds dated by their order's time) is now capped
+  by its table's declared edge (`zero_through`) on that clock when asked with no time window.
+  "How many goods refunds have we ever issued?" read `0` under an empty load log, which
+  certifies nothing; it now reads `NULL` with `NO_DATA_IN_SCOPE`, as every refund count does
+  there. A refund on an order after the load log, or whose order is missing, is no longer read.
+
+### Security
+
+- A caller limited to some metrics now gets the same answer for an id outside its grant as
+  for an id the package does not have. This covers a metric or measure with a grain or a
+  window, a dimension written where a measure goes or compared with a text word, an
+  aggregation override, and the seed and plan routes that read the same call.
+
 ## 0.3.3 — 2026-10-28 — Totals, lookup routes and stricter refusals
 
 **Upgrading from 0.3.2:** 0.3.3 refuses some packages and calls that 0.3.2 accepted, where 0.3.2

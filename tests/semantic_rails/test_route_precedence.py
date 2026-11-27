@@ -34,7 +34,7 @@ import yaml
 from semantic_rails import fanout as fanout_module
 from semantic_rails.compiler import _entity_determines
 from semantic_rails.compiler_parts.grain_recovery import _chosen_path
-from semantic_rails.compiler_parts.indexes import get_package_analysis
+from semantic_rails.compiler_parts.indexes import RouteRefusal, get_package_analysis
 from semantic_rails.config import load_package_config
 from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
@@ -927,6 +927,26 @@ def test_every_route_excluded_by_rows_is_refused_naming_the_rows(tmp_path):
     )
     out = Runtime.from_path(str(pkg)).query(query)
     assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("loan", "owner"))
+
+
+def test_missing_route_result_has_independent_details(tmp_path):
+    pkg = _write_package(
+        tmp_path, relationships=(*LENDER, "accounts_district"), rows=[ACCOUNT_OWNER_ROW], max_hops=2
+    )
+    config = load_package_config(str(pkg))
+    for _ in range(2):  # Exercise both the first lookup and a cache hit.
+        result = fanout_module.package_route_result(config, start=LOAN, target=DISTRICT)
+        assert isinstance(result, RouteRefusal)
+        assert result.code == "PATH_NOT_FOUND"
+        assert result.details["reason"] == "excluded_by_decision"
+        assert result.details["rows"] == [ACCOUNT_OWNER_ROW]
+        result.details["reason"] = "modified"
+        result.details["rows"][0]["relationship_path"].clear()
+
+    with pytest.raises(SemanticLayerError) as exc_info:
+        resolve_path(config, start=LOAN, target=DISTRICT)
+    assert exc_info.value.details["reason"] == "excluded_by_decision"
+    assert exc_info.value.details["rows"] == [ACCOUNT_OWNER_ROW]
 
 
 # Districts holding at least 100 in loans, over every loan of the district.

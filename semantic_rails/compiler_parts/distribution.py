@@ -47,9 +47,11 @@ from .bind import (
     _bound_metric_predicates,
     _collect_measure_refs,
     _parse_public_expr,
+    _refuse_unread_parameters,
 )
 from .dependencies import (
     binding_cut,
+    inner_call,
     owning,
     project_is_cut,
     recipe_objects,
@@ -182,7 +184,11 @@ def _distribution_select(
     # refunded nothing), NULL where it has none. The entities stay those with rows of the input's
     # measures in the period. The settled values are internal: no NO_DATA_IN_SCOPE output of their
     # own, and a refusal to settle them names this output.
-    with recording_zero_outputs(), unobserved_as(value_alias, alias):
+    with (
+        recording_zero_outputs(),
+        unobserved_as(value_alias, alias),
+        inner_call(f"the distribution over {expr.over.entity}"),
+    ):
         sql_ast = nested.query_sql(
             config,
             entity_value_query,
@@ -193,27 +199,21 @@ def _distribution_select(
     key_aliases = _query_key_aliases(plan)
     value_ref = SqlIdentifier(parts=[source_name, value_alias])
     function = str(expr.function or "").strip().lower()
-    parameters = dict(expr.parameters or {})
-    if function == "percentile":
-        if expr.p is not None:
-            parameters.setdefault("p", expr.p)
-        aggregate_expr = _aggregation_expr(
-            value_ref,
-            "percentile",
-            parameters=parameters,
-            dialect=dialect_for_warehouse(config.package.warehouse),
-        )
-    elif function in {"median", "avg", "sum", "min", "max"}:
-        aggregate_expr = _aggregation_expr(
-            value_ref,
-            function,
-            parameters=parameters,
-            dialect=dialect_for_warehouse(config.package.warehouse),
-        )
-    else:
+    if function not in {"percentile", "median", "avg", "sum", "min", "max"}:
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION", f"Unsupported distribution function '{expr.function}'"
         )
+    parameters = dict(expr.parameters or {})
+    _refuse_unread_parameters(function, parameters)
+    if expr.p is not None:
+        _refuse_unread_parameters(function, {"p": expr.p}, prefix="")
+        parameters.setdefault("p", expr.p)
+    aggregate_expr = _aggregation_expr(
+        value_ref,
+        function,
+        parameters=parameters,
+        dialect=dialect_for_warehouse(config.package.warehouse),
+    )
     return SqlSelect(
         ctes=[
             SqlCte(

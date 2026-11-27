@@ -8,6 +8,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+TIME_END_DESCRIPTION = (
+    "exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01."
+)
+
 
 def _kind_property(kind: str, key: str) -> dict[str, Any]:
     from semantic_rails.query_call import EXPRESSION_KEYS, EXPRESSION_LISTS, OVER
@@ -248,7 +252,7 @@ def query_call_schema_document() -> dict[str, Any]:
                     "end": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "ISO date or date-time, exclusive: [start, end).",
+                        "description": f"ISO date or date-time, {TIME_END_DESCRIPTION}",
                     },
                     "last": window,
                     "this": {"enum": list(GRAINS)},
@@ -418,7 +422,7 @@ def embedded_query_call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
     """The call schema as a tool embeds it, and the ``$defs`` its references resolve against.
 
     The published document's fields, words and rules in under half its size, for every
-    ``tools/list``: no prose (the tool's description has it), each kind's keys as one line of a
+    ``tools/list``: keep the advice on time.end, each kind's keys as one line of a
     table instead of a schema per kind, and the filter words and their SQL aliases (lower case
     and capitals) as one enum, with each word's value shape in one sentence. The parser refuses
     what the table and the sentence rule out at its path, with a hint; a test holds them to the
@@ -429,7 +433,13 @@ def embedded_query_call_schema() -> tuple[dict[str, Any], dict[str, Any]]:
 
     # Written once: a non-empty string (every id, name and date of a call) and a time unit.
     shared = {"Text": {"type": "string", "minLength": 1}, "Unit": {"enum": list(GRAINS)}}
-    document = _compact(query_call_schema_document(), shared)
+    published = query_call_schema_document()
+    document = _compact(published, shared)
+    end_schema = published["properties"]["time"]["properties"]["end"]
+    document["properties"]["time"]["properties"]["end"] = {
+        **end_schema,
+        "description": TIME_END_DESCRIPTION,
+    }
     definitions: dict[str, Any] = document.pop("$defs")
     for key in ("$schema", "$id", "title", "x-fields"):
         document.pop(key, None)

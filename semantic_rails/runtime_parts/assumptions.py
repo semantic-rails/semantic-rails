@@ -97,26 +97,29 @@ def _governors(config: PackageConfig, select: Any) -> list[tuple[str, list[str],
 
 
 def _nodes(node: Any) -> Iterable[dict[str, Any]]:
-    if isinstance(node, list):
-        for item in node:
-            yield from _nodes(item)
-    elif isinstance(node, dict):
-        yield node
-        for value in node.values():
-            yield from _nodes(value)
+    stack = [node]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(reversed(node))
+        elif isinstance(node, dict):
+            yield node
+            stack.extend(reversed(list(node.values())))
 
 
 def _expression_nodes(node: Any) -> Iterable[dict[str, Any]]:
     """Every node of a caller's expressions, parents first; literal and parameter values are
     data, not nodes."""
-    if isinstance(node, list):
-        for item in node:
-            yield from _expression_nodes(item)
-    elif isinstance(node, dict):
-        yield node
-        for key, value in node.items():
-            if not _opaque_expression_data(node, key):
-                yield from _expression_nodes(value)
+    stack = [node]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(reversed(node))
+        elif isinstance(node, dict):
+            yield node
+            stack.extend(
+                reversed([v for k, v in node.items() if not _opaque_expression_data(node, k)])
+            )
 
 
 def _measure_ids(node: Any) -> Iterable[str]:

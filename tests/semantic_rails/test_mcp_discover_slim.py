@@ -18,7 +18,8 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.mcp import SemanticLayerMCPAdapter, _label_restates_id, list_tool_definitions
+from semantic_rails.discover_listing import label_restates_id
+from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
 from semantic_rails.metadata import _slim_discover_minimal, discover_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -145,7 +146,7 @@ def test_direct_metadata_minimal_projection_is_unchanged(adapter: SemanticLayerM
 def test_label_restates_id_only_when_the_id_holds_every_word(
     label: str, object_id: str, restates: bool
 ) -> None:
-    assert _label_restates_id(label, object_id) is restates
+    assert label_restates_id(label, object_id) is restates
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact"])
@@ -166,7 +167,7 @@ def test_slim_cards_keep_a_label_only_when_it_adds_a_word_to_the_id(
             label = labels.get(row["id"])
             if label is None:  # a metric card standing in for its measure
                 continue
-            if _label_restates_id(label, row["id"]):
+            if label_restates_id(label, row["id"]):
                 assert "label" not in row, row
                 dropped += 1
             else:

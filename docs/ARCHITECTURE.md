@@ -437,15 +437,22 @@ leaf filters retain the leaf rule. Expression filters never satisfy
 axis and each governed object's effective bucket and ordering roles before
 rendering.
 Caller-created synthetic aggregates inherit the applicable constraints of every
-measure reading any of their source columns, including condition columns. Source
-resolution is shared with measure SQL lowering, and the existing constraint evaluator
-checks each synthetic aggregate's own cuts. Relation and column identifiers match
+measure reading any of their source columns, including condition columns. The binding
+holds every one the SQL reads (`BoundQuery.synthetic_measures`): the plan's own and each
+nested compile's, so one an entity filter reads at any depth is checked as one in `select`
+is. One that only package metrics' definitions write is not the caller's: the check holds
+the metric and the objects its definition binds. Source resolution is shared with measure
+SQL lowering, and the existing constraint evaluator checks each synthetic aggregate's own
+cuts. Relation and column identifiers match
 conservatively across case and quoting differences, using only the last relation-name
 part even across schemas. Every synthetic aggregate except `sum`, `min` or `max` of
 one bare column also shares a relation-row dependency with governed count measures,
 including normalized `entity_count` measures, because any other form can recover a
 row count. `aggregate_if` conditions have no authored field and cannot satisfy
-`allowed_where`; other unrelated source columns remain independent.
+`allowed_where`; other unrelated source columns remain independent. An `aggregate_if`
+value's filters are read as its condition's (`_condition_fields`): each `case` condition in
+it, and each column it computes with that a dimension is over (on another entity over the
+same table when its own declares none); a column it returns as it is counts as no filter.
 Column binding and caveat temporal-shape inspection retain their specialized views.
 
 ### Query-Time

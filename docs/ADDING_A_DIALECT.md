@@ -26,6 +26,12 @@ qualified; Snowflake is an opt-in profile described below. Other profiles are
 refused. Postgres credentials stay in the in-memory libpq connection string,
 with keyword values escaped; its packages cannot choose a native library path.
 The `schema` option selects one exact, case-sensitive schema name.
+`hostaddr` takes one IPv4 or IPv6 address of the server `host` names, without
+brackets or a zone, and needs `host` or `host_env`. The connection dials that
+address on every connect, reconnects included, and never looks `host` up; TLS
+still sends `host` as the server name, and `sslmode: verify-full` checks the
+certificate against it. A caller that has already resolved and vetted `host` can
+pass the address it checked, so the connection reaches exactly that address.
 
 The compiler finalizes typed row-filter slots as Postgres `$1`, `$2`, … before
 execution. The adapter checks slot types, counts and placeholder order before

@@ -231,7 +231,7 @@ def test_each_group_of_lookalike_models_is_named_once_with_the_question(campus):
     rooms, survey, buildings = warnings
     assert rooms["severity"] == "warning"
     assert rooms["message"] == (
-        f"{campus}: models rooms and rooms_hist hold the same rows (keyed by room_id; rooms_hist "
+        "models rooms and rooms_hist hold the same rows (keyed by room_id; rooms_hist "
         "adds valid_from: one row per version), so an agent can answer one question from any "
         "of them. Which is canonical? List the others in its model's prefer_over, and say in "
         "each model's description what its rows are. When two of them are different things, "
@@ -240,11 +240,11 @@ def test_each_group_of_lookalike_models_is_named_once_with_the_question(campus):
     assert rooms["details"]["models"] == ["rooms", "rooms_hist"]
     assert rooms["details"]["keys"] == {ROOM: ["room_id"], ROOM_HIST: ["room_id", "valid_from"]}
     assert survey["message"].startswith(
-        f"{campus}: models space_detail and space_detail_hist hold the same rows (neither has a "
+        "models space_detail and space_detail_hist hold the same rows (neither has a "
         "key, and space_detail_hist reads every column space_detail does), so"
     )
     assert buildings["message"] == (
-        f"{campus}: models floors and space_detail each count distinct building_id under one "
+        "models floors and space_detail each count distinct building_id under one "
         "label (Distinct buildings) over rows that aren't the same things, so an agent can "
         "answer one question from any of them. Which is canonical? When one model answers "
         "every question the others do, list them in its prefer_over; else label each count for "
@@ -385,7 +385,7 @@ def test_project_status_asks_for_the_canonical_models_and_the_summary_shows_one(
     assert status["parse"]["warning_counts"]["LOOKALIKE_MODELS"] == 3
     summary = _mcp(server, "validate_project", {"project_path": str(campus)})
     (shown,) = [row for row in summary["warnings"] if row["code"] == "LOOKALIKE_MODELS"]
-    assert shown["message"].startswith(f"{campus}: models rooms and rooms_hist hold the same rows")
+    assert shown["message"].startswith("models rooms and rooms_hist hold the same rows")
     whole = _mcp(server, "validate_project", {"project_path": str(campus), "full_report": True})
     assert _lookalikes(whole) == _lookalikes(parse_config_report(PackageReference(str(campus)))[0])
     # A package without look-alikes gets no such action.

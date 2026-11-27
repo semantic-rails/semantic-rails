@@ -12,12 +12,13 @@ dialect-portable and inspectable.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any
 
 from . import operators
 from .errors import SemanticLayerError
+from .expressions import CHAIN_WIDTH
 from .sql_preparation import ParameterSlot
 
 SQL_BINARY_OPERATORS = frozenset(
@@ -352,6 +353,19 @@ class SqlBinary:
                 "INVALID_EXPRESSION_AST",
                 "Comparisons with a null literal must use build_comparison_condition",
             )
+
+
+def boolean_chain(op: str, args: Sequence[SqlExpr]) -> SqlExpr:
+    """``args`` (one or more) joined by ``op`` (``AND`` or ``OR``): one after another, as SQL reads
+    ``a AND b AND c``, up to ``CHAIN_WIDTH`` of them, else its two halves joined, nested as deep
+    as :func:`semantic_rails.expressions.boolean_chain_depth` says."""
+    if len(args) > CHAIN_WIDTH:
+        middle = (len(args) + 1) // 2
+        return SqlBinary(boolean_chain(op, args[:middle]), op, boolean_chain(op, args[middle:]))
+    current = args[0]
+    for arg in args[1:]:
+        current = SqlBinary(current, op, arg)
+    return current
 
 
 @dataclass(frozen=True)
@@ -771,11 +785,13 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
 
 
 def sql_nodes(node: Any) -> Iterator[Any]:
-    """Every node of a SQL AST, found generically so no node type can hide a read."""
-    if isinstance(node, list | tuple):
-        for item in node:
-            yield from sql_nodes(item)
-    elif is_dataclass(node) and not isinstance(node, type):
-        yield node
-        for item in fields(node):
-            yield from sql_nodes(getattr(node, item.name))
+    """Every node of a SQL AST, parents first, found generically so no node type can hide a
+    read. An explicit stack keeps each node's cost constant however deep it sits."""
+    stack = [node]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list | tuple):
+            stack.extend(reversed(node))
+        elif is_dataclass(node) and not isinstance(node, type):
+            yield node
+            stack.extend(getattr(node, item.name) for item in reversed(fields(node)))

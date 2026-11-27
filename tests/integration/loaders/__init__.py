@@ -9,7 +9,9 @@ BigQuery load jobs or Athena external tables).
 
 Idempotence: loaders record the fixture fingerprint in a one-row marker
 table (``sr_fixture_meta``). A matching fingerprint skips the load, so
-repeated test runs against cloud warehouses cost one round-trip.
+repeated test runs against cloud warehouses cost one round-trip. Test
+processes on one machine (``pytest -n``) share the warehouse's schema, so
+the marker check and the load run under one lock per warehouse kind.
 
 Statements go through the production adapter (``adapter.query``); bulk
 loaders use its connection or client for ingestion. Both exercise the
@@ -18,16 +20,22 @@ runtime's connection path without duplicating driver/connection logic.
 
 from __future__ import annotations
 
+import contextlib
+import tempfile
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from ..fixture import FixtureTable, JaffleFixture
 
 MARKER_TABLE = "sr_fixture_meta"
 DEFAULT_BATCH_ROWS = 5000
+# A hang guard only: a load holds the lock for as long as the slowest warehouse takes.
+LOAD_LOCK_WAIT_S = 900
 
 # Default logical-type -> DDL type map (ANSI-ish). Loaders override
 # entries per warehouse (e.g. ClickHouse `String`, BigQuery `FLOAT64`).
@@ -61,6 +69,31 @@ def iter_table_batches(
         con.close()
 
 
+@contextlib.contextmanager
+def machine_lock(name: str, wait_s: float = LOAD_LOCK_WAIT_S) -> Iterator[None]:
+    """Hold an exclusive lock that every process on this machine shares (POSIX only)."""
+    try:
+        import fcntl
+    except ImportError:  # Windows: no shared lock; run the suite in one process there.
+        yield
+        return
+    path = Path(tempfile.gettempdir()) / f"{name}.lock"
+    with path.open("a") as handle:
+        deadline = time.monotonic() + wait_s
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"another process held {path} for {wait_s:.0f} s") from None
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 class FixtureLoader(ABC):
     """Loads the canonical fixture into one warehouse, idempotently."""
 
@@ -78,12 +111,15 @@ class FixtureLoader(ABC):
 
     # -- public entry point -------------------------------------------------
     def ensure_loaded(self, fixture: JaffleFixture) -> None:
-        if self._marker_matches(fixture):
-            return
-        self.prepare(fixture)
-        for table in fixture.tables:
-            self.load_table(fixture, table)
-        self._write_marker(fixture)
+        # Without the lock, two processes both miss the marker, and each drops the tables
+        # the other is loading or reading.
+        with machine_lock(f"sr-fixture-load-{type(self).__name__}"):
+            if self._marker_matches(fixture):
+                return
+            self.prepare(fixture)
+            for table in fixture.tables:
+                self.load_table(fixture, table)
+            self._write_marker(fixture)
 
     # -- per-warehouse hooks -------------------------------------------------
     def prepare(self, fixture: JaffleFixture) -> None:

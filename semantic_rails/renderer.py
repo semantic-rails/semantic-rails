@@ -288,10 +288,12 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         return _render_string_literal(str(expr.value))
     if isinstance(expr, SqlCall):
         function_name = normalize_sql_function_name(expr.name)
+        call_args: list[str] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a generator is
+            call_args.append(render_expr(arg))
         if expr.distinct:
-            args = ", ".join(render_expr(arg) for arg in expr.args)
-            return f"{function_name}(DISTINCT {args})"
-        return f"{function_name}(" + ", ".join(render_expr(arg) for arg in expr.args) + ")"
+            return f"{function_name}(DISTINCT {', '.join(call_args)})"
+        return f"{function_name}(" + ", ".join(call_args) + ")"
     if isinstance(expr, SqlBinary):
         op = normalize_sql_binary_operator(expr.op)
         my_prec = _binary_precedence(op)

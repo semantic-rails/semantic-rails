@@ -108,6 +108,7 @@ from .indexes import (
     _temporal_role_index,
     get_package_analysis,
 )
+from .part_domain import part_domain
 from .paths import (
     _apply_role_timezone,
     _column_ref,
@@ -370,12 +371,41 @@ def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     return len(_measure_plan_groups(replace(plan, measure_plans=unrouted), config)) > 1
 
 
+def _series_probe_reads_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """Whether a series' guard looks outside its window on a warehouse that reads coverage only
+    for a named window (``reads_coverage`` without ``has_time_coverage``), and so bounds that
+    probe by each measure's own loaded coverage (``guard_empty_groups``' ``probe_key``), as
+    DuckDB and Postgres bound every settled period. A measure's declared edge bounds its
+    periods there too, with or without a window. A window total, or a joined call's part,
+    whose periods can come from another part's clock, keeps the in-window test there."""
+    time = plan.time or {}
+    dialect = _dialect(config)
+    declared = any(
+        _measure_index(config)[row.bound_measure.measure_id].zero_through is not None
+        for row in plan.measure_plans
+    )
+    return bool(
+        (time.get("start") or time.get("end") or declared)
+        and time.get("grain")
+        and not time.get("window_total")
+        and dialect.reads_coverage
+        and not dialect.has_time_coverage
+        and not _emits_time_coverage(plan, config)
+        and part_domain() is None
+    )
+
+
 def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
-    """Whether base leaves record their scope: for coverage, or a window's observation."""
-    return _emits_time_coverage(plan, config) or bool(
-        plan.time
-        and (plan.time.get("start") or plan.time.get("end"))
-        and _dialect(config).has_time_coverage
+    """Whether base leaves record their scope: for coverage, or a window's observation.
+
+    A window hides a measure's rows outside it, so the guard looks for them there: on DuckDB
+    and Postgres in every window, and on the other warehouses that read coverage in a series
+    (``_series_probe_reads_coverage``)."""
+    time = plan.time or {}
+    return (
+        _emits_time_coverage(plan, config)
+        or bool((time.get("start") or time.get("end")) and _dialect(config).has_time_coverage)
+        or _series_probe_reads_coverage(plan, config)
     )
 
 
@@ -560,13 +590,14 @@ def _record_time_scope(
         role = _temporal_role_index(config)[
             _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
         ]
-        # A sum or count's declared edge bounds its gated buckets; others keep the last row.
+        # A sum or count's declared edge bounds its gated buckets, and a series' buckets where
+        # only its probe reads coverage; others keep the last row.
         measure = _measure_index(config)[row.bound_measure.measure_id]
         edge = (
             declared_edge(measure.zero_through, plan.time, role.timezone or "UTC", _dialect(config))
             if measure.zero_through is not None
             and local
-            and _emits_time_coverage(plan, config)
+            and (_emits_time_coverage(plan, config) or _series_probe_reads_coverage(plan, config))
             and resolves_to_zero(row.bound_measure.aggregation, measure)
             else None
         )

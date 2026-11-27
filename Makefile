@@ -27,6 +27,7 @@ complexity:
 
 contracts-check:
 	uv run python scripts/generate_contract_artifacts.py --check
+	uv run python scripts/architect_tool_table.py --check
 
 changelog-check:
 	uv run python scripts/changelog_fragments.py check

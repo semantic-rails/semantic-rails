@@ -307,6 +307,93 @@ def test_many_missing_filter_values_keep_the_warning_small(runtime):
     assert "25 more" in warning["message"]
 
 
+def test_a_filter_value_list_is_probed_in_the_same_queries_however_long(runtime, monkeypatch):
+    query_internal = runtime.query_internal
+    probes: list[dict[str, Any]] = []
+
+    def counted(payload: dict[str, Any], **options: Any) -> dict[str, Any]:
+        probes.append(payload)
+        return query_internal(payload, **options)
+
+    monkeypatch.setattr(runtime, "query_internal", counted)
+    counts = []
+    for missing in (10, 1_000):
+        probes.clear()
+        values = ["Brooklyn", *(f"Nowhere {index}" for index in range(missing))]
+        result = runtime.query(
+            {"select": [ORDERS], "where": [{"field": STORE, "op": "is", "value": values}]}
+        )
+        (warning,) = [w for w in result["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+        assert warning["details"]["missing_count"] == missing
+        counts.append(len(probes))
+    assert counts[0] == counts[1]
+
+
+CUSTOMER = "dimension.jaffle_customer_name"
+
+
+def _missing_counts(runtime: Runtime, values: list[str], **arguments: Any) -> list[int]:
+    """The FILTER_VALUE_NOT_FOUND counts of an MCP execute of orders for ``values``."""
+    call = {"select": [ORDERS], "where": [{"field": CUSTOMER, "op": "is", "value": values}]}
+    answer = SemanticLayerMCPAdapter(runtime).call_tool(
+        "execute", {"query": call, "verbosity": "full", **arguments}
+    )
+    assert answer["ok"] is True
+    return [
+        warning["details"]["missing_count"]
+        for warning in answer.get("warnings", [])
+        if warning["code"] == "FILTER_VALUE_NOT_FOUND"
+    ]
+
+
+def test_a_listed_value_is_found_however_few_rows_the_answer_returns(runtime):
+    listed = runtime.query({"select": [], "group_by": [CUSTOMER], "limit": 400})["rows"]
+    names = [row[CUSTOMER] for row in listed]
+    assert len(names) == 400
+    # MCP returns at most 200 rows by default; the probe of 300 names is not clipped to them.
+    assert _missing_counts(runtime, names[:300]) == []
+    assert _missing_counts(runtime, [*names[:300], *(f"Nobody {i}" for i in range(5))]) == [5]
+    assert _missing_counts(runtime, names[:2], max_rows=1) == []
+
+
+FIRST_ORDER_AT = "dimension.jaffle_customer_first_order_at"
+# Stored as 2016-09-01T07:00:00; the warehouse reads the space form as the same time.
+SPACED, NEVER = "2016-09-01 07:00:00", "1999-01-01 00:00:00"
+
+
+def _value_warnings(runtime: Runtime) -> dict[str, list[str]]:
+    result = runtime.query(
+        {
+            "select": [ORDERS],
+            "where": [{"field": FIRST_ORDER_AT, "op": "is", "value": [SPACED, NEVER]}],
+        }
+    )
+    return {
+        warning["code"]: [row["value"] for row in warning["details"]["filters"]]
+        for warning in result["warnings"]
+        if warning["code"].startswith("FILTER_VALUE_")
+    }
+
+
+def test_a_filter_value_the_warehouse_reads_in_another_spelling_matches(runtime):
+    assert _value_warnings(runtime) == {"FILTER_VALUE_NOT_FOUND": [NEVER]}
+
+
+def test_a_value_whose_own_probe_fails_is_unverified_not_missing(runtime, monkeypatch):
+    query_internal = runtime.query_internal
+
+    def failing(payload: dict[str, Any], **options: Any) -> dict[str, Any]:
+        if [item.get("value") for item in payload.get("where", [])] == [SPACED]:
+            raise SemanticLayerError("QUERY_EXECUTION_ERROR", "Value read failed")
+        return query_internal(payload, **options)
+
+    monkeypatch.setattr(runtime, "query_internal", failing)
+    assert _value_warnings(runtime) == {
+        "FILTER_VALUE_NOT_FOUND": [NEVER],
+        "FILTER_VALUE_UNVERIFIED": [SPACED],
+    }
+
+
 # --- Refusals at their own path ----------------------------------------------------------------
 
 

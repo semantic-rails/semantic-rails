@@ -42,7 +42,9 @@ from semantic_rails.embedding import SemanticLayerMCPAdapter
 adapter = SemanticLayerMCPAdapter.from_package("jaffle_shop")
 try:
     tools = adapter.list_tools()  # Paid once at connect time.
-    found = adapter.call_tool("discover", {"terms": "orders by store name"})  # "" lists every id.
+    found = adapter.call_tool(
+        "discover", {"terms": "orders by store name"}
+    )  # "" lists ids by model.
     draft = adapter.call_tool("plan", {"intent": "orders by store name"})
     if draft["status"] == "ok" and not draft.get("warnings"):
         result = adapter.call_tool(
@@ -115,7 +117,7 @@ tool/schema drift cannot be merged silently.
 ## Tools
 
 - `discover`: rank objects against business terms, or each term of a list on its own; empty
-  `terms` list the catalog's ids.
+  `terms` list the catalog's ids by model.
 - `inspect`: one object's card.
 - `valid-values`: a dimension's governed values. `search` keeps the values containing its
   text, ignoring case, and `limit`/`offset` page them in the warehouse; `has_more` says
@@ -142,6 +144,17 @@ tool/schema drift cannot be merged silently.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
   Listed only when the current package defines segments; its instruction and workflow prompt
   are omitted otherwise. Tool availability follows `Runtime.reload()` on the same adapter.
+
+A host whose agent writes the call itself can serve the tools without `plan`: set
+`SEMANTIC_RAILS_MCP_HIDE_PLAN=1` in the server's environment (for `semantic-rails mcp stdio`,
+the `env` of the client's server entry; for `serve`, the process environment), or pass
+`hide_plan=True` to `SemanticLayerMCPAdapter`, which wins over the environment. `plan` is then
+neither listed nor callable (a call gets `UNKNOWN_MCP_TOOL`), and the instructions, tool
+descriptions, prompts, capabilities and recovery hints describe the flow without it:
+`discover`, `inspect`, then `execute` with `mode="validate"` on the written call, then `execute`.
+The setting takes `1`, `true`, `yes` or `on` to hide `plan` and `0`, `false`, `no`, `off` or
+unset to keep it (any case, surrounding spaces ignored); any other value refuses to start the
+server with `INVALID_CONFIG`. It changes only the query MCP: the HTTP `/api/v1/plan` route stays.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft the call with `plan`, and run it with `execute`, which validates and compiles
@@ -172,9 +185,11 @@ is a compact form of the call's generated schema (`query.v2.json`), with its `$d
 schema root: the same fields, words and rules, with each expression kind's keys as one line of a
 table (the description of `$defs/Expression`), and `$defs/Op` listing the filter words and the
 SQL aliases read as them, in lower case and capitals, with each word's values in one sentence. `query.v2.json` keeps a schema per kind, and the parser
-refuses what the table rules out at its path. `plan` and the metadata tools take a partial call
-to start from. `tests/semantic_rails/test_mcp_response_budget.py` caps each tool's definition
-and `tools/list` in bytes, and a cap may only shrink. `validate` checks a call without running it;
+refuses what the table rules out at its path. `plan`, `discover`, `inspect`, and `valid-values`
+take a partial call to start from. Each of these tools and `execute` describes `query.time.end`
+as exclusive. For “as of March 31, 2024” or “through March 31, 2024”, pass `2024-04-01`.
+`tests/semantic_rails/test_mcp_response_budget.py` caps each tool's definition and
+`tools/list` in bytes, and a cap may only shrink. `validate` checks a call without running it;
 a run checks the call too, so a call to answer is run directly, never validated first.
 
 ### Writing Tool Descriptions
@@ -202,12 +217,37 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
 
 ### Catalog And Metadata
 
-`discover` with empty `terms` lists the catalog instead of ranking: counts, the package's
-capability flags, and ids per object kind, 100 per kind at a time. `limit` and `offset` page the
-ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning gives
-`details.next_offset` while more remain. The `semantic-rails://catalog/index`, `catalog/summary`
-and `catalog/full` resources return the whole index, descriptive rows, or every card with the
-alias index (see [Resources And Prompts](#resources-and-prompts)).
+`discover` with empty `terms` lists the catalog instead of ranking. With no `kinds`, it lists
+the ids an agent picks a starting point from, by model: `counts` per kind, the package's
+`description`, and `models`, each model the caller sees keyed by its entity id with its
+`measures`, `metrics`, `segments` and `dimensions` ids (and its `label` when the label says more
+than the id):
+
+```json
+{"catalog": {"counts": {"entities": 15, "measures": 41, "...": 0}, "description": "...",
+  "models": {"entity.jaffle_customer": {"measures": ["measure.jaffle.customer_count", "..."],
+    "metrics": ["metric.sales.customer_count", "..."],
+    "segments": ["segment.jaffle.high_value_customers"],
+    "dimensions": ["dimension.jaffle_customer_id", "..."]}, "...": {}}}}
+```
+
+A metric is listed under the model whose rows it counts: a predicate or conversion metric's
+entity, else the model of the first measure it reads. When the caller sees more dimensions than one page holds (100), each model
+gives its `dimension_count` instead, and the note `DISCOVER_DIMENSIONS_COUNTED` says to pass
+`kinds: ["dimension"]` to page their ids or `terms` to rank them. `limit` (default 100) and
+`offset` page the models, and a page also ends before the first model that would take the
+response past its character budget. A `DISCOVER_IDS_TRUNCATED` warning gives `details.next_offset`
+and `details.remaining.models` while models remain. The detail of an id (aggregations, values,
+time roles) is on its `inspect` card.
+
+With `kinds`, it lists each named kind's ids instead (`measure_ids`, `dimension_ids`, ...), with
+`counts`, 100 per kind at a time: `limit` and `offset` page each kind's ids, and
+`DISCOVER_IDS_TRUNCATED` gives `details.next_offset` and the ids left per kind while more remain.
+A resource grant names no model, so its listing is by kind too. Every id and count is the
+caller's: an object hidden from them, or outside their grant, lists as if it were absent. The
+listing leaves out the package's capability flags: the `semantic-rails://catalog/index` resource
+returns the whole index with them, and `catalog/summary` and `catalog/full` return descriptive
+rows, or every card with the alias index (see [Resources And Prompts](#resources-and-prompts)).
 
 `terms` may also be a list, for a question the agent has split into its parts:
 `{"terms": ["revenue", "region"]}` ranks each term on its own, exactly as a call with that term
@@ -376,8 +416,8 @@ has one spelling: filter ops are the operator words (`is`, `not`, `gt`, `gte`, `
 `missing`) or their SQL aliases (`=`, `!=`, `>`, ...); any other spelling is refused with the
 word form (a `LIKE` with the text word for its pattern). Each `"dimension.<id>"` string in `select` moves to `group_by`
 (one `QUERY_SHORTHAND_NORMALIZED` warning, whose `details.canonical` lists them all); beside
-another grouping it is refused with the corrected call. Excessive expression nesting returns `INVALID_QUERY` as a
-structured tool error. Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
+another grouping it is refused with the corrected call. A call nested more than 250 levels deep
+returns `INVALID_QUERY` at the field where it is deepest ([refusals](QUERY_CALL.md#refusals)). Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
 closest visible matches.
 
 `execute` takes the call in `query` only; call fields sent as its own arguments, with no
@@ -472,7 +512,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   with plurals as singulars, or when the measure is a [building
   block](PACKAGE_AUTHORING.md#building-block-measures). A measure authored
   `publish: false` that no metric aggregates whole is not offered to agents:
-  `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query.select`
+  `discover` doesn't list it, and `plan` doesn't answer with it unless `query.select`
   names it by id; no other part of the request names it. When a metric reads the measure
   through a filter, it is a building block: `plan` answers with the metric when it is the only
   one that filters the measure or the question names it, and otherwise holds the draft. That
@@ -505,7 +545,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   `temporal_role`, the subject phrase names no other such
   metric as fully nor the measure more fully, and the draft neither filters nor groups by what
   the metric's filter reads ("demo stores" keeps the measure, held). A measure or metric the
-  caller's `partial_query.select` names is never held for this;
+  caller's `query.select` names is never held for this;
 - has no filter on a dimension that a "where <dimension> is <value>" clause names, even
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one
@@ -533,7 +573,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue". The ranked value must be
   named: by one measure's or metric's whole name, label or alias in the question, or by the
-  caller's `partial_query.select`. A value the draft picked any other way ("which store had
+  caller's `query.select`. A value the draft picked any other way ("which store had
   the most customers", where no measure is named "customers") is `ranked_measure_uncertain`;
 - excludes a value requested positively, or cannot prove that its filter keeps or drops
   each named value with the requested polarity (`filter_values_unrealized`). `is` and `not`,
@@ -557,7 +597,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   period as exact dates; without a calendar named fiscal the hint names the package's
   calendars;
 - picked its subject from several that match the question equally well, when neither the
-  question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
+  question nor a `query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
   Gross Revenue and Net Revenue it names neither. The words of a grouping the question asks
@@ -622,7 +662,7 @@ An exclusion ("excluding", "except", "without", "not", "but not", "other than", 
 executable form is a top-level `where` filter `{"field": ..., "op": "not", "value": ...}`:
 "signups excluding web" counts the signups with no channel
 ([Unknown values](QUERY_CALL.md#unknown-values)). `plan` answers an exclusion when its draft,
-the caller's `partial_query` included, leaves out exactly the values the clause names with
+the caller's `query` included, leaves out exactly the values the clause names with
 `not` filters and no `is` filter narrows that dimension ("revenue excluding Brooklyn" is `ok`).
 Every other exclusion holds: each clause the draft doesn't answer that way is one gap,
 `negation_reversed` when a top-level `is` filter keeps a value the clause names, otherwise
@@ -745,7 +785,7 @@ words name it: its label, its aliases and the last part of its name, not the pre
 A grouping that dimensions of two or more entities match, none of them the measure's own
 ("name" for an order count: Customer name or Store name), is ambiguous and never a pick: the
 plan is not ready, and `why.details.ambiguous_groupings` lists it. Naming the entity ("customer
-name") settles it, as does a dimension in the caller's `partial_query` group_by when the draft
+name") settles it, as does a dimension in the caller's `query` group_by when the draft
 adds no other that matches.
 
 The reverse also holds: every grouping the draft adds traces to the question, or the plan is
@@ -755,11 +795,11 @@ naming each one (a dimension's label, or the grain's unit), `details.dimensions`
 above: one it lists ("by store"), the noun a ranking ranks ("which 5 stores had the most
 orders"), the words after "per", "each" or "every" ("revenue per store"), or what a clause
 opening with "which" or "who" lists (the entity it names, or the one "who" lists). It also traces to
-the caller's `partial_query` group_by, or to the draft's own `is` filter, which keeps only
+the caller's `query` group_by, or to the draft's own `is` filter, which keeps only
 values the question names. The time block's grain traces to the question's words outside its
 windows: its unit or "-ly" form ("by month", "monthly", "at month level", "daily"), a series
 ("over time", "trend", "trending", "time series"), or for days a grouping that names the
-query's clock ("by order date"). It also traces to the caller's `partial_query` time grain, or
+query's clock ("by order date"). It also traces to the caller's `query` time grain, or
 it can't split the rows because the window fits in one bucket of the grain ("in Q1 2017", "last
 month", "yesterday"). Packages declare no default grain, so the month plan picks for a
 comparison ("food revenue vs drink revenue by store"), a year-over-year shift ("revenue vs last
@@ -772,7 +812,7 @@ A ranking (a draft with a `group_by`, a `limit` and a first `order_by` on a sele
 also keep the top N of the entity the question ranks. It ranks the entity when the ranked noun
 ("top 3 stores", "which 3 stores") is not a time unit and reads every `group_by` dimension, as
 above (an entity's key and its label). When the question ranks nothing, a ranking the caller's
-`partial_query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
+`query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
 its rows. A ranking of the entity whose rows a traced grain splits ("top 3 stores by revenue at
 month level", "top 3 stores by monthly revenue") would keep the top 3 store-months, so it is
 held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"`; its message asks which ranking the
@@ -786,6 +826,24 @@ question that names it. Both checks only hold a plan; neither changes a draft or
 ready. A ranking of an entity with no single key to rank by (a row-grain model, or a composite
 key: "top 5 scans") is held with `why.code="PLAN_RANKING_NO_KEY"` instead of drafting a single
 total with a limit; its message says to rank by one of the entity's dimensions.
+
+A question that asks for a series ("by month", "weekly", "over time") needs a time grain in the
+draft. A metric that declares no `temporal_role` is read on the clock its measures share, so
+"total amount by month" plans `time: {temporal_role, grain: "month"}`. When no one clock dates
+what the draft selects (a ratio of two models' counts dated by different clocks), or it can be
+read on several and names none, plan holds the draft with `why.code="PLAN_UNMATCHED_TERMS"`,
+`why.details={"terms": ["month"], "kind": "time_grain_unrealized", "temporal_roles": [...]}` and a
+`choose_temporal_role` hint: set `query.time.temporal_role` to the date the user means and the
+grain, then validate, or ask the user. When the parts are dated by different clocks ("orders per
+customer": orders by order date, customers by signup date), the hint names each part's clock
+instead: a chosen role doesn't re-date a part onto a clock it isn't read on, so each period would
+combine numbers dated differently; ask the user, or use a metric declared on one clock. A derived
+metric whose parts share no one clock is held this way too, however many parts it has.
+
+A grain word the draft already spends asks for no series: one inside the name of an object it
+selects or groups by ("Monthly active users", "Revenue per day"), or a filter value it keeps
+("total amount for monthly billing period" is one total of the monthly billing period). Another
+grain word still asks: "revenue per day by month" is monthly.
 
 Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
@@ -822,7 +880,7 @@ answer. A row whose display holds the name as whole words side by side, in any c
   call to run: plan again with the full name. With another name or another hold beside it
   ("Acme and Globex", "… at 9am"), the hold stands instead;
 - none, a full read with one match, a failed lookup, or names giving two rows of one entity
-  ("Acme and Globex"): the hold above. A caller's `partial_query` with a `where` or `group_by`
+  ("Acme and Globex"): the hold above. A caller's `query` with a `where` or `group_by`
   turns the lookup off.
 Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
@@ -1022,16 +1080,18 @@ one day: the last complete day before the `now` argument in the clock's zone whe
 has no time words or says "now", "right now", "currently", "current" or "at the moment"; the closing
 day of the period an "end of" or "as of" phrase names ("at the end of last month" on 2026-10-05
 is 2026-09-30); a day the question states; or the closing day of one stated period ("MRR last
-month"; the opening day for a `start_of_period` stock). The draft carries `time.grain: day` on
-that clock with the day as `start` and `end`, and `assumptions`
-names the day. A generated building-block stock measure is answered with the metric governing
+month"; the opening day for a `start_of_period` stock). The draft uses `time.grain: day` on
+that clock. For a dated balance as of March 31, 2024, it uses `start: 2024-03-31` and the
+exclusive `end: 2024-04-01`. For the last complete day, it uses
+`time.last: {unit: day, value: 1}`. The `assumptions` name the day.
+A generated building-block stock measure is answered with the metric governing
 it, as for any draft on that metric's clock; a caller's select, expression and alias are kept.
 A generated governed balance must be named in full: "pro accounts" cannot stand for "Paying
 accounts". Time words without a single-day reading ("all time", "ever", "to date", "since
 launch", "trend") keep the `stock_as_of_unrealized` hold. A day that isn't complete (today,
 the end of this week) isn't ready to execute, and no earlier day stands in for one. A
-day-grain balance window is read only when both bounds are whole days and it ends on or
-before the last complete day; otherwise `stock_as_of_unrealized`. This includes a caller's
+day-grain balance window is read only when both bounds are whole days and the last included
+day is complete. Otherwise, `plan` returns `stock_as_of_unrealized`. This includes a caller's
 `query.time`; the gap hints at the last complete day. When that day has no snapshot,
 `execute` reads it as `NULL`. When a `metric_constraint` requires the
 clock's date dimension in `group_by`, `plan` adds it (beside the day grain it adds no row) and
@@ -1044,10 +1104,8 @@ day, returns `needs_clarification` with `next.action: "clarify"`, a `stock_as_of
 gap and `why.details.clarification`. Several periods ("MRR last 3 months", "by week" where
 weeks are allowed), a stock on an event clock, a ratio, a balance beside a flow, or a metric
 that wraps a balance (`COALESCE(<filtered balance>, 0)`, arithmetic over one, a scoped
-aggregate) keep the holds above, and a window in `query.time` is used as passed: a day-grain
-balance window is read
-only when both bounds are whole days and it ends on or before the last complete day;
-otherwise `stock_as_of_unrealized`.
+aggregate) keep the holds above. A window in `query.time` is used as passed, subject to
+the same whole-day rule for day-grain balance windows.
 **How plan answers which, who, by, each and top N.** A term that names an entity by its label or
 a synonym (plurals allowed, never its description), after "by", "each", "every" or "for each",
 the noun a ranking ranks ("top 2 accounts by MRR", "bottom 1 account", "which 2 accounts had the
@@ -1178,7 +1236,8 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 
 | Code | Tool(s) | Meaning |
 |---|---|---|
-| `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
+| `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of models, or of ids per kind, and more remain; `details.next_offset` is the next page and `details.remaining` counts what is left (`models`, or per kind) |
+| `DISCOVER_DIMENSIONS_COUNTED` | `discover` | A note: the empty-terms listing by model gives each model's `dimension_count`, since the caller sees more dimensions than one page (100); `kinds: ["dimension"]` pages their ids. `details` `{dimensions}` |
 | `DISCOVER_TERMS_TRUNCATED` | `discover` | A list of `terms` didn't fit the response budget; the leading terms that fit are listed and `details.remaining_terms` names the rest to send in another call |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
@@ -1199,13 +1258,13 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `FILTERED_SERIES_BUCKETS_DROPPED` | `execute` | An unsupported filtered additive series omitted observed buckets. `details.dropped_buckets` lists their time and grouping keys from a separately authorized source query; an average over returned rows omits them |
 | `FILTERED_SERIES_BUCKETS_UNVERIFIED` | `execute` | Missing observed buckets could not be established because the source query was denied, failed or capped, or the answer has a limit or population filter. `details.reason` explains why |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query` instead of a warning) |
-| `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
+| `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context. `details.so_what` says what to do about it at every verbosity, and at `compact` and `full` `details.owner` says who to ask, when the package sets them |
 | `ROUTE_PASS_THROUGH` | `execute` (every verbosity) | The package's one route for a pair the query reads passes through another table's rows that the package doesn't declare as a link table, so a start row with none is left out and one with several can count under several targets; the message gives the meaning and the fixes, `details.through` the crossed entities and `details.fixes` the declarations that settle it |
 | `NULL_PRESERVING_HISTORY` | `execute` | A dimension the query groups or filters by is read through a hop into a validity window; grouped, the warning counts the answer's empty group from the returned rows, or is dropped from a complete answer without one |
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
 
-`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). Every kind the tool schema lists is accepted: `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value`, `relationship`, `temporal_role` and `value_domain`, and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. With `terms`, `relationship`, `temporal_role` and `value_domain` are ranked only when named, each in its own bucket (`relationships`, `temporal_roles`, `value_domains`) whose cards keep what the object joins, times (`dimension`, `supported_grains`) or holds (`dimensions`) at every verbosity. The id listing (empty `terms`) exists on MCP only and lists each requested kind's ids, `dimension_value_ids` included; over HTTP, empty `terms` run the ranked search. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
+`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). Every kind the tool schema lists is accepted: `measure`, `metric`, `segment`, `dimension`, `entity`, `dimension_value`, `relationship`, `temporal_role` and `value_domain`, and a plural spelling (`measures`, `entities`) means its singular on every transport and in the id listing. With `terms`, `relationship`, `temporal_role` and `value_domain` are ranked only when named, each in its own bucket (`relationships`, `temporal_roles`, `value_domains`) whose cards keep what the object joins, times (`dimension`, `supported_grains`) or holds (`dimensions`) at every verbosity. The id listing (empty `terms`) exists on MCP only and lists ids by model, or each requested kind's ids, `dimension_value_ids` included; over HTTP, empty `terms` run the ranked search. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
 
 Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) when the boundary contract is violated outright — e.g. wrong arg name, wrong type, value outside a declared enum. The full envelope shape is identical across all six tools.
 
@@ -1228,8 +1287,9 @@ Declarative resources:
   resources and prompts.
 - `semantic-rails://catalog/summary`: descriptive rows (up to 200 per kind) and `counts_total`.
   Existing consumers can read fields such as `catalog.measures[].id`. This is a large resource.
-- `semantic-rails://catalog/index`: a small opt-in index of counts and ids per object kind,
-  the same as `discover` with empty `terms`, unpaged.
+- `semantic-rails://catalog/index`: a small opt-in index of counts and ids per object kind, with
+  the package's capability flags: the ids `discover` with empty `terms` and every `kinds` lists,
+  unpaged.
 - `semantic-rails://catalog/full`: every object's full card and the alias index. It grows with the
   package (about 200K tokens for `jaffle_shop`), so read the index first. `resources/read` has
   no paging arguments; paging this resource needs resource templates, planned with the
@@ -1486,9 +1546,9 @@ expression kind names the received kind and its request path (for example,
 | `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, its `decision` row, and `query`, the same call with that route in `routes`. `groups` lists the distinct meanings: the routes grouped by the entity they reach first after the hops they all share (`via`), each with its `routes` count and the `options` (ids) it offers; a group whose routes are too many to list has `decide_first` instead (the entity they pass through and the target) and no option to send: a package author decides which of its routes the asked pair means and records that route's option `decision` (see [the route rule](PACKAGE_AUTHORING.md#the-route-rule)). `options_total`, `groups_total` and `listed` count them; `ordered` says the order is not a preference. The message reads the groups. Ask the person among the groups' options, then send that option's `query`. The clarification appears once in the error's details. Route and policy guards apply to every shape. A route in a call applies to that call only; record it with Architect `record_route_decision` and the option's `decision` (the package default; an option's `conflicts_with` names the package rows to change first). See [`routes`](QUERY_CALL.md#routes). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `OUTPUT_NAME_GOVERNED` | A select names a home-made calculation after a governed metric or measure (its id, name or column); `details.governed_object` names it and `details.suggested_alias` a name to use instead, or select the governed object itself. |
-| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |
+| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema; a parameter the aggregation doesn't read is named in `details.unread_parameters`, beside `details.parameters_accepted`, with a `remove_unread_parameters` hint that names both ways out: an unread `p` where a percentile is allowed (`details.percentile_p`) is offered the percentile first, and any other key is removed only if the statistic of the measure itself is meant (another value is another measure, or an `aggregate_if` with a `value`). |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
-| `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric (`details.measures` names the measures whose `times:` don't list it), or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
+| `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric (`details.measures` names the measures whose `times:` don't list it), or the measure has no time role at all (`details.compatible` is empty; the message gives the line that declares one, and `details.declare` its `model`, `measure` and `times` when the measure's rows reach the clock asked for). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
 | `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (`is`) each key dimension. Keys are named only on validate, compile and run errors, for both `select: [dimension, measure]` and `select: [measure], group_by: [dimension]`. The message, `details.key_dimensions` and hint name those dimensions only when every key column is a dimension of the caller's view; a key a hidden dimension declares keeps the generic refusal. |

@@ -15,8 +15,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import semantic_rails.fanout as fanout
 from semantic_rails.architect_mcp import _summary, create_architect_mcp_server
 from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.test_route_groups import _hub
 
 FIRST_WARNINGS = 10
 FIRST_UNDECIDED = 3
@@ -31,13 +33,13 @@ def _size(payload: dict[str, Any]) -> int:
 
 
 def _ungoverned_measures(count: int) -> dict[str, Any]:
-    """Measures without governance ``meta``: three parse warnings each."""
+    """Measures that each duplicate the starter's ``total_amount``: one parse warning each."""
     return {
         f"amount_{index}": {
             "label": f"Amount {index}",
             "description": f"Amount number {index}.",
             "kind": "aggregate",
-            "expr": f"amount + {index}",  # not one another's duplicates
+            "expr": "amount",
             "value_type": "number",
         }
         for index in range(count)
@@ -77,19 +79,21 @@ def test_a_write_answers_with_a_summary_unless_asked_for_the_full_report(tmp_pat
     assert "amount_11" in full["changes"][0]["proposed_content"]
 
     warnings = full["parse"]["warnings"]
-    assert len(warnings) == 36 and all("details" in row for row in warnings)
-    # A preview's messages name the project, not the temporary copy it was checked in.
-    assert all(row["message"].startswith(created["project_path"]) for row in warnings)
+    assert len(warnings) == 12 and all("details" in row for row in warnings)
+    # A preview's messages name paths relative to the package, never the temporary copy.
+    assert all(row["message"].startswith("public measure measure.growth.") for row in warnings)
     parse = compact["parse"]
     assert parse["ok"] is True and parse["summary"] == full["parse"]["summary"]
-    assert parse["warning_counts"] == {"AUTHORING_PROFILE_WARNING": 36}
+    assert parse["warning_counts"] == {"AUTHORING_PROFILE_WARNING": 12}
+    # The first warnings, while they fit the summary's share (these are long).
+    shown = len(parse["warnings"])
+    assert 1 <= shown < FIRST_WARNINGS
     assert parse["warnings"] == [
-        {key: value for key, value in row.items() if key != "details"}
-        for row in warnings[:FIRST_WARNINGS]
+        {key: value for key, value in row.items() if key != "details"} for row in warnings[:shown]
     ]
-    assert parse["warnings_omitted"] == 36 - FIRST_WARNINGS
+    assert parse["warnings_omitted"] == 12 - shown
     assert "full_report" in compact["report"]
-    assert _size(compact) * 2 < _size(full)
+    assert _size(compact) < _size(full)
 
 
 def test_status_and_validate_summarize_the_census_warnings_and_passing_checks(
@@ -172,3 +176,31 @@ def test_status_lists_package_files_not_internal_state(tmp_path: Path) -> None:
 
     assert full - compact == {".semantic-rails/receipt.json"}
     assert {"package.yml", ".gitignore"} <= compact
+
+
+def test_a_nested_census_page_only_builds_the_requested_question(tmp_path, monkeypatch):
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
+    package = _hub(tmp_path, 10)
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    args = {"project_path": str(package)}
+    full = _call(server, "validate_project", {**args, "full_report": True})
+    pairs = full["route_census"]["undecided"]
+    index = len(pairs) - 1
+    assert index > FIRST_UNDECIDED
+    pair = pairs[index]
+    calls = []
+    build = fanout.route_clarification
+
+    def counted(config, start, target, routes):
+        calls.append((start, target))
+        return build(config, start, target, routes)
+
+    monkeypatch.setattr(fanout, "route_clarification", counted)
+    page = f"route_census.undecided.{index}.details.clarification.options"
+    answer = _call(server, "validate_project", {**args, "page": page, "limit": 1})
+    assert answer["items"] == pair["details"]["clarification"]["options"][:1]
+    assert calls == [(pair["source_entity"], pair["target_entity"])]
+    calls.clear()
+    names = f"route_census.undecided.{index}.needed_by"
+    assert _call(server, "validate_project", {**args, "page": names})["items"] == pair["needed_by"]
+    assert calls == []

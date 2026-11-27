@@ -502,12 +502,13 @@ def test_unsupported_expression_reports_received_kind_and_request_path(
 # Every agent session pays for tools/list. Each tool's definition as it is sent (compact JSON);
 # execute embeds the call's schema with each expression kind's keys as one line of a table.
 # A budget may only shrink.
+# This exception grows the tool list so an assistant sends the right end date for a closing balance.
 TOOL_MAX_BYTES = {
-    "discover": 1_732,
-    "inspect": 1_123,
-    "valid-values": 1_388,
-    "plan": 1_887,
-    "execute": 6_853,  # the joined call (parts, join)
+    "discover": 1_875,
+    "inspect": 1_269,
+    "valid-values": 1_534,
+    "plan": 2_033,
+    "execute": 7_184,
     "segment": 1_300,
 }
 
@@ -522,12 +523,12 @@ def test_each_tool_definition_fits_its_byte_budget() -> None:
 
 
 def test_tools_list_fits_its_byte_budget() -> None:
-    assert len(json_text({"tools": list_tool_definitions()})) <= 14_298  # the joined call
+    assert len(json_text({"tools": list_tool_definitions()})) <= 15_212
 
 
 # discover is most of an agent's tokens. Its default responses on the jaffle package, without
 # the per-call request_id and timing; a budget may only shrink.
-DISCOVER_MAX_BYTES = {"revenue by store": 4_261, "": 9_393}
+DISCOVER_MAX_BYTES = {"revenue by store": 4_261, "": 6_475}
 
 
 @pytest.mark.parametrize("terms", sorted(DISCOVER_MAX_BYTES))

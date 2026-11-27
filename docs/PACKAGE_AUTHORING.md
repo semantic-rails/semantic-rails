@@ -110,7 +110,7 @@ asks before continuing.
 packages are loaded by pointing `--path` at the directory:
 
 ```bash
-semantic-rails catalog --path ./my_pkg --verbosity summary
+semantic-rails catalog --path ./my_pkg --view summary
 semantic-rails plan --path ./my_pkg --intent "monthly revenue"
 semantic-rails mcp setup --path ./my_pkg
 semantic-rails serve --path ./my_pkg --host 127.0.0.1 --port 8091
@@ -415,9 +415,12 @@ defaults:
 ```
 
 `default_db`, a seed's `source` and its `post_sql` are paths relative to the package directory,
-and stay inside it: an absolute path or a `..` segment fails to load with `INVALID_CONFIG`
-(an operator can allow them with `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`; see
-[Deployment](DEPLOYMENT.md)).
+and stay inside it: an absolute path or a `..` segment fails to load with `INVALID_CONFIG`.
+One exception: the `default_db` of a `seed.kind: external` package inside a dbt project (a
+directory above it holds `dbt_project.yml`) may use `..` to name a file inside that dbt
+project, such as the DuckDB file `dbt build` writes at the dbt root. An operator can allow
+other paths with `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`; see
+[Deployment](DEPLOYMENT.md).
 
 Every package is checked with one set of authoring rules when it loads, in every layout;
 see [Refused legacy forms](#refused-legacy-forms) for the shapes earlier releases accepted.
@@ -522,9 +525,10 @@ meta:
   change_risk: medium
 ```
 
-`validate-config` warns when a public measure or curated metric omits
-`meta.owner_team`, `meta.review_priority`, or `meta.change_risk`. The warnings
-are advisory — they never block loading — but a warning-free package gives
+The promotion check (`promote-package`, Architect `promotion_check`) lists each public measure or
+curated metric that omits `meta.owner_team`, `meta.review_priority`, or `meta.change_risk` as a
+`REVIEW_METADATA_MISSING` advisory. It never blocks, and parse and validate don't report it, so
+a new package's first warnings are the ones that change answers. Filling them in gives
 reviewers an owner and a blast-radius signal for every governed object.
 
 To give every measure the same three fields once, write them under `defaults.measure.meta`;
@@ -768,6 +772,46 @@ kind names must match exactly.
 - **`metric_constraint`** — enforced at query time for scoped callers. It
   restricts how governed metrics or measures may be cut by `group_by`,
   `where`, temporal role, `having` and entity filters.
+  **Under every metric constraint, a call reads a governed number only in these shapes.**
+  Each select item and predicate input that reads a measure or metric the constraint governs
+  (directly, through a metric, through a predicate inside it, or through an
+  `aggregate_if` over a column a governed measure reads) must be one of:
+  - the measure or metric by id, a measure with its own statistic;
+  - an `aggregate` (or `semi_additive`) whose `filter` uses only dimensions the
+    constraint's `allowed_where` lists, with no window and no predicate;
+  - an `aggregate_if` whose condition reads only listed dimensions' columns
+    (comparisons, `in`, `and`, `or`, `not`) and whose value is nothing (a count), the column
+    each governing measure is with no expression around it, or, when each governing
+    measure counts, a one-column key it counts; `count_distinct` counts only a whole
+    one-column key;
+  - a `ratio`, or `arithmetic` (`+ - * /`), of these and numbers.
+
+  A constraint with no `allowed_where` (with `allow_metric_filters: false`, or only
+  grouping and `required_where` keys) lists no dimension, so a call reads its numbers only
+  by id, in an unfiltered `aggregate`, in an `aggregate_if` with no condition, and in
+  ratios and arithmetic of these; its `where` is free as before. A condition inside an
+  expression never uses a dimension that declares `unknown_values`, whatever the operator,
+  since it reads the raw column: filter by that dimension in `where`, which reads its
+  unknown values. `having` and entity filters read only a measure or metric the constraint
+  governs, by id with its declared statistic; with a `limit` or a row cap (`max_rows`, which
+  every MCP `execute` run passes), `order_by` names only a measure or metric by id with its
+  declared statistic, a dimension or the period; a predicate inside another predicate's
+  input reads only such an id; and `where` uses only listed dimensions. A joined call with
+  any part under a metric constraint keeps every part's keys (`keep: all`), and under a
+  limit or a row cap it ranks only by a key or by a measure or metric by id in a part with
+  no `where` of its own. Two output names of a constrained call (select aliases, `group_by`
+  ids, the period, and a joined call's keys and part items) never differ only in case: a
+  warehouse that reads quoted names in any case would order, filter or show one by the
+  other. Anything else is refused with
+  `POLICY_DENIED` and a `disallowed_expression` violation that names the part and these
+  shapes: a measure with another statistic, `case`, `nullif`, `coalesce` and other calls,
+  `share`, `total`, `rolling`,
+  `cumulative` and other window kinds, `scoped_aggregate`, `having` on an inline
+  aggregate or another measure, a count of a column that is no key, a sum of a 0/1 flag
+  under a count, and a sum of `order_total_cents` under revenue, which divides it. When a
+  filter inside an expression also uses a field the constraint doesn't list, the refusal
+  names that field instead (the checks below). A caller no constraint applies to reads
+  calls as before.
   A package metric's own `filter:` is the package author's governed definition and is
   trusted: `allowed_where` checks, and `required_where` looks for, only the conditions the
   caller adds (its `where`, the conditions in its entity filters, and the filters inside
@@ -793,7 +837,8 @@ kind names must match exactly.
   governed object.
   A filter the caller writes inside an expression (an aggregate's or
   `semi_additive` expression's `filter`, a scoped aggregate's `where`, an
-  `aggregate_if` condition, at any depth in `select`, predicate inputs included)
+  `aggregate_if` condition or a filter in its value (below), at any depth in `select`,
+  predicate inputs included)
   is checked like a `where` filter when it
   counts for the governed object, by the same leaf rule: its field, read by the
   id a name or alias binds to, must be in `allowed_where` (a violation carries
@@ -811,7 +856,9 @@ kind names must match exactly.
   can refuse a nested filter even when it affects only a sibling expression.
   Direct leaf filters retain the leaf rule above. A caller-created aggregate
   inherits every applicable constraint on any measure reading one of its source
-  columns, whether the column appears in its value or condition. Matching uses
+  columns, whether the column appears in its value or condition, and at any depth: one
+  an entity filter reads inside another entity filter inherits them as one in `select`
+  does, and its value is a filter there (below). Matching uses
   the relation and column SQL actually reads, including measure relation overrides,
   joined columns, lookup sources and entities sharing a relation name. Identifier
   case and quoting differences count as the same source, and only the last part of
@@ -822,11 +869,61 @@ kind names must match exactly.
   other form (a count, `avg`, another aggregation, or a literal, arithmetic, call or
   `case` value) follows the count measure's constraints. A column whose values happen
   to be constant cannot be told apart from a count, so constrain a measure reading it
-  to govern it too. An `aggregate_if` condition reads
-  columns: each counts as the dimensions over it, and a column no dimension declares
-  (named `<entity>.<column>`) is in no `allowed_where`, so a condition on it is refused
-  under either a package-wide or an inherited measure constraint. Its condition also
-  counts as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
+  to govern it too. An `aggregate_if` reads columns in its condition and its value,
+  and under `allowed_where` each read below counts as a filter field:
+  - **A condition**, and each `case` condition in the value: each column counts as the
+    dimensions over it, so a condition on a field the policy doesn't list is refused
+    under either a package-wide or an inherited measure constraint.
+  - **A column the value computes with** (arithmetic or a call, 0 for every customer
+    but one) counts as the dimensions over it, on its entity or, when it declares none,
+    on another entity over the same relation, named in full (a dimension over
+    `live.orders` allows nothing on `archive.orders`). With revenue limited to store
+    filters, a `sum` of `case when customer_id = '…' then order_total_cents else 0 end`
+    by store is refused as its condition form is: "measure.jaffle.revenue_usd can't be
+    filtered by dimension.jaffle_order_customer_id inside an expression".
+  - **A column the value returns as it is** (the whole value, or what a `case` branch
+    returns) is what is aggregated, as a measure's column is, and counts as no filter.
+  - **A count of a column.** A `count`, `count_distinct` or `avg` of a returned column
+    counts only the rows where it has a value, so the column counts as a filter unless
+    it is its entity's key or the column the governed measure itself aggregates with no
+    expression around it (each governed measure over the aggregate, when several are).
+    A measure over `coalesce(customer_id, 'guest')` counts the orders with no customer
+    id, and revenue's `order_total_cents / 100.0` is an expression too, so neither
+    exempts a column; declare a measure for a count you want callers to read. A
+    `count_distinct` is exempt only for a whole one-column key: the order's customer id
+    counts as a filter even under a constraint on the ordering-customer count, and so does
+    the order id on order lines keyed by order and item, which has fewer values than rows.
+  - **A spelling.** A column meets a dimension only when the SQL reads it as that
+    dimension, with the dimension's unknown values: spelled as the dimension spells it
+    or, for a name the SQL leaves unquoted, in another ASCII case (every warehouse but
+    ClickHouse). It then meets every dimension over the same warehouse column. A quoted
+    name in another case, `"CUSTOMER REF"` for a dimension over `"Customer Ref"`, reads
+    as a column no dimension declares, even on a warehouse that reads both spellings as
+    one column.
+  - **A column no dimension declares** is named `<entity>.<column>` and no policy can
+    allow it: listing that name allows nothing, even when a dimension's id reads the
+    same. Any use of it inside an expression other than returning it as it is is
+    refused, ordinary arithmetic included: `sum(order_total_cents / 100.0)` and a
+    net-of-tax `sum(order_total_cents - tax_paid_cents)`. The refusal says the package
+    author can declare a dimension over the column and list it in `allowed_where` if the
+    role may use it, and lists only the dimensions that can allow a filter there.
+
+  Each aggregate is held only by the constraints on the measures that govern it. Two
+  averages that answer alone also answer side by side, under one constraint or one each,
+  and another aggregate's condition beside a governed one counts for it only when it cuts
+  the whole query (in `having`, say). Inside one select item it counts for every aggregate
+  the item shows, since it can decide whether a value appears: with revenue limited to
+  store filters, `case when <count of large orders> > 0 then <order total> end` by store
+  is refused, as are `nullif` and a division by such a count. Once an `aggregate_if`'s
+  value decides what else appears (beside another aggregate in its select item, in
+  `having` or in a predicate's input), each column it aggregates counts as a filter too,
+  but a key it counts: `case when max(is_large_order) = true then <revenue> end` is
+  refused. The same aggregates as separate select items answer, and a measure in place of
+  the `aggregate_if` reads no column. A caller no constraint applies to reads such
+  columns as before. A constraint with `allowed_group_by` but no `allowed_where` names no
+  field to refuse here, and its allow-list (above) lists no dimension, so a condition or a
+  value that picks rows is refused there as a shape. Its condition and value
+  also count as a metric filter, and only outer `where` filters satisfy `required_where`. Constraints on unrelated
   columns do not govern it, except through that count rule. A column aggregate has
   no declared clock and continues to refuse a query time axis; declare a measure to
   aggregate by time.
@@ -1057,7 +1154,10 @@ whole package, so hiding an object never removes or changes a `deny`,
   entities goes through a hidden entity or relationship, that pair has no route for the
   caller (`PATH_NOT_FOUND`); an ambiguous pair offers only its visible routes.
 - **Raw columns:** while anything is hidden from a caller, that caller cannot aggregate raw
-  columns (`POLICY_DENIED`, naming nothing).
+  columns anywhere in a call, inside an entity filter included (`POLICY_DENIED`, naming
+  nothing). A metric whose own definition aggregates raw columns still answers: the policies
+  hold the metric and what its definition reads, and the same aggregate written in the call
+  is the caller's.
 - **Governance holds read the whole package:** a [building
   block](#building-block-measures) stays one when its metric is hidden, and `plan` still
   holds a draft over a measure that a metric narrows when that metric is hidden only because
@@ -1161,6 +1261,8 @@ semantic_caveats:
   - id: caveat.shop.store_a_closed_feb_2016
     kind: business_event
     message: Store A was closed in Feb 2016; store comparisons need context.
+    so_what: Leave Store A out of February 2016 comparisons, or say it was closed.
+    owner: store_operations
     object_ids: [dimension.shop_store_name]
     entity_values:
       - entity: entity.shop_store
@@ -1171,6 +1273,16 @@ semantic_caveats:
       to: "2016-03-01"
     severity: warning
 ```
+
+`message` states the fact; `so_what` (optional) says what the reader should do about it:
+compare from another period, leave a slice out, or name the caveat beside the number.
+`owner` (optional) names who to ask. The warning's `details` carry `so_what` at every
+verbosity whenever the caveat sets it, so an agent reading the smallest answer (the query
+MCP's default) still sees what to do; `owner` comes at the default `compact` verbosity and at
+`full`. `minimal` keeps only the caveat's id, kind, match reasons, `agent_action` and
+`so_what` beside its message. `so_what` must be a string; any other value is refused with
+`INVALID_CONFIG` (`caveat '<id>' so_what must be a string`). A package test of kind
+`caveat_applies` pins where a caveat reaches (see [package tests](#examples-and-tests)).
 
 The only caveat kinds are `business_event`, `definition_change`, and
 `data_quality`; use `time.at`, `time.from`/`time.to`, `entity_values`, and
@@ -1791,7 +1903,15 @@ A measure is timed by the roles in its own `times:` list, or, when it lists none
 model's `default: true` time. A measure with neither has no clock: it answers without `time`
 or grouped by a plain date dimension, but a query that puts it on a time grain (for example
 `time: {temporal_role: ..., grain: month}`) is refused with `INCOMPATIBLE_TEMPORAL_ROLE`. Mark
-the role `default: true` or list it under the measure's `times:`. When the refusal is for a
+the role `default: true` or list it under the measure's `times:`. The refusal names the measure
+and gives the line: for a role of its own model, mark it `default: true` or list it; for another
+model's clock its rows reach by to-one links (a fact's day key into a calendar), `times:
+[<that role>]` on the measure in its model (`details.declare` holds `model`, `measure` and
+`times`); with no such route, link the model first. Validation warns `MEASURE_WITHOUT_TIME_ROLE`
+for each measure with no time role whose rows reach a clock of its own model or a calendar (an
+entity of `kind: time`, or named for a day, date, week, month or calendar, by its name or key),
+naming the clocks, and
+`promotion_check` lists it under `advisories`. When the refusal is for a
 role a measure's `times:` doesn't list, its message and `details.measures` name the measure
 (and the metric that reads it): list each role it can be read by there, as the model's time
 keys or role ids (`times: [ordered_at, shipped_at]`).
@@ -1966,7 +2086,9 @@ Which value a series gives depends on the clock the stock is read on:
 - On an `as_of_time` clock (a snapshot table), an end-of-period stock is read on each
   period's **closing day**, the period's last day with a snapshot: the day bucket
   `time.grain: day` puts the snapshot in. With no time window or grain, it is the last day
-  with a snapshot at all. A series with no snapshot that day is not counted: a series that
+  with a snapshot at all, and every statistic of the stock (`avg`, `median`, `percentile`,
+  `min`, `max`) reads that day too, unless its key is the clock alone (one series: a
+  statistic over its snapshots). A series with no snapshot that day is not counted: a series that
   stops is never carried forward from an earlier day. A row whose clock is NULL is never a
   snapshot, and rows of one series tied on its last clock value are all read, as the data
   holds them. Its own column and a read inside an entity filter or a metric predicate all
@@ -2296,7 +2418,7 @@ measures:
 ```
 
 A measure authored `publish: false` is not offered to agents: `discover` doesn't list it,
-and `plan` doesn't answer with it unless `partial_query.select` names it by id. When a metric
+and `plan` doesn't answer with it unless `query.select` names it by id. When a metric
 reads it through a filter, it is a building block. `plan` answers with the metric when it is
 the only one that filters the measure or the question names it, and otherwise holds the
 draft. `inspect` and a query call still take the measure by id. A measure never publishes a
@@ -2336,7 +2458,7 @@ metrics:
 Any other wrapper, filler or argument is not a governed form, so `plan` keeps the measure
 and holds the draft. The swap applies to every single-subject `plan` draft, from any pattern
 or the catalog fallback, before validation and readiness, and only when the caller's
-`partial_query` has no `select`, the draft doesn't filter or group by a dimension the metric's
+`query` has no `select`, the draft doesn't filter or group by a dimension the metric's
 filter reads, and the draft has no time block (the metric is then read over all time) or one
 on the metric's own clock. Readiness then decides the swapped draft like any other. A part of
 a compound question ("calls and callers") and a semi-additive measure swap only to the bare
@@ -2457,9 +2579,6 @@ Warnings (advisory only):
 - `as:` used where the resulting ID matches the auto-computed one (use is
   unnecessary).
 - Package omits `package.environments`.
-- A public measure or curated metric omits `meta.owner_team`,
-  `meta.review_priority`, or `meta.change_risk` (see
-  [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
 - Entity pairs the package's own metrics, examples or tests walk have two or more
@@ -3377,7 +3496,7 @@ Package-local review assets:
 - `examples/` — runnable example queries surfaced through discovery and inspect.
 - `tests/` — package-local semantic assertions (`query_returns_columns`,
   `query_row_count_bounds`, `validate_fails_with_code`, `explain_contains`,
-  `query_matches_snapshot`, `metric_equals_query`). The test runner walks
+  `query_matches_snapshot`, `metric_equals_query`, `caveat_applies`). The test runner walks
   `<package>/tests/*.yml` directly.
 
 Both are loaded from **directories only** — the package root's `examples/` and
@@ -3471,7 +3590,40 @@ tests:
         - {expression: measure.shop.order_count, as: value}
         - {expression: measure.shop.revenue_usd, as: value}
     code: DUPLICATE_OUTPUT_ALIAS
+
+  store_a_caveat_on_february:
+    kind: caveat_applies
+    caveat: caveat.shop.store_a_closed_feb_2016
+    query:
+      select: [measure.shop.revenue_usd]
+      group_by: [dimension.shop_store_name]
+      time: {start: "2016-02-01", end: "2016-03-01", grain: month}
+
+  store_a_caveat_not_on_march:
+    kind: caveat_applies
+    caveat: caveat.shop.store_a_closed_feb_2016
+    applies: false           # the caveat must not be stated
+    query:
+      select: [measure.shop.revenue_usd]
+      group_by: [dimension.shop_store_name]
+      time: {start: "2016-03-01", end: "2016-04-01", grain: month}
 ```
+
+A `caveat_applies` test validates its call (nothing runs on the warehouse) and checks
+whether the response states the named caveat as a `SEMANTIC_CAVEAT_APPLIED` warning;
+`applies: false` asserts that it does not. Each failure names what the author should fix:
+
+| Code | Message | When |
+|---|---|---|
+| `CAVEAT_APPLIES_MISMATCH` | `caveat '<id>' did not apply to the query` | `applies` is true (the default) and the call does not state the caveat; `details.applied_caveats` lists the caveats it does state |
+| `CAVEAT_APPLIES_MISMATCH` | `caveat '<id>' applied to the query, which the test says it must not` | `applies: false` and the call states it |
+| `INVALID_CONFIG` | `a caveat_applies test must name the caveat it checks in caveat` | no `caveat:` |
+| `INVALID_CONFIG` | `caveat_applies names caveat '<id>', which the package does not declare` | the id is not in `caveats.yml`; `details.known_caveats` lists those that are |
+| `INVALID_CONFIG` | `a caveat_applies test's applies must be true or false` | `applies` is not a boolean |
+| the refusal's own code | the refusal's own message | the call is refused, in either form: a refused call never passes as "not applied" |
+
+The test runs as its `context:` (audience, environment), so a caveat scoped to an audience
+or environment is checked as that caller sees it.
 
 See `configs/semantic_rails/jaffle_shop/examples/core.yml` and
 `configs/semantic_rails/jaffle_shop/tests/core.yml` for the full worked set,

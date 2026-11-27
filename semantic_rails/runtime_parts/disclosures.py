@@ -41,13 +41,17 @@ MeasureLeaf = MeasureRefExpr | AggregateExpr | ScopedAggregateExpr
 
 def _leaves(node: Any) -> Iterator[MeasureLeaf | MetricRecipeRefExpr]:
     """Each measure and governed metric an expression reads, outside conversions and predicates."""
-    if isinstance(node, _LEAVES):
-        yield node
-    elif is_dataclass(node) and not isinstance(node, _OWN_RULES):
-        for item in fields(node):
-            value = getattr(node, item.name)
-            for child in value if isinstance(value, (list, tuple)) else (value,):
-                yield from _leaves(child)
+    stack = [node]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _LEAVES):
+            yield node
+        elif is_dataclass(node) and not isinstance(node, _OWN_RULES):
+            children: list[Any] = []
+            for item in fields(node):
+                value = getattr(node, item.name)
+                children.extend(value if isinstance(value, (list, tuple)) else (value,))
+            stack.extend(reversed(children))
 
 
 def _metric_measures(expr: SemanticExpr, recipes: dict[str, MetricConfig]) -> Iterator[MeasureLeaf]:

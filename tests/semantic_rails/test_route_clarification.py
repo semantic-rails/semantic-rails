@@ -973,16 +973,16 @@ def test_route_switch_notes_reuse_the_cached_refusal_without_enumerating(tmp_pat
     compiled = compile_query(config, Registry(config), query)
     refusal = get_package_analysis(config).path_cache[(ACCOUNT, DISTRICT)]
     assert isinstance(refusal, RouteRefusal)
-    options = refusal.details["clarification"]["options"]
+    assert refusal.routes == (tuple(BRANCH_ROUTE), tuple(OWNER_ROUTE))
 
     def rebuild(*args, **kwargs):
-        pytest.fail("route notes must reuse the package's cached clarification")
+        pytest.fail("route notes must reuse the surviving routes without building a question")
 
     monkeypatch.setattr("semantic_rails.fanout.enumerate_paths", rebuild)
     monkeypatch.setattr("semantic_rails.fanout.route_clarification", rebuild)
     (route,) = routes_taken(config, compiled)
-    assert route["via"] == options[0]["relationship_path"]
-    assert route["other_routes"] == _switches(options[0]["decision"], options)
+    assert route["via"] == BRANCH_ROUTE
+    assert route["other_routes"] == [{"from": ACCOUNT, "to": DISTRICT, "via": OWNER_ROUTE}]
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
@@ -1588,7 +1588,7 @@ def test_a_caller_that_changes_a_refusal_never_changes_the_cached_one(tmp_path):
     assert second.value.code == "AMBIGUOUS_PATH"
     assert json.dumps(second.value.details, sort_keys=True) == pristine
     cached = get_package_analysis(config).path_cache[(ACCOUNT, DISTRICT)]
-    assert json.dumps(cached.details, sort_keys=True) == pristine
+    assert cached.routes == (tuple(BRANCH_ROUTE), tuple(OWNER_ROUTE))
 
 
 def test_path_reach_is_cached_per_package_but_never_under_a_query_row(tmp_path):

@@ -1,0 +1,10 @@
+model:
+  id: assignments
+  label: Space assignments
+  relation: assignments
+  entities: {assignment: {}}
+  measures:
+    assigned_area: {label: Assigned area, kind: aggregate, expr: area_sqft, rollup: additive}
+    assigned_buildings: {label: Assigned buildings, kind: entity_count, entity_key: building_key}
+    average_assigned_area: {label: Average assigned area, kind: aggregate, expr: area_sqft,
+      default_agg: avg}

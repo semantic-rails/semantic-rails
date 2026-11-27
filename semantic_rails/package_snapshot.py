@@ -172,6 +172,10 @@ def semantic_payload(config: PackageConfig) -> dict[str, Any]:
         entity.pop("model_id", None)
         if not entity.get("distinct_from"):
             entity.pop("distinct_from", None)
+    # An unauthored caveat so_what is left out the same way.
+    for caveat in semantic["semantic_caveats"]:
+        if not caveat.get("so_what"):
+            caveat.pop("so_what", None)
     return semantic
 
 

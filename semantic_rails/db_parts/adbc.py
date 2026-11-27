@@ -256,7 +256,14 @@ class AdbcAdapter(WarehouseAdapter):
             keepalives_interval="1",
             keepalives_count="1",
         )
-        for option, key in (("database", "dbname"), ("sslmode", "sslmode")):
+        # With hostaddr, libpq dials that address and never resolves host, which still
+        # names the server for TLS (SNI and the verify-full certificate check).
+        # Every dial, reconnects included, builds its string here.
+        for option, key in (
+            ("hostaddr", "hostaddr"),
+            ("database", "dbname"),
+            ("sslmode", "sslmode"),
+        ):
             if self.options.get(option):
                 values[key] = self.options[option]
         # libpq keyword values: quotes and backslashes are escaped, not SQL.

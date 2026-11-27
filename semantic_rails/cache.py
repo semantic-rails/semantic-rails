@@ -13,11 +13,11 @@ import hashlib
 import json
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
-from copy import deepcopy
 from dataclasses import dataclass
 from threading import RLock
 from typing import Any, Protocol, runtime_checkable
 
+from .flat_copy import deep_copy
 from .package_snapshot import capture_package_source
 from .request_context import context_from_policy_context
 
@@ -81,11 +81,11 @@ class LruCompiledSqlCache:
             if item is None:
                 return None
             self._items.move_to_end(key)
-            return deepcopy(item)
+            return deep_copy(item)
 
     def put(self, key: str, value: CachedCompilation) -> None:
         with self._lock:
-            self._items[key] = deepcopy(value)
+            self._items[key] = deep_copy(value)
             self._items.move_to_end(key)
             while len(self._items) > self.maxsize:
                 self._items.popitem(last=False)

@@ -89,7 +89,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           prune-cache: true
@@ -132,7 +132,7 @@ jobs:
           from scripts.test_sharding import in_shard
 
           cases = ET.parse("backend-results.xml").findall(".//testcase")
-          for module in ("test_adbc_adapter", "test_adbc_snowflake"):
+          for module in ("test_adbc_adapter", "test_adbc_snowflake", "test_postgres_pinned_address"):
               if not in_shard(f"tests/semantic_rails/{module}.py"):
                   continue
               selected = [case for case in cases if case.get("classname") == f"tests.semantic_rails.{module}"]
@@ -187,6 +187,8 @@ jobs:
         run: uv run semantic-rails test-package --package jaffle_shop
       - if: matrix.python-version == '3.12' && matrix.shard == 0
         run: uv run python scripts/generate_contract_artifacts.py --check
+      - if: matrix.python-version == '3.12' && matrix.shard == 0
+        run: uv run python scripts/architect_tool_table.py --check
       # Release-readiness check only needs to run once (covers hygiene,
       # prelaunch gaps, and v1 completion).
       - if: matrix.python-version == '3.12' && matrix.shard == 0
@@ -203,7 +205,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           prune-cache: true
@@ -246,20 +248,35 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Diff mode compares against the first parent (HEAD^1).
+          fetch-depth: 2
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           prune-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --locked
       - name: Audit core and individual warehouse connectors
-        run: uv run --no-sync python scripts/audit_dependencies.py
+        # A pull request or merge group fails only on advisories it introduces: its checkout is
+        # a merge commit whose first parent is the base branch head. An advisory published
+        # against an existing dependency fails main and the nightly audit instead
+        # (dependency-audit.yml), which tracks it in an issue.
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; then
+            uv run --no-sync python scripts/audit_dependencies.py --base HEAD^1
+          else
+            uv run --no-sync python scripts/audit_dependencies.py
+          fi
       - name: npm audit (Malloy comparison harness)
         run: |
           npm ci --prefix comparisons/semantic_layers/malloy
@@ -278,7 +295,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           prune-cache: true
@@ -334,7 +351,7 @@ jobs:
       - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           prune-cache: true

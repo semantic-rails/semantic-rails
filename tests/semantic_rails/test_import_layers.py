@@ -27,9 +27,9 @@ LAYERS = [
     " contracts.generation",
     "architect_service architect_transactions architect_introspection architect_scaffold"
     " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop"
-    " operations",
+    " operations yaml_edits",
     "planner",
-    "metadata metadata_parts catalog_service lookalike_models",
+    "metadata metadata_parts catalog_service lookalike_models discover_listing",
     "runtime runtime_parts runtime_parts.answer_warnings answer manifest segments caveats resource_access policies cache"
     " request_context api_keys audit visible_view",
     "compiler compiler_parts fanout route_census route_groups relation_pipelines renderer ir registry"
@@ -41,8 +41,8 @@ LAYERS = [
     " config_parts.row_values config_parts.temporal_rows",
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
     "ast expressions schema errors issues request_payload catalog_format catalog_search scope"
-    " temporal_support"
-    " result_values policy_rules naming atomic_files operators clock query_call",
+    " temporal_support untimed_measures"
+    " result_values policy_rules naming atomic_files operators clock query_call flat_copy",
 ]
 LAYER_OF = {key: rank for rank, keys in enumerate(LAYERS) for key in keys.split()}
 LAYER_OF[""] = len(LAYERS) - 1  # the package root only reads its version

@@ -213,5 +213,6 @@ def test_valid_package_keeps_handshake_and_tools(tmp_path: Path) -> None:
     assert called["isError"] is False
     assert called["structuredContent"]["ok"] is True
     assert called["structuredContent"]["package_id"] == "jaffle_shop"
-    assert "measure.jaffle.order_count" in called["structuredContent"]["catalog"]["measure_ids"]
+    order = called["structuredContent"]["catalog"]["models"]["entity.jaffle_order"]
+    assert "measure.jaffle.order_count" in order["measures"]
     assert json.loads(called["content"][0]["text"]) == called["structuredContent"]

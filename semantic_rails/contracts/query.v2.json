@@ -1453,7 +1453,7 @@
       },
       "properties": {
         "end": {
-          "description": "ISO date or date-time, exclusive: [start, end).",
+          "description": "ISO date or date-time, exclusive: for 'as of March 31, 2024' or 'through March 31, 2024' pass 2024-04-01.",
           "minLength": 1,
           "type": "string"
         },

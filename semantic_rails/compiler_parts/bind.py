@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import replace
-from typing import Any
+from typing import Any, NoReturn
 
 from .. import operators
 from ..ast import MetricFilter, NormalizedQuery, QuerySelect, normalize_query
@@ -41,6 +41,7 @@ from ..expressions import (
     collect_column_refs,
     expr_to_dict,
     filter_word,
+    parameter_schema_for_aggregation,
     parse_semantic_expression,
     reads_temporal_value,
     resolve_filter_dimension,
@@ -49,20 +50,31 @@ from ..expressions import (
     validate_boolean_argument_count,
 )
 from ..ir import BoundMeasure
+from ..query_call import predicate_input
 from ..schema import MeasureConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
     SqlCase,
     SqlCaseWhen,
+    SqlExpr,
     SqlIdentifier,
     SqlIn,
     SqlLiteral,
+    boolean_chain,
     build_comparison_condition,
     build_filter_condition,
     build_negation,
+    sql_nodes,
 )
-from .dependencies import binding_cut, holding, measure_cut_owners, measure_objects
+from ..untimed_measures import untimed_fix
+from .dependencies import (
+    binding_cut,
+    holding,
+    measure_cut_owners,
+    measure_objects,
+    once_per_binding,
+)
 from .indexes import (
     _dimension_index,
     _entity_index,
@@ -204,6 +216,45 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
     if agg in {"avg", "min", "max"}:
         return dialect.conditional_aggregate(agg, condition, body)
     return None
+
+
+def _refuse_unread_parameters(
+    aggregation: str,
+    parameters: dict[str, Any],
+    *,
+    measure: str = "",
+    prefix: str = "parameters.",
+    percentile_allowed: bool = True,
+) -> None:
+    """Refuse a parameter ``aggregation`` doesn't read: the SQL would drop it and answer the
+    plain aggregation, e.g. "average title length" as ``AVG`` of the measure itself. Without a
+    ``measure``, the parameters are a distribution's (its ``p`` has no ``prefix``). An unread
+    ``p`` where ``percentile_allowed`` records its value, so the hint can offer the percentile."""
+    accepted = sorted(parameter_schema_for_aggregation(aggregation))
+    unread = sorted(str(key) for key in parameters if key not in accepted)
+    if not unread:
+        return
+    takes = (
+        f"takes only {', '.join(f'parameters.{key}' for key in accepted)}"
+        if accepted
+        else "takes no parameters"
+    )
+    raise SemanticLayerError(
+        "UNSUPPORTED_AGGREGATION",
+        f"{aggregation} {takes}: {', '.join(prefix + key for key in unread)} on "
+        f"{measure or 'the distribution'} would be ignored.",
+        details={
+            "aggregation": aggregation,
+            **({"measure": measure} if measure else {}),
+            "unread_parameters": [prefix + key for key in unread],
+            "parameters_accepted": accepted,
+            **(
+                {"percentile_p": parameters["p"]}
+                if "p" in unread and percentile_allowed and aggregation != "percentile"
+                else {}
+            ),
+        },
+    )
 
 
 def _aggregation_expr(
@@ -472,7 +523,9 @@ def _config_expr_to_sql_inner(
         )
     if isinstance(expr, BooleanExpr):
         validate_boolean_argument_count(expr.op, len(expr.args))
-        rendered = [_config_expr_to_sql(arg, measure, config) for arg in expr.args]
+        rendered: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            rendered.append(_config_expr_to_sql(arg, measure, config))
         if not rendered:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
         op = expr.op.lower()
@@ -483,16 +536,14 @@ def _config_expr_to_sql_inner(
                     f"Boolean 'not' expressions require exactly one arg, got {len(rendered)}",
                 )
             return build_negation(rendered[0])
-        current = rendered[0]
-        for item in rendered[1:]:
-            current = SqlBinary(current, op.upper(), item)
-        return current
+        return boolean_chain(op.upper(), rendered)
     if isinstance(expr, CallExpr):
         _refuse_fallible_call(expr)
+        call_args: list[SqlExpr] = []
+        for arg in expr.args:  # a loop: no frame of its own a level, as a comprehension is on 3.11
+            call_args.append(_config_expr_to_sql(arg, measure, config))
         return dialect_for_warehouse(config.package.warehouse).scalar_call(
-            expr.name,
-            [_config_expr_to_sql(arg, measure, config) for arg in expr.args],
-            distinct=expr.distinct,
+            expr.name, call_args, distinct=expr.distinct
         )
     if isinstance(expr, DateAddExpr):
         return dialect_for_warehouse(config.package.warehouse).date_add(
@@ -574,18 +625,16 @@ _MEASURE_KINDS = frozenset({"measure", "aggregate", "semi_additive", "scoped_agg
 def select_measure_reads(select: Any) -> Iterator[dict[str, Any]]:
     """Each measure node a query's ``select`` reads itself; a metric's reads are its own."""
 
-    def walk(node: Any) -> Iterator[dict[str, Any]]:
+    stack: list[Any] = [[row.get("expression") for row in select or []]]
+    while stack:
+        node = stack.pop()
         if isinstance(node, list):
-            for item in node:
-                yield from walk(item)
+            stack.extend(reversed(node))
         elif isinstance(node, dict):
             if node.get("kind") in _MEASURE_KINDS and node.get("measure"):
                 yield node
-                return
-            for value in node.values():
-                yield from walk(value)
-
-    yield from walk([row.get("expression") for row in select or []])
+                continue
+            stack.extend(reversed(list(node.values())))
 
 
 def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple[str, str]]:
@@ -600,6 +649,23 @@ def aggregation_overrides(select: Any, config: PackageConfig) -> dict[str, tuple
             expr = parse_semantic_expression(node, context="select")
             found[_expression_alias(expr, config)] = (measure.id, aggregation)
     return found
+
+
+def _raise_untimed(config: PackageConfig, measure: Any, role: str) -> NoReturn:
+    """Refuse placing a measure that has no time role on ``role``, with the package line that
+    would give it that clock."""
+    fix, declare = untimed_fix(config, measure, role)
+    raise SemanticLayerError(
+        "INCOMPATIBLE_TEMPORAL_ROLE",
+        f"'{measure.id}' has no time role declared, so it can't be placed on '{role}'. {fix}; "
+        "or drop `time` from the query.",
+        details={
+            "measure": measure.id,
+            "requested": role,
+            "compatible": [],
+            **({"declare": declare} if declare else {}),
+        },
+    )
 
 
 def _bind_measure(
@@ -628,6 +694,12 @@ def _bind_measure(
                 "default_aggregation": measure.default_aggregation,
             },
         )
+    _refuse_unread_parameters(
+        aggregation,
+        dict(expr.parameters or {}),
+        measure=measure_id,
+        percentile_allowed="percentile" in measure.allowed_aggregations,
+    )
     temporal_role = resolve_measure_temporal_role(
         measure,
         expr.temporal_role,
@@ -640,15 +712,14 @@ def _bind_measure(
             "compatible": list(measure.compatible_temporal_roles),
         }
         if not measure.compatible_temporal_roles:
-            # No clock at all: name the role asked for, so the hint says to declare one.
-            details["requested"] = temporal_role
+            # No clock at all: name the role asked for, and the line that declares it.
+            _raise_untimed(config, measure, temporal_role)
         roles = ", ".join(measure.compatible_temporal_roles)
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
             f"Measure '{measure_id}' is not timed by temporal role '{temporal_role}' "
-            + (f"(its roles: {roles})" if roles else "(it has no time role)")
-            + "; add the role to the measure's `times:` in its model"
-            + (", or use one of its roles." if roles else "."),
+            f"(its roles: {roles}); add the role to the measure's `times:` in its model, or "
+            "use one of its roles.",
             details=details,
         )
     query_role = query.time.temporal_role if query.time else ""
@@ -663,13 +734,7 @@ def _bind_measure(
             )
         # No clock to bucket by: the plan has no role to read, so refuse here, in the one
         # place every measure is bound, instead of failing later on a missing role.
-        raise SemanticLayerError(
-            "INCOMPATIBLE_TEMPORAL_ROLE",
-            f"'{measure_id}' has no time role, so it can't be placed on '{query_role}'. Mark "
-            f"a time on its model `default: true`, or list `times:` on the measure; or drop "
-            f"`time` from the query.",
-            details={"measure": measure_id, "requested": query_role, "compatible": []},
-        )
+        _raise_untimed(config, measure, query_role)
     compatible = list(measure.compatible_temporal_roles)
     # Conversion operands keep their own rules (_validate_conversion_temporal_bindings).
     named = (
@@ -724,6 +789,9 @@ def _scoped_predicate_expr_payload(predicate: dict[str, Any]) -> dict[str, Any]:
             "PREDICATE_INPUT_REQUIRED",
             "scoped_aggregate predicates require 'metric', 'measure', or 'input'",
         )
+    # A statistic written beside the input (a package's `measure:` shorthand) is the input's.
+    raw["input"] = input_expr
+    input_expr = predicate_input(raw, "scoped_aggregate.predicates")
     payload = {
         "kind": "metric_predicate",
         "input": input_expr,
@@ -1265,7 +1333,12 @@ def bind_conditional_aggregate_column(
     whenever the package declares an object policy. An own-entity column with no dimension
     remains allowed, as a measure's value column usually has none.
     """
-    joined = _measure_required_entities(measure, config) - {measure.entity}
+    # Each column the measure reads lands here: walking its whole expression every time would
+    # cost the square of its columns, so the walk runs once and later calls replay its reads.
+    required = once_per_binding(
+        measure, config, lambda: frozenset(_measure_required_entities(measure, config))
+    )
+    joined = required - {measure.entity}
     dimensions = [row.id for row in dimensions_over_column(entity_id, column, config)]
     if (
         not dimensions
@@ -1563,6 +1636,12 @@ def lift_conditional_aggregates(
     plus the synthetic-measure dict to attach to the ``LogicalPlan``.
     """
     synthetic: dict[str, MeasureConfig] = {}
+    expressions = [item.expression for item in query.select]
+    expressions.extend(item.expression for item in query.metric_filters)
+    # sql_nodes walks any dataclass tree. With no aggregate_if the rewrite below would find
+    # nothing and return the query as it is, after copying each window's input once per window.
+    if not any(isinstance(node, ConditionalAggregateExpr) for node in sql_nodes(expressions)):
+        return query, {}
 
     def _maybe_rewrite(expr: SemanticExpr | None) -> SemanticExpr | None:
         if expr is None:

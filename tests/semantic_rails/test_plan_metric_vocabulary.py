@@ -428,7 +428,8 @@ def test_label_shared_without_parenthetical_clarifies(jaffle, question: str):
 @pytest.mark.parametrize(
     ("question", "subject", "status"),
     [
-        ("rolling 7-day revenue", "measure.jaffle.rolling_7d_revenue_usd", "low_confidence"),
+        # "7-day" is the measure's own name, not a daily series: one value, as "revenue MTD".
+        ("rolling 7-day revenue", "measure.jaffle.rolling_7d_revenue_usd", "ok"),
         ("revenue MTD", "measure.jaffle.revenue_mtd_usd", "ok"),
     ],
 )

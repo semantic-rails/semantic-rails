@@ -300,11 +300,15 @@ def test_discover_and_inspect_return_slim_cards_by_default(v2: SemanticLayerMCPA
 
 
 def test_discover_with_empty_terms_lists_ids(v2: SemanticLayerMCPAdapter) -> None:
-    # A page large enough for every kind, whatever the fixture's size.
-    listed = v2.call_tool("discover", {"terms": "", "limit": 10_000})
-    assert listed["ok"] is True and "warnings" not in listed
     index = v2.read_resource("semantic-rails://catalog/index")["payload"]["catalog"]
-    assert listed["catalog"] == index
+    kinds = [key.removesuffix("_ids") for key in index if key.endswith("_ids")]
+    # A page large enough for every kind, whatever the fixture's size.
+    listed = v2.call_tool("discover", {"terms": "", "kinds": kinds, "limit": 10_000})
+    assert listed["ok"] is True and "warnings" not in listed
+    assert listed["catalog"] == {
+        "counts": index["counts"],
+        **{f"{k}_ids": index[f"{k}_ids"] for k in kinds},
+    }
     segments = v2.call_tool("discover", {"terms": " ", "kinds": ["segment"]})["catalog"]
     assert SEGMENT in segments["segment_ids"] and "measure_ids" not in segments
     two = v2.call_tool("discover", {"terms": "", "kinds": "segment,metric"})["catalog"]
@@ -312,15 +316,16 @@ def test_discover_with_empty_terms_lists_ids(v2: SemanticLayerMCPAdapter) -> Non
 
 
 def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) -> None:
-    whole = v2.call_tool("discover", {"terms": "", "limit": 10_000})["catalog"]
-    first = v2.call_tool("discover", {"terms": "", "limit": 5})
+    kinds = {"terms": "", "kinds": ["dimension", "measure", "metric"]}
+    whole = v2.call_tool("discover", {**kinds, "limit": 10_000})["catalog"]
+    first = v2.call_tool("discover", {**kinds, "limit": 5})
     warning = first["warnings"][0]
     assert warning["code"] == "DISCOVER_IDS_TRUNCATED"
     assert warning["details"]["next_offset"] == 5
     assert warning["details"]["remaining"]["dimension"] == len(whole["dimension_ids"]) - 5
     assert first["catalog"]["counts"] == whole["counts"]
     assert first["catalog"]["dimension_ids"] == whole["dimension_ids"][:5]
-    second = v2.call_tool("discover", {"terms": "", "limit": 5, "offset": 5})["catalog"]
+    second = v2.call_tool("discover", {**kinds, "limit": 5, "offset": 5})["catalog"]
     assert second["dimension_ids"] == whole["dimension_ids"][5:10]
     # The last page of one kind lists what's left and warns about nothing.
     rest = {"terms": "", "kinds": ["dimension"], "limit": 60, "offset": 60}

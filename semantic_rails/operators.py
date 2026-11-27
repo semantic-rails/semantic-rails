@@ -413,27 +413,33 @@ UNSTABLE_CASE_LETTERS = frozenset(
 
 def check_strings(value: Any, path: str) -> None:
     """Refuse, at its path, a string anywhere in ``value`` that holds NUL or a lone surrogate:
-    no warehouse reads either as text, and a lone surrogate is not UTF-8."""
-    if isinstance(value, str):
-        bad = next((ch for ch in value if ch == "\x00" or "\ud800" <= ch <= "\udfff"), None)
-        if bad is not None:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                f"{path}: holds U+{ord(bad):04X}, which no warehouse reads as text",
-                details={
-                    "path": path,
-                    "code_point": f"U+{ord(bad):04X}",
-                    "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": "Remove it."}],
-                },
+    no warehouse reads either as text, and a lone surrogate is not UTF-8. The first such string
+    in the order ``value`` is written is the one refused; one walk with its own stack."""
+    stack: list[tuple[Any, str]] = [(value, path)]
+    while stack:
+        item, at = stack.pop()
+        if isinstance(item, str):
+            bad = next((ch for ch in item if ch == "\x00" or "\ud800" <= ch <= "\udfff"), None)
+            if bad is not None:
+                raise SemanticLayerError(
+                    "INVALID_QUERY",
+                    f"{at}: holds U+{ord(bad):04X}, which no warehouse reads as text",
+                    details={
+                        "path": at,
+                        "code_point": f"U+{ord(bad):04X}",
+                        "recovery_hints": [{"code": "FIX_QUERY_CALL", "message": "Remove it."}],
+                    },
+                )
+        elif isinstance(item, Mapping):
+            pairs: list[tuple[Any, str]] = []
+            for key, part in item.items():
+                inner = f"{at}.{key}" if at else str(key)
+                pairs.extend(((key, inner), (part, inner)))
+            stack.extend(reversed(pairs))
+        elif isinstance(item, (list, tuple)):
+            stack.extend(
+                (part, f"{at}[{index}]") for index, part in reversed(list(enumerate(item)))
             )
-    elif isinstance(value, Mapping):
-        for key, item in value.items():
-            at = f"{path}.{key}" if path else str(key)
-            check_strings(key, at)
-            check_strings(item, at)
-    elif isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            check_strings(item, f"{path}[{index}]")
 
 
 def check_text_letters(text: str, path: str) -> None:

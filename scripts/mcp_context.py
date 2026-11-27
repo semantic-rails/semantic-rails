@@ -197,11 +197,13 @@ class QueryMCPClient:
     the identity and policy context.
     """
 
-    def __init__(self, package_path: Path, *, request_context: Any = None) -> None:
+    def __init__(
+        self, package_path: Path, *, request_context: Any = None, hide_plan: bool = False
+    ) -> None:
         from semantic_rails.mcp import SemanticLayerMCPAdapter
         from semantic_rails.mcp_session import MCPQuerySession
 
-        self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path))
+        self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path), hide_plan=hide_plan)
         self.request_context = request_context
         self.session = MCPQuerySession() if request_context is None else None
         self._next_id = 0
@@ -517,6 +519,9 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
                 client, f"hosted.{name}", tool, arguments
             )[0]
     metrics.update(_measure_sessions(package_path, SESSIONS, "query.v2."))
+    # A host can hide plan; its agent pays for the shorter surface.
+    with QueryMCPClient(package_path, hide_plan=True) as client:
+        metrics.update(_measure_surface(client, "query.v2.hide_plan."))
     return metrics
 
 

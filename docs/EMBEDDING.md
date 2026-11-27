@@ -382,7 +382,7 @@ SNOWFLAKE_CLI_CONNECTION_OPTIONS
 SNOWFLAKE_NATIVE_CONNECTION_OPTIONS
 SemanticHTTPService(runtime, package_id=)
 SemanticLayerError(code, message, *, details=)
-SemanticLayerMCPAdapter(runtime, *, interface=)
+SemanticLayerMCPAdapter(runtime, *, interface=, hide_plan=)
 SnowflakeCliAdapter(connection_name, options=)
 SnowflakeNativeAdapter(connection_name=, options=, *, credential_provider=)
 StderrAuditSink()

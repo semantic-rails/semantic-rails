@@ -2309,7 +2309,10 @@ def test_validation_checks_segment_references(package_config_factory, mutate, ex
     assert all(part in errors[0] for part in expected), errors
     report = validate_config_report(resolve_package_reference(path=str(package_dir)))
     assert report["ok"] is False
-    assert [error["message"] for error in report["errors"]] == errors
+    # The report names paths relative to the package.
+    assert [error["message"] for error in report["errors"]] == [
+        message.replace(f"{package_dir}: ", "", 1) for message in errors
+    ]
 
 
 def test_membership_entity_suggestion_skips_labels_shared_by_entities(package_config_factory):
@@ -2839,9 +2842,8 @@ def test_parse_report_rejects_a_metric_reference_the_package_lacks(
 
     messages = [row["message"] for row in report["errors"]]
     assert report["ok"] is False
-    assert [message.split(": ", 1)[1] for message in messages] == [
-        f"metric metric.sales.sessions_plus_orders {error}"
-    ]
+    # Messages name paths relative to the package, so the package itself is left out.
+    assert messages == [f"metric metric.sales.sessions_plus_orders {error}"]
 
 
 def test_package_authoring_suggests_a_measure_hidden_from_every_audience(package_config_factory):
@@ -2968,7 +2970,7 @@ def test_parse_report_rejects_a_conversion_whose_window_cannot_apply(
 
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
-    messages = [row["message"].split(": ", 1)[1] for row in report["errors"]]
+    messages = [row["message"] for row in report["errors"]]
     assert report["ok"] is not refused, messages
     if refused:
         assert messages == [
@@ -3021,11 +3023,7 @@ def test_parse_report_warns_on_a_measure_that_duplicates_another(
     report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
 
     assert report["ok"] is True, report["errors"]
-    duplicates = [
-        row["message"].split(": ", 1)[1]
-        for row in report["warnings"]
-        if "duplicates" in row["message"]
-    ]
+    duplicates = [row["message"] for row in report["warnings"] if "duplicates" in row["message"]]
     assert duplicates == (
         [
             f"public measure measure.jaffle.placed_orders duplicates measure.jaffle.{twin} "

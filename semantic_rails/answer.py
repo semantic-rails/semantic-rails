@@ -33,6 +33,7 @@ from .clock import (
 )
 from .compiler import observed_only_groups, observed_periods_reason, read_routes
 from .compiler_parts.empty_groups import observation_scope
+from .compiler_parts.indexes import RouteRefusal
 from .compiler_parts.listings import is_listing_plan, listing_config
 from .compiler_parts.parent_values import PARENT_VALUE
 from .diagnostics import lean_issue, semantic_issue
@@ -41,7 +42,7 @@ from .expressions import collect_object_references, expr_to_dict
 from .fanout import (
     build_hop_profile,
     offered_rows,
-    package_route,
+    package_route_result,
     query_route_decisions,
     route_note,
     route_reading,
@@ -388,13 +389,8 @@ def _route_order(path: Sequence[str]) -> tuple[int, Sequence[str]]:
 
 def _offered(config: Any, start: str, target: str) -> list[list[str]]:
     """The routes the pair's AMBIGUOUS_PATH refusal offers the caller (none when it has none)."""
-    try:
-        package_route(config, start=start, target=target)
-    except SemanticLayerError as exc:
-        if exc.code == "AMBIGUOUS_PATH":
-            options = exc.details.get("clarification", {}).get("options", [])
-            return [list(option["relationship_path"]) for option in options]
-    return []
+    result = package_route_result(config, start=start, target=target)
+    return [list(path) for path in result.routes] if isinstance(result, RouteRefusal) else []
 
 
 def finish(
@@ -766,7 +762,13 @@ def _freshness_as_of(freshness_rows: list[dict[str, Any]]) -> str:
 
 def _walk_expr_payload(expr: dict[str, Any]) -> list[dict[str, Any]]:
     """``expr`` and every node under it, parents first."""
-    return [expr, *(row for child in _expr_children(expr) for row in _walk_expr_payload(child))]
+    rows: list[dict[str, Any]] = []
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        rows.append(node)
+        stack.extend(reversed(_expr_children(node)))
+    return rows
 
 
 def _methodology_hints(config, payload: dict[str, Any], compiled) -> list[dict[str, Any]]:

@@ -16,7 +16,7 @@ compare latency, token use or cost. It runs without touching the active
   its query-time interface only. Answered, out of 8, in the pack's layer order: **Semantic Rails 8, MetricFlow 2, Cube 7
   (5 of them through SQL API workarounds), Malloy 8 and KtX 3**.
   Semantic Rails' current count uses an unreleased engine (0.3.2, engine tree 8a13b98); the
-  latest release checked, v0.3.2, answers 8 of 8 on the same frozen model.
+  latest release checked, v0.3.4, answers 8 of 8 on the same frozen model.
   The competitor captures were not re-run on newer versions. Each other answer needs a model
   change, for the reason in [`shared/frozen_model.yml`](shared/frozen_model.yml). Snowflake
   Semantic Views isn't assessed. See *Frozen-Model Questions* below.
@@ -93,7 +93,7 @@ labeled "0.3.2, not a release (engine tree 8a13b98)" wherever the version is sho
 also records the commit it ran at, which a squash merge may not keep; the pack cites the engine
 tree, which it does.
 
-The latest release checked on 2026-10-27 was PyPI `semantic-rails==0.3.2`.
+The latest release checked on 2026-11-10 was PyPI `semantic-rails==0.3.4`.
 [`semantic_rails/scripts/check_release.py`](semantic_rails/scripts/check_release.py), run in an
 isolated environment that holds only the release (step 2 of *Reproduce*), answered the
 frozen-model questions on the shared database the same bootstrap built. It answered against a
@@ -102,9 +102,9 @@ temporary copy of the unchanged package and queries, checked against the package
 It answers all 8, and each answer matches the answer key. The compact
 [release capture](shared/results/semantic_rails/latest_release_frozen_model.json) records each
 question's status, row count and answer-key check, with the model and query digests, dataset
-fingerprint and capture time. The release checked before it, v0.3.1, refused to load this
-package version (`INVALID_CONFIG`, a duplicate metric id): the package uses authoring rules that
-release predates.
+fingerprint and capture time. The release checked before it, v0.3.2, also answered all 8, each
+matching the answer key. The one before that, v0.3.1, refused to load this package version
+(`INVALID_CONFIG`, a duplicate metric id): the package uses authoring rules that release predates.
 
 ## Shared Questions: q01-q07
 
@@ -176,7 +176,7 @@ the compiled SQL is identical.
 
 | Layer | Support labels | Answered with the model frozen | What answers them, or why not |
 | --- | --- | --- | --- |
-| Semantic Rails | 8 native | 8 of 8 (unreleased engine, engine tree `8a13b98`); v0.3.2: 8 of 8 | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
+| Semantic Rails | 8 native | 8 of 8 (unreleased engine, engine tree `8a13b98`); v0.3.4: 8 of 8 | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
 | MetricFlow | 2 native (q23, q24), 6 requires_model_change (q17-q22) | 2 of 8 | `--where` metric filters over existing entities answer the new thresholds. A conversion window, a cumulative window, a period offset, a per-metric filter and an aggregation are each part of a metric's definition |
 | Cube | 2 native (q22, q24), 5 workaround (q18-q21, q23), 1 requires_model_change (q17) | 7 of 8 | A REST filter answers q24, and an SQL API query's `AVG` and `MAX` over the item revenue measure answer q22 (Cube pushes them down as aggregates of the measure's row expression). SQL API queries answer q18-q21 and q23 by wrapping a Cube query in SQL (a derived table, window functions, `CASE`). The 7-day window is on a declared join and the SQL API joins cubes only along declared joins, so it can narrow the window (q18) but not widen it (q17) |
 | Malloy | 8 native | 8 of 8 | Filtered and ad hoc aggregates, calculations (`sum_moving`, `lag`) and, for q17 and q18, a join the query declares on the model's source |
@@ -283,7 +283,7 @@ instead of being guessed from its name.
 
    ```bash
    uv run python comparisons/semantic_layers/semantic_rails/scripts/run_questions.py
-   uv run --isolated --no-project --with semantic-rails==0.3.2 --with pyyaml \
+   uv run --isolated --no-project --with semantic-rails==0.3.4 --with pyyaml \
      python -I comparisons/semantic_layers/semantic_rails/scripts/check_release.py
    ```
 

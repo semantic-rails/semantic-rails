@@ -549,6 +549,47 @@ def recovery_hints_for_error(
         return hints
     if code == "UNSUPPORTED_AGGREGATION":
         aggregation = str(details.get("aggregation", "") or "")
+        if "unread_parameters" in details:
+            unread = list(details["unread_parameters"])
+            measure = str(details.get("measure", "") or "")
+            parts = []
+            if "percentile_p" in details:
+                # A p asks for a percentile: removing it would answer the plain statistic instead.
+                p_key = next(key for key in unread if key.rsplit(".", 1)[-1] == "p")
+                unread.remove(p_key)
+                p_value = json.dumps(details["percentile_p"])
+                written = (
+                    f'"aggregation": "percentile" with "parameters": {{"p": {p_value}}}'
+                    if measure
+                    else f'"function": "percentile" with "p": {p_value}'
+                )
+                parts.append(
+                    f"For the p-th percentile, write {written}; to keep {aggregation}, "
+                    f"remove {p_key}."
+                )
+            if unread:
+                # A measure's statistic of a row value is an aggregate_if (all of these take one).
+                row_value = (
+                    f', or an aggregate_if: {{"kind": "aggregate_if", "aggregation": '
+                    f'"{aggregation}", "value": <expression>}}'
+                    if measure
+                    and aggregation
+                    in {"count", "count_distinct", "sum", "avg", "min", "max", "median"}
+                    else ""
+                )
+                subject = measure or "the distribution's values"
+                parts.append(
+                    f"If the {aggregation} of {subject} itself is meant, remove "
+                    f"{', '.join(unread)}; another value is another measure (find it with "
+                    f"discover){row_value}."
+                )
+            return [
+                {
+                    "kind": "remove_unread_parameters",
+                    "message": " ".join(parts),
+                    "unread_parameters": list(details["unread_parameters"]),
+                }
+            ]
         if "allowed" in details:
             allowed = list(details["allowed"])
             default = str(details.get("default_aggregation", "") or "")
@@ -628,16 +669,24 @@ def recovery_hints_for_error(
         if not compatible and details.get("source") == "aggregate_if":
             return []  # The message says what to do; there is no measure to point a hint at.
         if not compatible and details.get("measure") and details.get("requested"):
+            declare = dict(details.get("declare") or {})
+            line = (
+                f"Add `times: [{details['requested']}]` to {declare['measure']} in "
+                f"model {declare['model']}"
+                if declare.get("model")
+                else "Mark one of its model's `times:` entries `default: true`, or list "
+                "`times:` on the measure"
+            )
             return [
                 {
                     "kind": "declare_measure_time_role",
                     "message": (
-                        f"'{details['measure']}' has no time role. Mark one of its model's "
-                        "`times:` entries `default: true`, or list `times:` on the measure, "
-                        "then query it by that role. Or drop `time` from the query."
+                        f"'{details['measure']}' has no time role. {line}, then query it by "
+                        "that role. Or drop `time` from the query."
                     ),
                     "measure": details["measure"],
                     "requested_temporal_role": details["requested"],
+                    **({"declare": declare} if declare else {}),
                 }
             ]
         return [
@@ -1080,15 +1129,20 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "UNKNOWN_MCP_TOOL":
+        available = list(details.get("available_tools", []) or [])
+        # Name only entry points the server offers (a server can hide plan).
+        entry = [
+            name for name in ("discover", "inspect", "plan") if name in available or not available
+        ]
         return [
             {
                 "kind": "use_available_tool",
                 "message": (
                     "Call tools/list first and pick a name from "
-                    "available_tools — common entry points are 'discover', "
-                    "'inspect', 'plan'."
+                    "available_tools — common entry points are "
+                    f"{', '.join(repr(name) for name in entry)}."
                 ),
-                "available_tools": list(details.get("available_tools", []) or []),
+                "available_tools": available,
                 "details": dict(details),
             }
         ]

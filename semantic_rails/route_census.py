@@ -23,15 +23,18 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict, deque
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 # Through the compiler, which registers the nested compiles a binding runs.
 from .compiler import bind_query, read_routes
-from .compiler_parts.indexes import get_package_analysis
+from .compiler_parts.indexes import RouteRefusal, get_package_analysis
 from .compiler_parts.paths import dimensions_over_column, text_dimension
 from .compiler_parts.plan_checks import _object_default_query_temporal_role
 from .config import package_root_for_source
@@ -39,8 +42,9 @@ from .errors import SemanticLayerError
 from .fanout import (
     entity_label,
     package_hop_limit,
-    package_route,
+    package_route_result,
     pass_through_disclosure,
+    route_decision_details,
     route_pin,
     route_reading,
 )
@@ -65,14 +69,13 @@ _WALKS_KEPT = 8
 @dataclass(frozen=True)
 class RouteOutcome:
     """``package_route``'s answer for a pair: its route and every route considered, or the code
-    and details of its refusal."""
+    of its refusal and the routes still in contention."""
 
     path: tuple[str, ...] = ()
     routes: tuple[tuple[str, ...], ...] = ()
     basis: str = ""
     refused: str = ""
     by: str = ""
-    details: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def shape(self) -> dict[str, Any]:
         """The outcome as a ``route_changes`` side: its route or its refusal code."""
@@ -100,10 +103,11 @@ def resolve_pairs(config: PackageConfig, pairs: Iterable[Pair]) -> dict[Pair, Ro
     """Each pair's package-only outcome, cached per package regardless of query overrides."""
     outcomes: dict[Pair, RouteOutcome] = {}
     for start, target in pairs:
-        try:
-            resolution = package_route(config, start=start, target=target)
-        except SemanticLayerError as exc:
-            outcomes[(start, target)] = RouteOutcome(refused=exc.code, details=exc.details)
+        resolution = package_route_result(config, start=start, target=target)
+        if isinstance(resolution, RouteRefusal):
+            outcomes[(start, target)] = RouteOutcome(
+                refused=resolution.code, routes=resolution.routes
+            )
         else:
             outcomes[(start, target)] = RouteOutcome(
                 path=resolution.routes[0],
@@ -224,6 +228,33 @@ def _walks(
     return walked
 
 
+_DEFER_CENSUS_QUESTIONS = ContextVar("defer_census_questions", default=False)
+
+
+@contextmanager
+def defer_census_questions(defer: bool = True) -> Iterator[None]:
+    """Keep census rows compact for a report consumer that renders only selected questions."""
+    token = _DEFER_CENSUS_QUESTIONS.set(defer)
+    try:
+        yield
+    finally:
+        _DEFER_CENSUS_QUESTIONS.reset(token)
+
+
+class UndecidedPair(dict[str, Any]):
+    """The census fields a compact report reads, with the question built on first display."""
+
+    def __init__(self, fields: dict[str, Any], question: Callable[[], dict[str, Any]]) -> None:
+        super().__init__({**fields, "details": {}})
+        self._question: Callable[[], dict[str, Any]] | None = question
+
+    def render(self) -> dict[str, Any]:
+        if (question := self._question) is not None:
+            self["details"] = question()
+            self._question = None
+        return dict(self)
+
+
 def route_census(
     config: PackageConfig, *, queries: Iterable[PackageQuery] = (), package: str = ""
 ) -> dict[str, list[dict[str, Any]]]:
@@ -243,14 +274,18 @@ def route_census(
     package's source fingerprint, reuses the walks of an earlier census of the same package and
     queries.
     """
-    undecided: list[dict[str, Any]] = []
+    undecided: list[UndecidedPair] = []
     assumed: list[dict[str, Any]] = []
     defaults: list[dict[str, Any]] = []
     pass_through: list[dict[str, Any]] = []
     for (start, target), outcome in resolve_pairs(config, census_pairs(config)).items():
         ends = {"source_entity": start, "target_entity": target}
         if outcome.refused == "AMBIGUOUS_PATH":
-            undecided.append({**ends, "details": outcome.details})
+            undecided.append(
+                UndecidedPair(
+                    ends, partial(route_decision_details, config, start, target, outcome.routes)
+                )
+            )
         elif outcome.basis == "colocated_key" and len(outcome.routes) >= 2:
             assumed.append({**ends, "relationship_path": [*outcome.path], "basis": outcome.basis})
         elif outcome.basis == "default":
@@ -273,8 +308,12 @@ def route_census(
     for row in [*undecided, *pass_through]:
         row["needed_by"] = list(walked.get((row["source_entity"], row["target_entity"]), []))
     undecided.sort(key=lambda row: not row["needed_by"])
+    # A compact check only reads the first needed pair's decisions for its warning.
+    deferred = _DEFER_CENSUS_QUESTIONS.get()
+    if deferred and undecided and undecided[0]["needed_by"]:
+        undecided[0].render()
     return {
-        "undecided": undecided,
+        "undecided": list(undecided) if deferred else [row.render() for row in undecided],
         "assumed": assumed,
         "defaults": defaults,
         "pass_through": pass_through,

@@ -9,6 +9,7 @@ and compiler call. Also owns the connection-option schema used by
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -140,6 +141,9 @@ class SqlDialect:
     # Whether names the SQL leaves unquoted are case-sensitive (ClickHouse); elsewhere a warehouse
     # reads them in any ASCII case.
     identifiers_case_sensitive = False
+    # Whether quoted names are case-sensitive (Postgres, Snowflake, ClickHouse); DuckDB, BigQuery,
+    # Databricks and Athena read a quoted name in any ASCII case as one column.
+    quoted_identifiers_case_sensitive = True
     # How a text word folds both its column and its text ("{}" is the operand), so the two always
     # fold alike: one Unicode-aware lowercase function on every warehouse.
     case_fold = "LOWER({})"
@@ -175,6 +179,9 @@ class SqlDialect:
     date_diff_units: ClassVar[tuple[str, ...]] = CONVERSION_WINDOW_UNITS
     # Whether a CAST call can enforce DECIMAL(p,s).
     decimal_cast = True
+    # The most columns one select may list, where the warehouse documents a limit; a joined call
+    # wider than it is refused before it is sent.
+    max_select_columns: ClassVar[int | None] = None
 
     def scalar_call(self, name: str, args: list[Any], *, distinct: bool = False) -> Any:
         """Central lowering guard for every query, package and relation call."""
@@ -549,6 +556,7 @@ class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
 class DuckDbDialect(_NestedTimezone, SqlDialect):
     subquery_in_join_on = True
     name: str = "duckdb"
+    quoted_identifiers_case_sensitive = False
     session_zone = True
     call_names = PORTABLE_CALL_NAMES | {
         "DATE_PART",
@@ -602,6 +610,10 @@ class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     subquery_in_join_on = True
 
     name: str = "postgres"
+    label = "Postgres"
+    # "Columns in a result set: 1,664" (https://www.postgresql.org/docs/current/limits.html):
+    # every select of a statement, a CTE's too, lists at most that many.
+    max_select_columns = 1_664
     session_zone = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"}
     # LOWER folds by its operand's collation, and a column's own collation can differ from a
@@ -882,6 +894,7 @@ class BigQueryDialect(SqlDialect):
     like_escape_clause = False
     reads_coverage = True
     boolean_bounds = ("LOGICAL_AND", "LOGICAL_OR")
+    quoted_identifiers_case_sensitive = False
     call_names = PORTABLE_CALL_NAMES | {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"}
     # A column's own collation is set aside: COLLATE(x, '') is x with none, both sides alike.
     case_fold = "LOWER(COLLATE({}, ''))"
@@ -1104,6 +1117,7 @@ class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     """
 
     name: str = "databricks"
+    quoted_identifiers_case_sensitive = False
     reads_coverage = True
     call_names = PORTABLE_CALL_NAMES | {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"}
     # A column's own collation (UNICODE, UTF8_LCASE) is set aside: LIKE reads binary text.
@@ -1215,6 +1229,7 @@ class AthenaDialect(SqlDialect):
     """
 
     name: str = "athena"
+    quoted_identifiers_case_sensitive = False
     reads_coverage = True
     offset_before_limit = True
     boolean_bounds = ("BOOL_AND", "BOOL_OR")
@@ -1644,6 +1659,9 @@ SNOWFLAKE_ADBC_CONNECTION_OPTIONS: tuple[str, ...] = (
 POSTGRES_CONNECTION_OPTIONS: tuple[str, ...] = (
     "host",
     "host_env",
+    # One address that `host` is reached at: libpq dials it without looking `host` up, while
+    # TLS still sends and verifies `host`.
+    "hostaddr",
     "port",
     "database",
     "schema",
@@ -1845,7 +1863,34 @@ def connection_option_errors(warehouse: str, kind: str, options: dict[str, Any])
                 f"package.connection option '{raw_key}' must be one of: "
                 + ", ".join(SNOWFLAKE_CERT_REVOCATION_CHECK_MODES)
             )
+        elif key == "hostaddr":
+            errors.extend(_hostaddr_errors(raw_key, value, options))
     return tuple(errors)
+
+
+def _hostaddr_errors(raw_key: Any, value: str, options: dict[str, Any]) -> list[str]:
+    """A pinned address is one plain IP address of the server `host` names.
+
+    libpq would also read a comma-separated list, or dial `hostaddr` alone and verify TLS
+    against no name at all; neither is the address of one named server.
+    """
+    errors = []
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        address = None
+    if address is None or getattr(address, "scope_id", None):
+        errors.append(
+            f"package.connection option '{raw_key}' must be one IPv4 or IPv6 address, "
+            "without brackets or a zone"
+        )
+    keys = {normalize_connection_option_name(str(key)) for key in options}
+    if not keys & {"host", "host_env"}:
+        errors.append(
+            f"package.connection option '{raw_key}' needs host or host_env: "
+            "the server name that TLS verifies"
+        )
+    return errors
 
 
 def snowflake_adbc_connect_errors(options: dict[str, Any]) -> tuple[str, ...]:

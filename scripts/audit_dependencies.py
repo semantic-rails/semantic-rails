@@ -1,7 +1,13 @@
-"""Audit locked core/extra installs with bounded, self-invalidating exceptions."""
+"""Audit locked core/extra installs with bounded, self-invalidating exceptions.
+
+With --base REV, fail only on findings absent at that revision (diff mode), so an advisory
+published against an existing dependency fails main and the nightly audit, not every open
+pull request. Findings the base already has are printed as PRE-EXISTING.
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
@@ -20,6 +26,11 @@ from packaging.version import Version
 
 CONNECTORS = ("snowflake", "postgres", "bigquery", "databricks", "athena", "clickhouse")
 ROOT = Path(__file__).resolve().parents[1]
+EXCEPTIONS = "security/audit-exceptions.toml"
+# The audit's inputs: a base revision with identical files has identical findings.
+INPUTS = ("pyproject.toml", "uv.lock", EXCEPTIONS)
+FIX_PROCESS = "CONTRIBUTING.md#dependency-advisories"
+INCOMPLETE = (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired)
 
 
 def audit_surfaces(root: Path) -> tuple[str, ...]:
@@ -297,30 +308,74 @@ def check_policy(
     return lines, errors
 
 
-def main() -> int:
+def python_audit(root: Path, today: date, scratch: Path) -> tuple[list[str], list[str]]:
+    """Return the report lines and the policy errors for the audit inputs under root."""
+    entries = load_exceptions(root / EXCEPTIONS, today)
+    reports = {surface: audit_surface(root, surface, scratch) for surface in audit_surfaces(root)}
+    return check_policy(
+        reports,
+        entries,
+        today,
+        lambda extra, entry, versions: cap_excludes_fixes(root, extra, entry, versions),
+    )
+
+
+def base_inputs(root: Path, base: str, scratch: Path) -> Path | None:
+    """Write the base revision's audit inputs under scratch; None when they equal the head's."""
+    tree = scratch / "base"
+    same = True
+    for path in INPUTS:
+        shown = run(["git", "show", f"{base}:{path}"], root)
+        if shown.returncode:
+            raise ValueError(f"cannot read {path} at {base}: {shown.stderr.strip()}")
+        (tree / path).parent.mkdir(parents=True, exist_ok=True)
+        (tree / path).write_text(shown.stdout)
+        same = same and (root / path).read_text() == shown.stdout
+    return None if same else tree
+
+
+def main(base: str | None = None) -> int:
+    """Full mode fails on every finding; diff mode only on findings the base lacks."""
+    today = date.today()
+    existing: set[str] = set()
     try:
-        today = date.today()
-        entries = load_exceptions(ROOT / "security/audit-exceptions.toml", today)
         with tempfile.TemporaryDirectory(prefix="sr-dependency-audit-") as directory:
             scratch = Path(directory)
-            reports = {
-                surface: audit_surface(ROOT, surface, scratch) for surface in audit_surfaces(ROOT)
-            }
-            lines, errors = check_policy(
-                reports,
-                entries,
-                today,
-                lambda extra, entry, versions: cap_excludes_fixes(ROOT, extra, entry, versions),
-            )
-        for line in lines:
-            print(line)
-        for error in errors:
-            print(f"FAIL: {error}", file=sys.stderr)
-        return int(bool(errors))
-    except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
+            lines, errors = python_audit(ROOT, today, scratch)
+            if base and errors:
+                try:
+                    tree = base_inputs(ROOT, base, scratch)
+                    existing = set(
+                        errors if tree is None else python_audit(tree, today, scratch)[1]
+                    )
+                except INCOMPLETE as error:
+                    print(
+                        f"Base {base} audit unavailable ({error}); every finding counts as new.",
+                        file=sys.stderr,
+                    )
+    except INCOMPLETE as error:
         print(f"FAIL: dependency audit incomplete: {error}", file=sys.stderr)
         return 1
+    for line in lines:
+        # Diff mode reports each failing advisory once below, as FAIL or PRE-EXISTING.
+        if not (base and line.endswith(": FAIL")):
+            print(line)
+    for finding in dict.fromkeys(errors):
+        if finding in existing:
+            print(f"PRE-EXISTING (also on {base}, not introduced here): {finding}")
+        else:
+            print(f"FAIL: {finding}", file=sys.stderr)
+    if existing:
+        print(
+            "Pre-existing findings fail the audit on main and nightly; fix them in their own "
+            f"pull request: {FIX_PROCESS}"
+        )
+    return int(any(finding not in existing for finding in errors))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base", help="Fail only on findings absent at this git revision (pull requests)"
+    )
+    raise SystemExit(main(base=parser.parse_args().base))

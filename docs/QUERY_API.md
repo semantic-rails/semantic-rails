@@ -419,8 +419,9 @@ the resolved request context scopes visibility, access and metric-constraint pol
 instant relative windows (`time.last`, `time.this`) resolve against; `plan` takes `options.now`
 beside `intent` and its seed `query`.
 
-- `time.start` is inclusive and `time.end` exclusive: the window is `[start, end)`. The
-  example covers September through November 2016.
+- `time.start` is inclusive and `time.end` is exclusive. The window `[start, end)`
+  above covers September through November 2016. For “as of March 31, 2024” or
+  “through March 31, 2024”, set `time.end` to `2024-04-01`.
 - A window with no `time.grain` is one total per `group_by` group, with no time column; the
   response says so in `assumptions` (`WINDOW_TOTAL`). With a grain, the
   time axis is the `period` column (an ISO date) and each row carries `period_partial`.
@@ -1289,7 +1290,9 @@ The response `warnings` array can carry these non-error signals:
   can mislead. Agents should mention caveats only when explaining
   affected results.
   Every matching caveat is stated at every verbosity; verbosity trims only
-  each caveat's details.
+  each caveat's details. At every verbosity `details.so_what` says what to do
+  about the caveat, when the package sets it; at `compact` (the default) and
+  `full`, `details.owner` says who to ask, when the package sets it.
 - `ROUTE_PASS_THROUGH` — severity `warning`, at every verbosity: the package's
   one route for a pair the query reads goes down into another table's rows and
   back up to another parent ("the Team of any of the Member's Member events"),

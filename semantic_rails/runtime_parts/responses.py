@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from ..answer import minimal_route
@@ -21,6 +20,7 @@ from ..expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
+from ..flat_copy import as_dict
 from ..query_call import TOTAL_OVER
 
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
@@ -555,6 +555,6 @@ def compile_response_metadata(
     out["trace"] = semantic_trace(runtime._config, compiled)
     out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
     out["semantic_summary"] = semantic_summary(runtime._config, compiled)
-    out["performance_plan"] = asdict(compiled["performance_plan"])
-    out["physical_plan"] = asdict(compiled["physical_plan"])
+    out["performance_plan"] = as_dict(compiled["performance_plan"])
+    out["physical_plan"] = as_dict(compiled["physical_plan"])
     return out

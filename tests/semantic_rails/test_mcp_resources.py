@@ -69,7 +69,12 @@ def test_opt_in_catalog_index_is_small_and_full_is_whole(
 ) -> None:
     index = adapter.read_resource("semantic-rails://catalog/index")
     catalog = index["payload"]["catalog"]
-    assert catalog == adapter.call_tool("discover", {"terms": ""})["catalog"]
+    # Empty-terms discover lists the same ids, kind by kind, with none of the index's flags.
+    kinds = [key.removesuffix("_ids") for key in catalog if key.endswith("_ids")]
+    listed = adapter.call_tool("discover", {"terms": "", "kinds": kinds, "limit": 10_000})
+    assert listed["catalog"] == {
+        key: value for key, value in catalog.items() if key == "counts" or key.endswith("_ids")
+    }
     assert catalog["meta"]["verbosity"] == "summary"
     assert catalog["measure_ids"]
     legacy = adapter.read_resource("semantic-rails://catalog/summary")

@@ -796,11 +796,7 @@ def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_rea
     assert got == expected == {(None, "2025-02"): 1, ("placed", "2025-02"): 1}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="An ungrouped empty population reads 0 without a warning: https://github.com/semantic-rails/semantic-rails/issues/203",
-)
-def test_an_ungrouped_empty_population_should_read_null_with_a_warning(runtime):
+def test_an_ungrouped_empty_population_reads_null_with_a_warning(runtime):
     query = {
         "select": [{"expression": "measure.pred.customer_count", "as": "n"}],
         "where": [{"field": CUSTOMER_ID, "op": "is", "value": 999}],

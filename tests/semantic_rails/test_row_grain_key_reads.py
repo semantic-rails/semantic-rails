@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2] / "semantic_rails"
 # Their `.key` reads are not on an entity: authored YAML, dbt manifests, upgrade rules.
-EXCLUDED = ("architect_", "dbt_artifacts.py", "upgrade/", "repl/")
+EXCLUDED = ("architect_", "dbt_artifacts.py", "upgrade/", "repl/", "yaml_edits.py")
 
 # Reads where an empty key is a legitimate "no": they read `key_columns` or `is_row_grain`.
 SWITCHED = {
@@ -29,6 +29,9 @@ SWITCHED = {
     # A distinct count across links needs no row key; every other aggregation reads `.key`.
     ("compiler_parts/leaves.py", "_fanout_dedup_leaf_select"),
     # A listing's start row is told apart by its key; a row-grain start by its own columns.
+    # Two parts join on a column of one name one of their models keys; a model with no key
+    # keys nothing, so its columns join only beside a model that keys them.
+    ("compiler_parts/joined_parts.py", "_keys"),
     ("compiler_parts/listings.py", "listing_rows"),
     ("compiler_parts/lowering_common.py", "_entity_in_terms_of_anchor_plan"),
     # A parent with no key has no value to read on its children's rows; the leaf reads the
@@ -70,12 +73,20 @@ SWITCHED = {
     ("metadata.py", "discover_payload"),
     ("package_tools.py", "check_warehouse_column_reachability_report"),
     ("planner/groupings.py", "_entity_stand_ins"),
+    # A model with no key has no key column for a relationship to join, so no column cuts as it.
+    ("policies.py", "_cuts"),
+    # A metric constraint exempts a count of a key; a model with no key exempts no column, so
+    # its counts are held to the allow-list.
+    ("policies.py", "_counted_operands"),
+    ("policies.py", "_shape_refusal"),
     ("planner/unmatched_words.py", "_grouped_entities"),
     ("runtime.py", "_named_key_refusal"),
     ("runtime.py", "_unknown_rows_kept_warnings"),
     ("runtime_parts/answer_warnings.py", "_history_result_warnings"),
     ("schema.py", "EntityConfig.is_row_grain"),
     ("schema.py", "EntityConfig.key"),
+    # A calendar is told by its name or its one key column; a row-grain model has neither key.
+    ("untimed_measures.py", "reachable_clocks"),
 }
 # Reads that need a key by meaning, or that a row-grain model can't reach: they refuse.
 REFUSES = {

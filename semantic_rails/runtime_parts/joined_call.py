@@ -25,14 +25,13 @@ from ..answer import (
     finish,
     minimal_route,
 )
-from ..ast import PERIOD_PARTIAL, TIME_AXIS
+from ..ast import PERIOD_PARTIAL, TIME_AXIS, normalize_query
 from ..compiler import _prepare, compile_query
 from ..compiler_parts.joined_parts import (
     IN,
     KEPT_ROWS,
     NULL_KEYS,
     ROWS,
-    UNMATCHED,
     JoinKey,
     PartStatement,
     hidden_name,
@@ -40,11 +39,15 @@ from ..compiler_parts.joined_parts import (
     joined_statement,
     presence_order,
     refuse_shared_outputs,
+    select_width,
+    shared_name,
 )
 from ..compiler_parts.part_domain import PRESENT, reading_part_domain
 from ..db_parts.base import QueryRows
+from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
-from ..policies import enforce_query_policies
+from ..expressions import MeasureRefExpr, MetricRecipeRefExpr
+from ..policies import case_twins, enforce_query_policies, row_capped
 from ..query_call import in_part, refusal
 from ..request_context import policy_identity
 from ..top_n import limit_order
@@ -308,7 +311,9 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         time_key,
     )
     refuse_shared_outputs(keys, [part.statement.outputs for part in parts])
+    _refuse_over_select_limit(config, [part.statement for part in parts], keys)
     _check_order(payload.get("order_by") or [], keys, parts)
+    _refuse_inline_rank(payload, parts, keys)
     keep = payload["join"]["keep"]
     keep = None if keep == "all" else list(keep)
     statement = joined_statement(
@@ -343,12 +348,51 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
     return _Joined(parts=parts, keys=keys, keep=keep, compiled=compiled, zone=zone)
 
 
+def _refuse_over_select_limit(
+    config: Any, statements: list[PartStatement], keys: list[JoinKey]
+) -> None:
+    """Refuse, before it is sent, a statement wider than its warehouse reads in one select,
+    stating how many columns it needs and how many of these parts fit: each part adds its own
+    columns and one count per other part, so the parts that fit are a number, not a cap."""
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    limit = dialect.max_select_columns
+    if limit is None:
+        return
+    width = select_width(statements, keys)
+    if width <= limit:
+        return
+    # The most leading parts within the limit (the width grows with every part added).
+    fits, over = 0, len(statements)
+    while over - fits > 1:
+        middle = (fits + over) // 2
+        if select_width(statements[:middle], keys) <= limit:
+            fits = middle
+        else:
+            over = middle
+    raise refusal(
+        "parts",
+        f"{dialect.label} reads at most {limit:,} columns in one select, and this joined call "
+        f"needs {width:,}: each part adds its own columns and one count per other part",
+        fix=(
+            f"Ask for at most {fits} of these parts in one call."
+            if fits > 1
+            else "Ask for each part in a call of its own."
+        ),
+        reason="parts_over_column_limit",
+        limit=limit,
+        columns=width,
+        fits=fits,
+    )
+
+
 def _compile_part(
     runtime: Any, index: int, payload: dict[str, Any], policy_context: dict[str, Any]
 ) -> _Part:
     """One part, as ``Runtime._enforced_compile`` compiles a call (bound on the caller's view,
     the policy gate, then the compile), lowered as a part, never from the compile cache: the
-    cache keys on the call alone, and a part's statement is another one."""
+    cache keys on the call alone, and a part's statement is another one. (Each part compiles
+    once per call; reading a cached compile copies it, which costs more than compiling a part.)
+    """
     from .answer_warnings import refuse_closing_day_zone
 
     config = runtime._config
@@ -420,6 +464,59 @@ def _check_order(order_by: list[dict[str, Any]], keys: list[JoinKey], parts: lis
                 f"names '{item['field']}', which is no column of the joined answer",
                 fix=f"Name one of {names}.",
                 code="INVALID_ORDER_BY",
+            )
+
+
+def _refuse_inline_rank(payload: dict[str, Any], parts: list[_Part], keys: list[JoinKey]) -> None:
+    """Under any metric constraint on a part, a joined call names each column once in any case
+    (``policies.case_twins``), keeps every part's keys (``keep``
+    would pick the rows that appear by a part's own filters), and a limit or a row cap keeps the
+    joined rows its order picks, so the order names a key or, in a part with no where or having
+    of its own, a measure or metric by id with no statistic written (``policies._shape_refusal``
+    holds each part alone)."""
+    if not any(
+        effect.get("kind") == "metric_constraint"
+        for part in parts
+        for effect in part.policy_effects
+    ):
+        return
+    names = [key.name for key in keys] + [name for part in parts for name in part.statement.outputs]
+    if twins := case_twins(names):
+        raise refusal(
+            "parts",
+            f"{twins}, and under a metric constraint a joined call names each column once in any "
+            "case",
+            fix='Name one of them another way with "as".',
+            code="POLICY_DENIED",
+        )
+    if payload["join"]["keep"] != "all":
+        raise refusal(
+            "join.keep",
+            "keeps only the keys some parts have, and under a metric constraint a joined call "
+            "keeps every part's keys",
+            fix='Write "keep": "all", or ask for each part in a call of its own.',
+            code="POLICY_DENIED",
+        )
+    if payload.get("limit") is None and not row_capped(payload):
+        return
+    # Each part's select items under the names its answer gives them (a key or a dimension is none).
+    calls = [normalize_query(part.payload) for part in parts]
+    shown = {row.as_: (row.expression, call) for call in calls for row in call.select}
+    for index, item in enumerate(payload.get("order_by") or []):
+        expression, call = shown.get(item["field"], (None, None))
+        measure = isinstance(expression, MeasureRefExpr) and not expression.aggregation
+        by_id = measure or isinstance(expression, MetricRecipeRefExpr)
+        if call is not None and not (by_id and not call.where and not call.metric_filters):
+            raise refusal(
+                f"order_by[{index}].field",
+                f"'{item['field']}' picks the rows the limit or row cap keeps, and under a metric "
+                "constraint a joined call ranks only by a key or by a measure or metric by id "
+                "in a part with no where or having",
+                fix=(
+                    "Order by a key or by a measure or metric by its id in a part with no where "
+                    "or having, or remove the order_by."
+                ),
+                code="POLICY_DENIED",
             )
 
 
@@ -502,17 +599,17 @@ def _counts(joined: _Joined, rows: list[dict[str, Any]]) -> dict[str, Any] | Non
 
     parts = []
     for part in joined.parts:
-        others = [other.index for other in joined.parts if other.index != part.index]
+        own = read(ROWS.format(part=part.index))
+        null_keys = read(NULL_KEYS.format(part=part.index))
+        # A key of this part another part lacks: one of its rows with no NULL key that isn't a
+        # key both have.
+        unmatched = {
+            str(other.index): own - null_keys - read(shared_name(part.index, other.index))
+            for other in joined.parts
+            if other.index != part.index
+        }
         parts.append(
-            {
-                "part": part.index,
-                "rows": read(ROWS.format(part=part.index)),
-                "null_keys": read(NULL_KEYS.format(part=part.index)),
-                "unmatched": {
-                    str(other): read(UNMATCHED.format(part=part.index, other=other))
-                    for other in others
-                },
-            }
+            {"part": part.index, "rows": own, "null_keys": null_keys, "unmatched": unmatched}
         )
     return {"parts": parts, "kept": read(KEPT_ROWS)}
 
@@ -560,11 +657,16 @@ def _parts_joined(
     counts: dict[str, Any] | None,
     ran: bool = False,
 ) -> dict[str, Any]:
-    """``PARTS_JOINED``: the key columns and what each is in each part, ``keep``, each part's
-    window, the whole result's counts (once it ran) and which columns add up."""
+    """``PARTS_JOINED``: the key columns, what each is in each part and whether the package
+    says they hold the same values (``declared``; else the join is the caller's choice),
+    ``keep``, each part's window, the whole result's counts (once it ran) and which columns
+    add up."""
     from ..diagnostics import semantic_issue
 
-    keys = [{"column": key.name, "parts": list(key.columns)} for key in joined.keys]
+    keys = [
+        {"column": key.name, "parts": list(key.columns), "declared": not key.chosen}
+        for key in joined.keys
+    ]
     parts = [
         {"part": part.index, **({"window": block["window"]} if block.get("window") else {})}
         for part, block in zip(joined.parts, blocks, strict=True)
@@ -591,6 +693,12 @@ def _parts_joined(
             + (" has" if len(joined.keep) == 1 else " all have")
         )
         sentences = [f"The answer joins {len(joined.parts)} parts on {on}, {kept}."]
+        sentences.extend(
+            f"No relationship in the package pairs {key.dimensions[0]} with "
+            f"{_listed(list(key.chosen))}: joining on them is the caller's choice."
+            for key in joined.keys
+            if key.chosen
+        )
     if counts is not None:
         details["kept_rows"] = counts["kept"]
         for row, stated in zip(counts["parts"], parts, strict=True):

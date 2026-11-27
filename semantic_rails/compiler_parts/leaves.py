@@ -63,6 +63,7 @@ from .bind import (
 from .child_values import CHILD_VALUES, child_value_dimension, child_values_cte, keep_rows
 from .dependencies import (
     cut_owners,
+    inner_call,
     leaf_predicate_roles,
     measure_objects,
     project_is_cut,
@@ -133,7 +134,13 @@ from .predicate_sets import (
     _stock_period_split,
 )
 from .row_counts import _row_markers, _rows_fields
-from .snapshot_reads import ClosingDay, SnapshotRead, closing_day, select_snapshots
+from .snapshot_reads import (
+    ClosingDay,
+    SnapshotRead,
+    closing_day,
+    select_snapshots,
+    source_is_windowed,
+)
 
 
 def _aggregate_relation_time_expr(
@@ -284,10 +291,26 @@ def _semi_additive_leaf_select(
     # last/first/sum collapse to one snapshot per output bucket, while
     # distributional aggregations (median/avg/min/max/...) keep every
     # snapshot in the bucket and aggregate across them.
+    key_aliases = [field.alias for field in key_fields]
+    periods = [alias for alias in key_aliases if alias in period_aliases]
+    # An end-of-period balance on an as-of clock (``day``) closes on the period's closing
+    # day (snapshot_reads). With no period (no time window, no grouping by its clock or a
+    # calendar), every statistic of a balance with series keys closes on the last closing day
+    # too, as the balance does: a series whose last snapshot is years old is never read beside
+    # the others'. An entity filter's or a predicate's source read ``over: "window"`` has the
+    # window as filters, not a period, and reads its statistics as a call's window does. A
+    # balance keyed by its clock alone has one series: a statistic of it is over its snapshots.
+    closes = (
+        day is not None
+        and window_choice == "last_value"
+        and (
+            final_aggregation in {"last_value", "sum"}
+            or (not periods and bool(row_grain_exprs) and not source_is_windowed())
+        )
+    )
     if not row_grain_exprs and final_aggregation not in {"last_value", "first_value", "sum"}:
         row_grain_exprs = [order_expr]
     row_key_aliases = [f"__snapshot_key_{index + 1}" for index in range(len(row_grain_exprs))]
-    key_aliases = [field.alias for field in key_fields]
     fields = [
         *key_fields,
         *[
@@ -310,12 +333,10 @@ def _semi_additive_leaf_select(
     # Each series' snapshot is chosen per period first (`period_aliases` name the key
     # fields that split time), and the other grouping dimensions are read from that
     # row. Choosing it per group too would count a series whose attribute changes
-    # within the period once under each value it held. An end-of-period balance on an
-    # as-of clock (``day``) closes on the period's closing day (snapshot_reads).
-    closes = window_choice == "last_value" and final_aggregation in {"last_value", "sum"}
+    # within the period once under each value it held.
     read = SnapshotRead(
         fields=fields,
-        periods=[alias for alias in key_aliases if alias in period_aliases],
+        periods=periods,
         series=row_key_aliases,
         order=order_expr,
         day=day if closes else None,
@@ -326,7 +347,12 @@ def _semi_additive_leaf_select(
         ctes=list(ctes or []),
     )
     chosen, rows = select_snapshots(
-        read, name="snapshot_rows", prefix="snapshot", dialect=dialect, measure_id=measure_id
+        read,
+        name="snapshot_rows",
+        prefix="snapshot",
+        dialect=dialect,
+        measure_id=measure_id,
+        statistic="" if final_aggregation in {"last_value", "sum"} else final_aggregation,
     )
     value: Any = SqlIdentifier(parts=[rows, "__snapshot_value"])
     flag = SqlIdentifier(parts=[rows, "__snapshot_kept"])
@@ -585,7 +611,11 @@ def _parent_lookup_leaf_select(
         "group_by": list(via_dims.values()),
     }
     # The inner query's settled values are internal: no NO_DATA_IN_SCOPE output of their own.
-    with measure_objects(measure.id), recording_zero_outputs():
+    with (
+        measure_objects(measure.id),
+        recording_zero_outputs(),
+        inner_call(f"the lookup measure {measure.id}"),
+    ):
         record_bound_object(child_link, config)
         source_sql = nested.query_sql(config, payload, project_cut=project_is_cut())
     table = _entity_index(config)[measure.entity].table

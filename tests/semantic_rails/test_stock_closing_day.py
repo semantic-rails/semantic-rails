@@ -275,6 +275,139 @@ def test_every_closing_day_read_names_its_day(stocks: Runtime) -> None:
     }
 
 
+def _statistic(table: str, aggregation: str, **call) -> dict:
+    expression: dict = {
+        "kind": "measure",
+        "measure": f"measure.inv.{table}_area",
+        "aggregation": aggregation,
+    }
+    if aggregation == "percentile":
+        expression["parameters"] = {"p": 0.9}
+    return {"select": [{"expression": expression, "as": "v"}], **call}
+
+
+DENSE_BUILDING = "dimension.inv_inv_dense_building"
+
+
+def test_a_series_with_no_snapshot_on_the_closing_day_counts_in_no_statistic(
+    stocks: Runtime,
+) -> None:
+    """C last reported on April 1; the untimed closing day is December 1. Every statistic
+    leaves C out, as last_value does, and never carries its 50 forward: by building C has no
+    row, and filtered to C last_value reads 0 (a balance of no series) while every other
+    statistic reads NULL (there is no value to take it of)."""
+    by_building = {
+        aggregation: {
+            row[DENSE_BUILDING]: float(row["v"])
+            for row in stocks.query(
+                _statistic("inv_dense", aggregation, group_by=[DENSE_BUILDING])
+            )["rows"]
+        }
+        for aggregation in ("last_value", "avg", "median", "max")
+    }
+    assert all(rows == {"A": 100, "B": 200, "D": 30} for rows in by_building.values())
+    only_c = [{"field": DENSE_BUILDING, "op": "is", "value": "C"}]
+    assert _values(stocks.query(_statistic("inv_dense", "last_value", where=only_c))) == [0]
+    for aggregation in ("avg", "median", "percentile", "min", "max"):
+        result = stocks.query(_statistic("inv_dense", aggregation, where=only_c))
+        assert _values(result) == [None], aggregation
+        assert _one(result, "assumptions", CLOSING)["closing_day"] == "2020-12-01"
+        assert _one(result, "warnings", MISSING)["details"]["series_missing"] == 1
+
+
+def test_a_statistic_over_a_window_or_by_period_reads_each_series_latest_as_before(
+    stocks: Runtime,
+) -> None:
+    """A time window, a grain or a grouping by the clock keeps each statistic's read: over
+    2020 the average of Q's 200 (March) and R's 40 (August), by quarter each building's last
+    snapshot in the quarter (C's April 1 counts in Q2), by snapshot day each day's. None of
+    them closes on a day or names one."""
+    changes = "temporal_role.inv_inv_changes_snap_date"
+    window = stocks.query(_statistic("inv_changes", "avg", time={"temporal_role": changes, **YEAR}))
+    ((latest,),) = stocks.hand_sql(  # type: ignore[attr-defined]
+        f"SELECT AVG(area) FROM inv_changes WHERE (building, snap_date) IN "
+        f"(SELECT building, MAX(snap_date) FROM inv_changes WHERE {IN_2020} GROUP BY 1)"
+    )
+    assert _values(window) == [latest] == [120]
+    quarter = {"temporal_role": "temporal_role.inv_inv_dense_snap_date", "grain": "quarter"}
+    by_quarter = stocks.query(_statistic("inv_dense", "avg", time={**quarter, **YEAR}))
+    hand = stocks.hand_sql(  # type: ignore[attr-defined]
+        "WITH r AS (SELECT *, DATE_TRUNC('quarter', snap_date) AS q FROM inv_dense) "
+        "SELECT q, AVG(area) FROM r WHERE (building, q, snap_date) IN "
+        "(SELECT building, q, MAX(snap_date) FROM r GROUP BY 1, 2) GROUP BY q ORDER BY q"
+    )
+    assert _values(by_quarter) == [value for _, value in hand]
+    assert _values(by_quarter)[1] == 95  # (100 + 200 + 50 + 30) / 4
+    by_day = stocks.query(
+        _statistic("inv_changes", "max", group_by=["dimension.inv_inv_changes_snap_date"])
+    )
+    assert _values(by_day) == [150, 35, 100, 200, 40]
+    for result in (window, by_quarter, by_day):
+        assert CLOSING not in _codes(result, "assumptions")
+        assert MISSING not in _codes(result, "warnings")
+
+
+ONE_SERIES = """model:
+  id: inv_total
+  relation: inv_total
+  entities: {inv_total: {}}
+  times:
+    snap_date: {column: snap_date, kind: date, class: as_of_time, default: true}
+  measures:
+    inv_total_area: {kind: aggregate, expr: area, value_type: number,
+      accumulation: {kind: stock, snapshot: end_of_period}}
+"""
+
+
+ONE_SERIES_STATISTICS = {
+    "avg": "AVG(area)",
+    "median": "MEDIAN(area)",
+    "percentile": "QUANTILE_CONT(area, 0.9)",
+    "min": "MIN(area)",
+    "max": "MAX(area)",
+}
+
+
+def test_a_one_series_balance_takes_a_statistic_over_its_snapshots(tmp_path: Path) -> None:
+    """A total keyed by its clock alone is one series: with no window its balance reads
+    December's 330, on its closing day, while a statistic of it is over every snapshot it has
+    (the average month 334.17, the highest 350), never one day's value, and names no closing
+    day. That is the same number as over a window holding every snapshot."""
+    root = _write_package(tmp_path / "inv")
+    (root / "models" / "inv_total.yml").write_text(ONE_SERIES)
+    with (root / "graph.yml").open("a") as graph:
+        graph.write("    inv_total: {key: [snap_date], model: inv_total}\n")
+    with duckdb.connect(str(root / "data" / "inv.duckdb")) as con:
+        con.execute(
+            "CREATE TABLE inv_total AS SELECT snap_date, SUM(area) AS area FROM inv_dense GROUP BY 1"
+        )
+        hand = {
+            aggregation: float(con.execute(f"SELECT {sql} FROM inv_total").fetchone()[0])
+            for aggregation, sql in ONE_SERIES_STATISTICS.items()
+        }
+    assert round(hand["avg"], 2) == 334.17 and hand["max"] == 350
+    runtime = opened(Runtime.from_path(str(root)))
+    try:
+        latest = runtime.query(_statistic("inv_total", "last_value"))
+        assert _values(latest) == [330]
+        assert _one(latest, "assumptions", CLOSING)["closing_day"] == "2020-12-01"
+        clock = "temporal_role.inv_inv_total_snap_date"
+        for aggregation, expected in hand.items():
+            result = runtime.query(_statistic("inv_total", aggregation))
+            assert _values(result) == [pytest.approx(expected)], aggregation
+            assert CLOSING not in _codes(result, "assumptions"), aggregation
+            assert MISSING not in _codes(result, "warnings"), aggregation
+            window = runtime.query(
+                _statistic("inv_total", aggregation, time={"temporal_role": clock, **YEAR})
+            )
+            assert _values(window) == _values(result), aggregation
+        quarter = {"temporal_role": clock, "grain": "quarter"}
+        by_quarter = runtime.query(_statistic("inv_total", "avg", time={**quarter, **YEAR}))
+        assert [round(value, 2) for value in _values(by_quarter)] == [350, 326.67, 330, 330]
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("warehouse", supported_warehouses())
 def test_closing_day_reads_lower_on_every_dialect(stocks: Runtime, warehouse: str) -> None:
     """The read and its probe compile on every warehouse: by period, over a window, and with

@@ -88,8 +88,10 @@ package with one model, its count and amount metrics, an example, a package test
   components that need it. The name must not contain a path separator or control character.
   The model gets only the columns you name (no starter dimension or amount). The database may
   already sit in the project directory: a directory with no authored files still has revision
-  `absent`. Keep the database inside the package (for example, point the dbt profile's `path` at
-  `<package>/data/<package_id>.duckdb`); a path outside it needs
+  `absent`. A package inside a dbt project (a directory above it holds `dbt_project.yml`) may
+  name the file `dbt build` writes anywhere in that dbt project, for example
+  `default_db: ../../jaffle_shop.duckdb`; an absolute path inside the workspace root is written
+  relative to the package. Any other path outside the package needs
   `SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS=1`.
 - Other warehouses take `connection_kind` and their adapter's required connection inputs.
   Named connections apply only to Snowflake; other adapters use `connection_options` or their
@@ -138,8 +140,9 @@ package with one model, its count and amount metrics, an example, a package test
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `graph.path_preferences` list, replacing every row for exactly the pair however its
-   entities are spelled; a row for the reverse pair is never touched. Pass the `decision` of the
-   option a person chose from an `AMBIGUOUS_PATH` refusal's `details.clarification`. The row is
+   entities are spelled; a row for the reverse pair is never touched. For the option a person
+   chose from an `AMBIGUOUS_PATH` refusal's `details.clarification`, pass its `decision` row as
+   `decisions: [<decision>]` (the tool has no `decision` argument). The row is
    checked by the loader's rules (an unknown entity or relationship, a broken chain, a disallowed
    direction, or a path that doesn't end at the target), then the changed package is loaded and
    must resolve the pair to exactly that route: otherwise it is `INVALID_CONFIG` (a row it
@@ -152,9 +155,9 @@ package with one model, its count and amount metrics, an example, a package test
 
 Writes, `validate_project`, `project_status`, `promotion_check`, `diff_project` and
 `impact_project` answer with a summary that fits one page (16,000 characters of compact JSON),
-whatever the package's size: each `warnings` list as `warning_counts` by code and 10 of its
-warnings without their `details`, the first of each code before any repeat, in report order
-(`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
+whatever the package's size: each `warnings` list as `warning_counts` by code and up to 10 of
+its warnings without their `details`, the first of each code before any repeat, in report order,
+and the repeats only while they fit 2,000 characters (`warnings_omitted` counts the rest), the route census as its `counts` and the first `undecided`
 pairs, up to 3, that fit whole in 8,000 characters (`undecided_omitted` counts the rest; a first
 pair larger than that shows its groups and the options they list, as many groups as fit, with
 an `options_note` such as "the 11 options its groups list, of 212 for A to B: every option is
@@ -178,8 +181,13 @@ On the read-only report tools, `page` (a path from `pages`) answers with that li
 a page shows the options that fit, marked as in the summary; the pages of its options carry the
 `pair` and an `options_note` ("options 12-33 of 212 for A to B, continued on the next page of
 …", and on the last page "…: the last of them"), so a route is never chosen from a list that
-looks whole. Every summary and page names the `revision` it read. A write's summary counts what it leaves out
-in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
+looks whole. Every summary and page names the `revision` it read. Every write, summary or full,
+starts with `outcome`, three lines a person reads first: what happened ("Wrote
+models/core/orders.yml.", "Dry run: would change …", "Refused (CONFIG_CONFLICT); nothing was
+written."), the package's state after it ("Parses: 2 entities, 9 measures, 4 metrics; 1 warning
+(ROUTES_UNDECIDED 1)."), and what's next, with the whole revision to send. Warning and error
+messages name files relative to the current directory when the package lies under it (a dbt
+project root, say), else relative to the package directory. A write's summary counts what it leaves out in `pages`; the same call with `full_report: true` returns the whole write report (a retry with
 the same `idempotency_key` replays the write).
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
    `promotion_check` with `compare_path` or `base_ref` when an environment gate matters.
@@ -274,6 +282,38 @@ never create, seed or change it.
   A time column named like a snapshot's as-of time (`snapshot`, `as_of` or `asof` in its name)
   is drafted `class: as_of_time`, so a stock on it whose key lacks the column is refused rather
   than summing snapshots; other times are drafted `event_time`.
+  **What dates the measures.** A table's own date and time columns are drafted as they always
+  were, the first of them the `default: true` time. With `project_path`, a column holding a key
+  of one of the package's calendars counts too: an entity with a one-column key whose model has
+  a `default: true` time, that is `kind: time`, or that is named for a day, date, week, month or
+  calendar (by its name or key) and whose rows name one row per key and per date on consecutive
+  days. Rows of an unknown member (a NULL date, a date before 1901, or a number key that is not
+  positive, such as `-1`) are left out of that test. Another entity's own date (a store's
+  opening day, a version's `valid_from`, a daily exchange rate's date) dates no row linked to
+  it. The column is named like the key, of a compatible type, and confirmed by its values (at
+  least 95% of its distinct values found, on a key that names one row). A column under that (a
+  due day past the calendar's last day), one named like a snapshot's as-of day
+  (`snapshot_day_key`, whose stocks a sum by month would count once per snapshot) or on a
+  snapshot table (`inventory_snapshots`), or a key named for a date but not like the calendar's
+  key (`ship_date_key` beside a `day_key` calendar, unless it is declared a foreign key of
+  another table), dates nothing by itself, but beside another such column or a date column of
+  the table's own it makes the choice yours. A column whose values the calendar holds that is
+  part of the table's grain dates nothing either, whatever the table is called or the package
+  links. It is part of the grain when it is in the table's key, declared or confirmed by the
+  key search (`day_key` of an inventory keyed by `day_key` and `product_key`: one row per
+  product per day), or, when the search finds no key, when one or two key-like columns with it
+  are unique, as the search tries them with a date column of the table's own (`date_key` of an
+  inventory with one row per product, store and day). A measure there is a stock, which
+  a sum by month counts once per day, or a daily total, and `time_roles` (`status: choose`)
+  says so even when it is the only such column. On a table with no date column of its own, one
+  such column dates the measures, or of several the one the package's model over the table
+  already links: the draft links it in `entities` and lists the clock's role in each
+  measure's `times:`, and `time_roles` says so, with `other_keys` holding the
+  `upsert_relationship` that adds each other date key as a named role and keeps that one the
+  default route. Several such columns that the package doesn't settle, or one beside a date
+  column of the table's own, are a choice no name settles: the draft dates no measure and marks
+  no time `default: true`, and `time_roles` (`status: choose`) holds each key column's
+  `entities` and `times` in `options` for you to choose.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
@@ -526,7 +566,10 @@ Which route between two entities a question means is a business definition (see
   a question asks about one. `create_project` and `setup_project_dialog` say to decide the ones
   the examples need once entities are related.
 - `promotion_check` lists the needed ones under `advisories` (`ROUTES_UNDECIDED`), never as a
-  blocker.
+  blocker, with each measure that can't be asked by month although its rows reach a clock
+  (`MEASURE_WITHOUT_TIME_ROLE`). Its `advisories` also name each public measure or curated metric missing review
+  metadata (`REVIEW_METADATA_MISSING`: `meta.owner_team`, `meta.review_priority`,
+  `meta.change_risk`), which parse and validate no longer report.
 - Before writing, the transaction compares the package with the change applied. A change that
   would refuse an answered pair whose route still exists, or answer it by another route, refuses
   with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use
@@ -622,42 +665,49 @@ hints: `openWorldHint` marks the ones that can query the warehouse. The listed s
 pydantic's per-property titles, which only repeated the names. `scripts/mcp_context.py` gates the
 tool list's size.
 
-- `architect_guidance`
-- `setup_project_dialog`
-- `create_project`
-- `project_status`
-- `list_project_files`
-- `read_project_file`
-- `write_project_files`
-- `upsert_model`
-- `upsert_relationship`
-- `upsert_metric`
-- `upsert_segment`
-- `upsert_example`
-- `upsert_test`
-- `record_route_decision`
-- `upgrade_project`
-- `preview_query`
-- `remove_object`
-- `validate_project`
-- `diff_project`
-- `impact_project`
-- `promotion_check`
-- `mcp_client_config`
-- `list_tables`
-- `describe_table`
-- `profile_columns`
-- `suggest_model`
-- `suggest_one_per_key`
-- `suggest_links`
-- `suggest_models_from_dbt`
-- `import_dbt_project`
+<!-- architect-tools:start (generated by scripts/architect_tool_table.py) -->
+30 tools, in the order the server lists them.
+
+| Tool | Title | Writes files | What it does |
+| --- | --- | --- | --- |
+| `architect_guidance` | Architect guidance | no | Return the recommended Architect MCP workflow and safety guidance. |
+| `setup_project_dialog` | New project dialog | no | Start a guided project setup dialog, using MCP elicitation when requested and supported. |
+| `create_project` | Create Semantic Rails project | yes | Create a strict schema_version: 1 project. |
+| `project_status` | Project status | no | Return the package's revision (pass it as expected_revision), files and parse report. |
+| `list_project_files` | List project files | no | List files inside a Semantic Rails project directory. |
+| `read_project_file` | Read project file | no | Read a UTF-8 project file by relative path. |
+| `write_project_files` | Write project files | yes | Write or archive files in one transaction, validating the final package as a whole. |
+| `upgrade_project` | Upgrade project | yes | Rewrite a package's legacy forms to the current ones in one transaction, refusing any rewrite that changes an answer; dry_run (the default) previews the rules, proof and diff, and choices ({key: option}) answers pending choices. |
+| `upsert_model` | Upsert semantic model | yes | Upsert a model and its graph entity. |
+| `upsert_relationship` | Upsert relationship | yes | Relate two entities: columns on from_entity's model hold to_entity's key, in key order. |
+| `record_route_decision` | Record route decision | yes | Record which route a question between two entities means, as the package default: write or replace the pair's graph.path_preferences row (pass the decision of an AMBIGUOUS_PATH clarification option). |
+| `upsert_metric` | Upsert metric | yes | Upsert a metric from spec (kind, measure or inputs, value_type, label, synonyms, description). |
+| `upsert_segment` | Upsert segment | yes | Upsert a segment in segments/<file_name>: entity, basis_metric, label, membership. |
+| `upsert_example` | Upsert example | yes | Upsert an example question in examples/<file_name>: spec has query, and optionally question and expected_shape (columns, min_rows, max_rows). |
+| `upsert_test` | Upsert package test | yes | Upsert a package test in tests/<file_name>. |
+| `preview_query` | Preview query | no | Run a semantic query on the package's warehouse, as the query server's execute does, and return at most max_rows rows (1-200); truncated is true when there are more, which are not counted (total_row_count null). |
+| `remove_object` | Remove object | yes | Remove a model, dimension, time, measure, metric, segment or relationship (a model's foreign key, keyed by its entity), archiving its YAML. |
+| `list_tables` | List warehouse tables | no | List tables and views (read-only) in a DuckDB package's database or a DuckDB file. |
+| `describe_table` | Describe warehouse table | no | Columns (type, nullability, default) and declared primary, unique and foreign keys. |
+| `profile_columns` | Profile table columns | no | Per-column counts, min/max and up to 20 samples (sample_limit=0 for none), sampling tables above max_rows (at most one million). |
+| `suggest_model` | Suggest a model | no | Propose a key, times, dimensions, measures and foreign keys for a relation, with confidences, reasons and draft upsert_model arguments. |
+| `suggest_one_per_key` | Suggest a one-per-key model | no | For a table with no key of its own, propose reading it one row per a key it repeats (one_per_key): per candidate key, the rows, NULL-key rows, distinct keys, keys with several rows, and each column fixed or varying within a key; the proposal's coverage, draft upsert_model arguments and, with project_path, the upsert_relationship that links the table's row-grain model to it. |
+| `suggest_links` | Suggest relationships | no | Propose relationships from a table to other tables' keys from their values: per candidate column, the distinct values and rows found among the target's keys (coverage), a few not found, and the cardinality. |
+| `suggest_models_from_dbt` | Suggest models from dbt | no | suggest_model for each dbt model, from manifest.json and catalog.json (dbt never runs); keys, links and value sets come from dbt tests and contracts. |
+| `import_dbt_project` | Import dbt models | yes | Create or update package models from the selected dbt models in one transaction, writing their foreign keys as entity references. |
+| `validate_project` | Validate project | no | Validate the package: mode parse, runtime, examples, tests, impact or release. |
+| `diff_project` | Diff project | no | Diff one project against another path or a git base ref. |
+| `impact_project` | Impact of a change | no | Return behavior-change impact, reviewer teams, and risk for a package change. |
+| `promotion_check` | Promotion check | no | Return whether the package is ready for an environment: parse, runtime, examples, tests. |
+| `mcp_client_config` | Client configuration | no | Return copy-ready client configuration hints for running Architect MCP. |
+<!-- architect-tools:end -->
 
 ## Safety Model
 
 All file writes are scoped to the configured workspace root. The default workspace root is the
-repository root; pass `--workspace-root` when an MCP client should operate in a separate project
-workspace.
+directory the server starts in (an MCP client starts it in your project); pass `--workspace-root`
+to choose another. `semantic-rails mcp setup --mcp architect` needs no package: it writes the
+client config with the current directory as the workspace root.
 
 Comparison paths for `diff_project`, `impact_project`, and release checks must also resolve to
 package directories inside the configured workspace root. A `base_ref` (for example `main` or

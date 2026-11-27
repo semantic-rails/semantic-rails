@@ -99,6 +99,10 @@ def _warning_for_match(match: _Match, *, verbosity: str) -> dict[str, Any]:
         "match_reasons": list(match.reasons),
         "agent_action": "mention_when_interpreting_results",
     }
+    # What to do about the caveat, when the package says so: at every verbosity, since most
+    # agents read the smallest answer.
+    if caveat.so_what:
+        details["so_what"] = caveat.so_what
     if verbosity in {"compact", "full"}:
         details.update(
             {
@@ -107,9 +111,13 @@ def _warning_for_match(match: _Match, *, verbosity: str) -> dict[str, Any]:
                 "matched_entity_values": list(match.matched_entity_values),
             }
         )
+        # Who to ask, when the package says so.
+        if caveat.owner:
+            details["owner"] = caveat.owner
     if verbosity == "full":
         details.update(
             {
+                "so_what": caveat.so_what,
                 "owner": caveat.owner,
                 "references": list(caveat.references),
             }

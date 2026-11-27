@@ -32,6 +32,7 @@ from semantic_rails.compiler_parts import (
 )
 from semantic_rails.compiler_parts.empty_groups import resolves_to_zero, sql_nodes
 from semantic_rails.config import load_package_config, resolve_repo_path
+from semantic_rails.dialects import DuckDbDialect
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -192,6 +193,66 @@ def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) 
     assert typo["details"]["filters"] == [
         {"dimension": STORE, "value": "No such store", "suggestion": None}
     ]
+
+
+CUSTOMERS = {"kind": "measure", "measure": "measure.jaffle.customer_count"}
+REPEAT_CUSTOMERS = {"kind": "measure", "measure": "measure.jaffle.repeat_customer_count"}
+CUSTOMER_ID = "dimension.jaffle_customer_id"
+
+
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_an_ungrouped_population_over_no_rows_reads_null_and_says_so(
+    runtime: Runtime, scope: str
+) -> None:
+    """A population has no value for nothing, in either scope: one total over no customer is
+    NULL, as a group of none is, and the answer says nothing in scope holds a value. A count
+    beside it follows its own rule: 0 across the dataset, NULL inside the filters."""
+    both = {"kind": "arithmetic", "op": "add", "left": CUSTOMERS, "right": ORDERS}
+    query = {
+        "select": _select(customers=CUSTOMERS, orders=ORDERS, both=both),
+        "where": [{"field": CUSTOMER_ID, "op": "is", "value": "no such customer"}],
+        "observation_scope": scope,
+    }
+    response = runtime.query(query)
+    orders = 0 if scope == "dataset" else None
+    assert response["rows"] == [{"customers": None, "orders": orders, "both": None}]
+    # A sum of the population and a count follows neither rule alone, so it isn't named.
+    (warning,) = _warnings(response)
+    assert warning["details"]["outputs"] == (
+        ["customers"] if scope == "dataset" else ["customers", "orders"]
+    )
+    assert warning["message"].startswith("No data in scope for customers")
+    assert "measure.jaffle.customer_count" in warning["object_ids"]
+    # Beside a distribution, whose own branch reads it, it settles as it does alone.
+    median = {
+        "kind": "distribution",
+        "function": "median",
+        "over": {"kind": "entity_value", "entity": "entity.jaffle_customer", "input": ORDERS},
+    }
+    beside = runtime.query({**query, "select": _select(customers=CUSTOMERS, median=median)})
+    assert beside["rows"] == [{"customers": None, "median": None}]
+    assert [item["details"]["outputs"] for item in _warnings(beside)] == [["customers"]]
+
+
+def test_an_ungrouped_population_whose_rows_fail_its_condition_reads_zero(
+    runtime: Runtime,
+) -> None:
+    """A customer with one order is read and isn't a repeat customer: 0, as that customer's group
+    reads, never the NULL of no rows."""
+    ((customer,),) = (
+        tuple(row.values())
+        for row in _gold(
+            runtime,
+            "SELECT MIN(customer_id) AS id FROM jaffle_customer WHERE lifetime_order_count = 1",
+        )
+    )
+    where = [{"field": CUSTOMER_ID, "op": "is", "value": customer}]
+    query = {"select": _select(repeat=REPEAT_CUSTOMERS), "observation_scope": "query"}
+    response = runtime.query({**query, "where": where})
+    assert response["rows"] == [{"repeat": 0}]
+    assert not _warnings(response)
+    grouped = runtime.query({**query, "where": where, "group_by": [CUSTOMER_ID]})
+    assert [row["repeat"] for row in grouped["rows"]] == [0]
 
 
 @pytest.mark.parametrize("scope", ["dataset", "query"])
@@ -801,6 +862,249 @@ def test_a_window_total_operand_from_another_relation_needs_its_own_rows(
     # the never-matched operand is held at NULL, with the warning, rather than settled.
     assert _a_b_net(response) == [(1, None, None)]
     assert _warnings(response)[0]["details"]["outputs"] == ["b", "net"]
+
+
+SHOP_REFUNDS = {"kind": "measure", "measure": "measure.shop.refund_count"}
+SHOP_AVERAGE_GOODS = {**SHOP_GOODS, "kind": "aggregate", "aggregation": "avg"}
+SHOP_NOW = "2024-09-01T00:00:00Z"
+
+
+def _refund_months(package: Path, time: dict[str, Any]) -> list[tuple[Any, ...]]:
+    rt = Runtime.from_path(str(package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    revenue=SHOP_REVENUE,
+                    goods=SHOP_GOODS,
+                    refunds=SHOP_REFUNDS,
+                    average=SHOP_AVERAGE_GOODS,
+                ),
+                "time": {"temporal_role": SHOP_ROLE, **time},
+            },
+            now=SHOP_NOW,
+        )
+    finally:
+        rt.close()
+    return [
+        (
+            row["period"].strftime("%Y-%m") if "period" in row else None,
+            *(row[name] for name in ("revenue", "goods", "refunds", "average")),
+        )
+        for row in typed_rows(response)
+    ]
+
+
+@pytest.fixture()
+def coverage_for_named_windows_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DuckDB read as Snowflake, BigQuery, Databricks and Athena read it: loaded coverage only
+    for a named window's every-period series, and probes read through plain CTEs."""
+    monkeypatch.setattr(DuckDbDialect, "has_time_coverage", property(lambda self: False))
+    monkeypatch.setattr(DuckDbDialect, "exists_in_select", False)
+
+
+@pytest.mark.parametrize(
+    ("time", "expected"),
+    [
+        (
+            {"grain": "month", "start": "2024-06-01"},
+            [("2024-06", 3, 0, 0, None), ("2024-07", 9, 0, 0, None), ("2024-08", 2, 0, 0, None)],
+        ),
+        ({"grain": "month", "end": "2023-11-15", "fill": True}, [("2023-11", 10, 0, 0, None)]),
+    ],
+    ids=["since_june", "filled_until_mid_november"],
+)
+def test_an_open_series_reads_zero_where_a_measure_has_rows_only_outside_its_window(
+    shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], expected: list
+) -> None:
+    """No refund falls in these months, but refunds have rows outside the window, so each month
+    refunded nothing: 0, on every warehouse that reads coverage, as on DuckDB. An average of no
+    refunds has no value: NULL, since it divides by the count of nothing."""
+    assert _refund_months(shop_package, time) == expected
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert _refund_months(shop_package, time) == expected
+
+
+SHOP_SCANS = {"kind": "measure", "measure": "measure.shop.scan_count"}
+
+
+@pytest.mark.parametrize(
+    ("time", "group_by"),
+    [
+        ({"grain": "month", "start": "2024-07-01"}, []),
+        (
+            {"grain": "month", "start": "2024-07-01", "end": "2024-09-01"},
+            ["dimension.shop_order_ordered_at"],
+        ),
+    ],
+    ids=["since_july", "july_and_august_by_order_time"],
+)
+def test_rows_before_the_window_never_make_a_stale_feed_read_zero(
+    shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], group_by: list
+) -> None:
+    """Scans, on their own clock, stop in June; orders go on. July and August hold orders and no
+    scan, and the earlier scans don't make those months 0: past the scans' last row they read
+    NULL with NO_DATA_YET, on every warehouse that reads coverage, as on DuckDB."""
+
+    def months() -> tuple[list[tuple[Any, ...]], list[Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(orders=SHOP_ORDERS, scans=SHOP_SCANS),
+                    "group_by": group_by,
+                    "time": {"temporal_role": SHOP_ROLE, **time},
+                },
+                now=SHOP_NOW,
+            )
+        finally:
+            rt.close()
+        rows = [
+            (row["period"].strftime("%Y-%m"), row["orders"], row["scans"])
+            for row in typed_rows(response)
+        ]
+        return rows, [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")]
+
+    expected = ([("2024-07", 1, None), ("2024-08", 1, None)], [["scans"]])
+    assert months() == expected
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert months() == expected
+
+
+TICKETS_OPENED = {"kind": "measure", "measure": "measure.shop.tickets_opened"}
+TICKET_MINUTES = {"kind": "measure", "measure": "measure.shop.ticket_minutes"}
+TICKETS_BY_LAST_ROW = {"kind": "measure", "measure": "measure.shop.tickets_by_last_row"}
+
+
+@pytest.mark.parametrize(
+    ("time", "expected"),
+    [
+        ({"grain": "week", "start": "2024-10-01"}, [("2024-10-07", None, None, 1)]),
+        (
+            {"grain": "week", "start": "2024-09-01"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+        (
+            {"grain": "week", "end": "2024-10-21"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+        (
+            {"grain": "week"},
+            [("2024-09-02", 2, 75, 2), ("2024-09-09", 1, 20, 1), ("2024-10-07", None, None, 1)],
+        ),
+    ],
+    ids=["since_october", "since_september", "until_october_21", "every_week"],
+)
+def test_a_week_past_the_load_log_reads_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest, time: dict[str, Any], expected: list
+) -> None:
+    """The load log says tickets are loaded through September 29. Ticket 4 (October 9) came in
+    after that, and the same table read with no load log shows its week. Tickets opened and
+    their minutes read NULL that week, never 0, on every warehouse that reads coverage, as on
+    DuckDB: neither the tickets before the window nor those inside it say that week is loaded.
+    The answer says why, with NO_DATA_YET."""
+
+    def weeks() -> tuple[list[tuple[Any, ...]], list[Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(
+                        opened=TICKETS_OPENED, minutes=TICKET_MINUTES, rows=TICKETS_BY_LAST_ROW
+                    ),
+                    "time": {"temporal_role": "temporal_role.shop_ticket_opened_at", **time},
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        rows = [
+            (row["period"].strftime("%Y-%m-%d"), row["opened"], row["minutes"], row["rows"])
+            for row in typed_rows(response)
+        ]
+        return rows, [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")]
+
+    answer = (expected, [["opened", "minutes"]])
+    assert weeks() == answer
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert weeks() == answer
+
+
+def test_months_before_the_first_ticket_read_null_on_every_warehouse(
+    shop_package: Path, request: pytest.FixtureRequest
+) -> None:
+    """Orders show every month from November 2023; the first ticket opened in September 2024.
+    Before it, tickets opened read NULL, not 0, on every warehouse that reads coverage, as on
+    DuckDB: a load log says how far the tickets are loaded, not where they start."""
+
+    def opened() -> list[tuple[str, Any]]:
+        rt = Runtime.from_path(str(shop_package))
+        try:
+            response = rt.query(
+                {
+                    "select": _select(opened=TICKETS_OPENED, orders=SHOP_ORDERS),
+                    "time": {
+                        "temporal_role": "temporal_role.shop_ticket_opened_at",
+                        "grain": "month",
+                    },
+                },
+                now="2024-10-21T06:00:00Z",
+            )
+        finally:
+            rt.close()
+        return [(row["period"].strftime("%Y-%m"), row["opened"]) for row in typed_rows(response)]
+
+    before = [
+        "2023-11",
+        "2023-12",
+        "2024-01",
+        "2024-03",
+        "2024-05",
+        "2024-06",
+        "2024-07",
+        "2024-08",
+    ]
+    expected = [*((month, None) for month in before), ("2024-09", 3)]
+    assert opened() == expected
+    request.getfixturevalue("coverage_for_named_windows_only")
+    assert opened() == expected
+
+
+def test_a_window_total_without_coverage_reads_only_its_window(
+    shop_package: Path, coverage_for_named_windows_only: None
+) -> None:
+    """One total over June to August can lie past the refunds' edge, which only coverage tells:
+    without it the refunds read NULL, never a 0 that a window past the data would read too."""
+    assert _refund_months(shop_package, {"start": "2024-06-01", "end": "2024-09-01"}) == [
+        (None, 14, None, None, None)
+    ]
+
+
+def test_a_joined_part_without_coverage_reads_only_its_window(
+    shop_package: Path, coverage_for_named_windows_only: None
+) -> None:
+    """A joined call's periods come from every part's clock: June to August come from the
+    orders, past the last close, which only coverage tells. Without it, closed orders read
+    NULL there, never 0."""
+    by_store = ["dimension.shop_order_store_id"]
+    rt = Runtime.from_path(str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "parts": [
+                    {"select": ["measure.shop.order_count"], "group_by": by_store},
+                    {"select": ["metric.shop.closed_orders"], "group_by": by_store},
+                ],
+                "join": {"on": [[by_store[0], by_store[0]]]},
+                "time": {"grain": "month", "start": "2024-06-01"},
+            },
+            now=SHOP_NOW,
+        )
+    finally:
+        rt.close()
+    assert [(row["order_count"], row["closed_orders"]) for row in response["rows"]] == [
+        (1, None)
+    ] * 3
 
 
 def test_a_predicate_over_several_measures_keeps_explicit_else_zero(shop: Runtime) -> None:

@@ -258,7 +258,7 @@ def absent(config: PackageConfig, hidden: Iterable[str]) -> PackageConfig:
             continue
         rest = [caveat.entity_values, caveat.time, caveat.references]
         if references(rest, gone) or _named(
-            [caveat.id, caveat.message, caveat.owner, rest], tokens
+            [caveat.id, caveat.message, caveat.owner, caveat.so_what, rest], tokens
         ):
             continue
         caveats.append(replace(caveat, object_ids=listed))

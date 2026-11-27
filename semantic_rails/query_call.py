@@ -23,6 +23,7 @@ from typing import Any
 from . import operators
 from .clock import UNITS, largest_last, parse_now, resolve_window
 from .errors import SemanticLayerError
+from .expressions import boolean_chain_depth
 from .schema import OBSERVATION_SCOPES, MeasureConfig, PackageConfig
 
 SCHEMA_ID = "https://semantic-rails.com/schemas/query.v2.json"
@@ -407,6 +408,76 @@ class CallContext:
     timed: bool = False
 
 
+# The deepest a call nests: the call is level 1, and each object or list inside another is one
+# level more; a boolean's arguments sit as many levels below it as the compiler joins them
+# (``expressions.boolean_chain_depth``), so a boolean nested in a binary one is one level
+# deeper, as an arithmetic in an arithmetic is. Reading, binding and rendering a call recurse;
+# every walk that only copies, converts or searches a call or its plan keeps its own stack
+# (``flat_copy``), as do the checks of a timed call's clocks. Measured at this depth, cold, on
+# every shape the tests hold, with a time block and without and in a timed joined part: on
+# Python 3.12 and later a call costs at most 2.6 frames a level (a prior period inside an
+# arithmetic) and peaks near 650 frames; Python 3.11, which also counts some calls made from C,
+# peaks near 780 (a division nested in its divisor, a nested boolean, a timed nested NULLIF).
+# That leaves at least 220 of the 1,000 frames Python allows by default to whatever calls the
+# engine; the tests hold 200 for it on every version and dialect. The bound is the stack's, not
+# the call's cost.
+MAX_CALL_DEPTH = 250
+
+
+def call_depth(payload: Mapping[str, Any]) -> tuple[int, str]:
+    """How deep ``payload`` nests, as :data:`MAX_CALL_DEPTH` counts, and the field (its first
+    three keys) where it is deepest. One walk with its own stack: measuring a call of any depth
+    recurses nowhere."""
+    deepest, deepest_at = 1, -1
+    # Each container's (parent's index here, key in the parent), to spell the deepest one's path.
+    steps: list[tuple[int, Any]] = []
+    stack: list[tuple[Any, int, int]] = [(payload, 1, -1)]
+    while stack:
+        value, depth, at = stack.pop()
+        if depth > deepest:
+            deepest, deepest_at = depth, at
+        items: Any = value.items() if isinstance(value, Mapping) else enumerate(value)
+        joined = (
+            isinstance(value, Mapping)
+            and str(value.get("kind", "")).strip() == "boolean"
+            and isinstance(value.get("args"), list)
+        )
+        for key, item in items:
+            if isinstance(item, Mapping | list | tuple):
+                step = 1
+                if joined and key == "args":
+                    # The list is the boolean's own: its arguments sit as many levels below the
+                    # boolean as the compiler joins them, and one at least.
+                    step = max(0, boolean_chain_depth(len(item)) - 1)
+                steps.append((at, key))
+                stack.append((item, depth + step, len(steps) - 1))
+    keys: list[Any] = []
+    while deepest_at >= 0:
+        deepest_at, key = steps[deepest_at]
+        keys.append(key)
+    path = ""
+    for key in reversed(keys[-3:]):
+        path += f"[{key}]" if isinstance(key, int) else f".{key}" if path else str(key)
+    return deepest, path
+
+
+def _check_depth(payload: Mapping[str, Any]) -> None:
+    depth, path = call_depth(payload)
+    if depth > MAX_CALL_DEPTH:
+        raise refusal(
+            path,
+            f"is {depth} levels deep in the call; the engine compiles a call at most "
+            f"{MAX_CALL_DEPTH} levels deep",
+            fix=(
+                f"Nest it at most {MAX_CALL_DEPTH} levels deep: group a long run of one "
+                "arithmetic op in balanced pairs, as (a + b) + (c + d), and give a list of "
+                "values as one in."
+            ),
+            depth=depth,
+            max_depth=MAX_CALL_DEPTH,
+        )
+
+
 def read_call(
     payload: Any,
     *,
@@ -425,6 +496,7 @@ def read_call(
             fix=V2_POINTER,
             received=type(payload).__name__,
         )
+    _check_depth(payload)
     operators.check_strings(payload, "")
     _check_top_level(payload)
     group_by = _group_by(payload.get("group_by"))
@@ -504,6 +576,10 @@ def read_joined_call(
         path = f"parts[{index}]"
         if not isinstance(raw, Mapping):
             raise refusal(path, "is a call: an object", fix='Write {"select": [...], ...}.')
+        try:
+            _check_depth(raw)  # before any walk of the part that recurses
+        except SemanticLayerError as exc:
+            raise in_part(exc, index) from None
         _check_part_keys(raw, path)
         if time is not None:
             _refuse_untimed_part(raw, path, default_clock)
@@ -651,14 +727,20 @@ def _refuse_untimed_part(
 
 def _named_ids(value: Any) -> list[str]:
     """Every measure and metric id a part's raw ``select`` names, at any depth of an item
-    (an id, an ``expression`` and the kinds nested in it); an alias (``as``) names none."""
-    if isinstance(value, str):
-        return [value] if value.startswith(REFERENCE_PREFIXES) else []
-    if isinstance(value, Mapping):
-        return [ref for key, item in value.items() if key != "as" for ref in _named_ids(item)]
-    if isinstance(value, list):
-        return [ref for item in value for ref in _named_ids(item)]
-    return []
+    (an id, an ``expression`` and the kinds nested in it); an alias (``as``) names none. An
+    explicit stack, in the order written, keeps a deep item off Python's."""
+    found: list[str] = []
+    stack: list[Any] = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if item.startswith(REFERENCE_PREFIXES):
+                found.append(item)
+        elif isinstance(item, Mapping):
+            stack.extend(reversed([child for key, child in item.items() if key != "as"]))
+        elif isinstance(item, list):
+            stack.extend(reversed(item))
+    return found
 
 
 def _refuse_shared_aliases(parts: list[dict[str, Any]]) -> None:
@@ -1398,14 +1480,98 @@ def _inline_condition(item: Any, path: str, context: CallContext) -> Any:
     return {**item, "op": word, "value": value}
 
 
+# The keys that state a measure's statistic, which a predicate may write beside its input.
+PREDICATE_STATISTIC_KEYS = ("aggregation", "parameters", "temporal_role")
+
+
 def _scoped_predicate(item: Any, path: str, context: CallContext) -> Any:
     """A scoped aggregate's predicate: its input is read like any operand, then its ``over``."""
     if not isinstance(item, Mapping):
         return item
+    # A metric predicate's keys, its input shorthands, and a measure input's statistic.
+    # (A retired key is refused with its replacement by _predicate.)
+    keys = {*call_kinds()["metric_predicate"], "metric", "measure", *PREDICATE_STATISTIC_KEYS}
+    current = {key: value for key, value in item.items() if key not in _PREDICATE_RETIRED}
+    _check_keys(current, tuple(sorted(keys)), path)
+    if item.get("kind", "metric_predicate") != "metric_predicate":
+        raise refusal(f"{path}.kind", "a predicate is a metric_predicate", fix='Remove "kind".')
     node = dict(item)
+    for key in ("metric", "measure"):
+        if "input" not in node and isinstance(node.get(key), str):
+            # An id, read below as the input's id is.
+            ref = _reference(node.pop(key), f"{path}.{key}")
+            node["input"] = ref.get("measure") or ref["metric"]
     if "input" in node:
-        node["input"] = _operand(node["input"], f"{path}.input", context)
+        node["input"] = _operand(predicate_input(node, path), f"{path}.input", context)
     return _predicate(node, path)
+
+
+def _statistic_beside_non_measure_fix(name: Any, stated: dict[str, Any]) -> str:
+    """The hint for a statistic written beside an input that is not a measure: lead with the
+    measure input that compares it (the statistic as the call states it), then what removing
+    it keeps. The metric's measure is not named: the caller may not see it."""
+    aggregation = stated.get("aggregation")
+    statistic = aggregation if isinstance(aggregation, str) else "statistic"
+    example = {
+        "kind": "measure",
+        "measure": "measure.<id>",
+        "aggregation": "<statistic>",
+        **stated,
+    }
+    metric = isinstance(name, str) and name.strip().startswith("metric.")
+    inspect = f" (inspect {name.strip()} for the measure it reads)" if metric else ""
+    *rest, last = stated
+    keys = f"{', '.join(rest)} and {last}" if rest else last
+    return (
+        f'To compare each entity\'s {statistic} of a measure, write "input": '
+        f"{json.dumps(example, default=str)}{inspect}. To compare the "
+        f"{'metric' if metric else 'input'}'s own value, remove {keys}."
+    )
+
+
+def predicate_input(predicate: dict[str, Any], path: str) -> Any:
+    """A predicate's input with the statistic written beside it (``aggregation``,
+    ``parameters``, ``temporal_role``) moved into it, so the predicate compares the statistic
+    the call states. The keys are taken out of ``predicate``. A statistic the input cannot
+    take (a metric, or an input that states another one) is refused, never dropped."""
+    stated = {key: predicate.pop(key) for key in PREDICATE_STATISTIC_KEYS if key in predicate}
+    raw = predicate.get("input")
+    if not stated:
+        return raw
+    target = raw
+    if isinstance(raw, str) and raw.strip().startswith("measure."):
+        target = {"kind": "measure", "measure": raw.strip()}
+    kind = str(target.get("kind") or "measure") if isinstance(target, Mapping) else ""
+    if not isinstance(target, Mapping) or not isinstance(target.get("measure"), str):
+        name = (
+            (target.get("metric") or target.get("kind")) if isinstance(target, Mapping) else target
+        )
+        key = next(iter(stated))
+        raise refusal(
+            f"{path}.{key}",
+            f"{key} states a measure's statistic, and the predicate's input "
+            f"{json.dumps(name, default=str)} is not a measure, so it would be ignored",
+            fix=_statistic_beside_non_measure_fix(name, stated),
+            code="INVALID_METRIC_PREDICATE",
+            **{key: stated[key]},
+        )
+    taken = set(call_kinds().get(kind, ()))
+    for key, value in stated.items():
+        if key not in taken or key in target and target[key] != value:
+            raise refusal(
+                f"{path}.{key}",
+                f"the predicate's input {json.dumps(dict(target), default=str)} "
+                + (
+                    f"states {key} {json.dumps(target[key], default=str)}"
+                    if key in target
+                    else f"takes no {key}"
+                )
+                + f", so {key} {json.dumps(value, default=str)} beside it would be ignored",
+                fix=f"Write {key} once, inside input.",
+                code="INVALID_METRIC_PREDICATE",
+                **{key: value},
+            )
+    return {**target, **stated}
 
 
 def _predicate(node: dict[str, Any], path: str) -> dict[str, Any]:

@@ -721,6 +721,9 @@ A result threshold filters result rows; to filter which entities count toward a 
 | `"start"` alone / `"end"` alone | since (up to `now`, partial) / until | `{"start": "2017-06-01", "grain": "month"}` |
 | no window | all time | `{"grain": "year"}` |
 
+For “as of March 31, 2024” or “through March 31, 2024”, set the exclusive `time.end` to
+`2024-04-01`.
+
 - Units and grains: `day`, `week`, `month`, `quarter`, `year`. Weeks start on Monday (ISO).
   Bounds are ISO dates or date-times; a date-time bound may cut inside a day.
 - `grain` gives one row per period in a `period` column, an ISO date (the period's first day).
@@ -913,6 +916,19 @@ April together), never the sum of its days; with no `time` at all, it reads the 
 a snapshot. A period after the last snapshot reads `NULL` with `NO_DATA_YET`, as any measure's
 does.
 
+With no `time` block, every statistic of a balance reads that last closing day: `avg`,
+`median`, `percentile`, `min` and `max` are taken over the snapshots of the last day with a
+snapshot, as the balance itself and a `distribution` over its series are, never over each
+series' own last snapshot, which can be years older. The average inventory per store reads
+`925`, the one store with a snapshot on 2019-04-01; each store's own last count, one of them
+from 2016, would give `967.2`. Grouped by an attribute such as the store, a series with no
+snapshot that day has no row; filtered to such series alone, the balance reads `0` and any
+other statistic `NULL`. With a window, a grain or a grouping by the clock, a statistic other
+than `last_value` and `sum` reads each series' last snapshot in each period, as before; so does
+one read in an entity filter or a metric predicate `over: "window"`, as the call's own window
+would. A balance keyed by its clock alone is one series: a statistic of it is taken over its
+snapshots (in the window, or all of them), never one day's value.
+
 The closing day is the day bucket `time.grain: day` puts a snapshot in. A row whose clock is
 NULL is never a snapshot, and rows of a series tied on its last clock value are all read. A
 balance read inside an entity filter or a metric predicate reads the same way. Two shapes are
@@ -920,8 +936,9 @@ refused rather than risk another day: a share of such a balance filtered by enti
 (`REWRITE_NOT_SUPPORTED`, `details.reason: entity_set_ratio_closing_day`; ask for the part and
 the whole as separate measures), and, on DuckDB and Postgres, a balance on a timestamp clock
 whose zone isn't the one the call runs in, UTC without a `time` block (`MIXED_TIME_ROLES`,
-`details.reason: closing_day_zone`; give the call a window on the balance's own clock). A
-DATE clock is never refused.
+`details.reason: closing_day_zone`; give the call a window on the balance's own clock; over
+a window, a statistic other than `last_value` and `sum` reads each series' last snapshot in
+it, not one closing day, and the message says so). A DATE clock is never refused.
 
 Every such answer names the day each read used in `assumptions`: `BALANCE_CLOSING_DAY` with
 `measure`, `outputs` (the columns it counts for; empty for the whole answer, as an entity
@@ -1166,12 +1183,19 @@ their rows in one statement:
   in a part (departments with more than 2 people) removes whole keys, a `having` by another
   name, so a key it removed would read 0 beside the other parts: a part holding one is answered
   only when `join.keep` names it (`part_filter_not_kept`).
-- **Which columns join.** A tuple names the same dimension in every part, or two columns the
-  package says hold the same values: a declared relationship's own two columns, each an
-  identifier (a code, key or id, named for what it identifies) of one type. Two models that
-  both hold a `dept_code` are not enough: declare the relationship between them, or join on a
-  dimension both parts reach. Refused with `INVALID_QUERY` (`details.reason`:
-  `join_key_not_shared`), the message naming the pair and why.
+- **Which columns join.** A tuple names the same dimension in every part, two columns the
+  package says hold the same values (a declared relationship's own two columns), or columns of
+  one name that one of their models declares in its key: headcount by the departments'
+  `dept_code` beside area by facilities' own assignments, keyed by building and `dept_code`
+  and related to nothing. Each column is an identifier (a code, key or id, named for what it
+  identifies) of one type, never a date that only dates the rows (a load or snapshot date).
+  Two models that both hold a `dept_code` neither of them keys are not enough: declare the
+  relationship, or join on a dimension both parts reach. Refused with `INVALID_QUERY`
+  (`details.reason`: `join_key_not_shared`), the message naming the pair and why.
+- **A join of one name is the caller's choice.** The engine can't check that two models' codes
+  of one name name the same things (one model's `ENG` may be the other's `ENGR`). Such a key is
+  `declared: false` in `PARTS_JOINED`, whose message says the join is the caller's choice; its
+  counts of each part's keys with no row in the other part are where a mismatch shows.
 - **Every part is grouped by its join keys only.** A part grouped by a further column would
   repeat each of its rows beside the other parts' rows, so it is refused (`parts_grain_mismatch`);
   so is a join column the part doesn't group by (`join_key_not_grouped`). The key a display name
@@ -1192,13 +1216,20 @@ their rows in one statement:
 - **The answer.** Every warning and assumption a part gives alone comes back, with `part` (in
   `details` for a warning) and its message prefixed `parts[i]: `. `parts` holds each part's
   `query`, `window`, `clock`, `observation_scope` and `routes`. `PARTS_JOINED` (every
-  verbosity) names the key columns and each part's column for them, `keep`, and per part its
+  verbosity) names the key columns, each part's column for them and whether the package says
+  they hold the same values (`declared`), `keep`, and per part its
   rows, its NULL-key rows and its keys each other part lacks (`details.parts[].unmatched`),
   counted over the whole joined result before `order_by` and `limit` and never counting a row
   the caller can't see; `kept_rows`; and per column whether it adds up down the rows (a count
   or sum of an additive measure does; a distinct count, an average, a ratio, or a column whose
   part's groups overlap, as that part's own `REWRITE_APPLIED` says, is not stated to).
   `validate` and `sql` state the join without counts. The warehouse runs once.
+- **Cost.** The statement holds each part's statement once and reads each key once per part, so
+  it grows with the parts and their keys, plus one count per pair of parts (`unmatched`).
+  Postgres reads at most 1,664 columns in one select, and each part adds its own columns and
+  one count per other part (53 parts of one metric by one key fit): a wider call is refused
+  before it is sent (`parts_over_column_limit`), its `details` naming the `limit`, the
+  `columns` it needs and how many of its parts `fits`.
 
 ## Inline expression kinds
 
@@ -1220,7 +1251,7 @@ every kind with its keys (`$defs/Kind_<kind>`).
 | `arithmetic` | `{kind: arithmetic, op, left, right}` |
 | `aggregate` (`semi_additive`) | `{kind: aggregate, measure, aggregation?, filter?: {all: [conditions]}, window?, ...}` |
 | `aggregate_if` | `{kind: aggregate_if, aggregation, condition?, value?}`: no `condition` reads every row |
-| `scoped_aggregate` | `{kind: scoped_aggregate, measure, where?, predicates?, anchor?, window?, ...}`; each predicate carries `over` |
+| `scoped_aggregate` | `{kind: scoped_aggregate, measure, where?, predicates?, anchor?, window?, ...}`; each predicate carries `over`, and a predicate on a measure may state its statistic beside the input (`aggregation`, `parameters`, `temporal_role`), the same as inside `input: {kind: measure, ...}`; beside a metric input, or against the input's own, it is refused |
 | `metric_predicate` | `{kind: metric_predicate, entity, input, op, value, over, window?}` |
 | `entity_value` | `{kind: entity_value, entity, input, where?}` |
 | `distribution` | `{kind: distribution, function, over, p?, parameters?}` |
@@ -1297,7 +1328,12 @@ have no rows (`REWRITE_NOT_SUPPORTED`).
 `allowed_aggregations`); any other is refused with `UNSUPPORTED_AGGREGATION` at
 `...aggregation`, listing the allowed ones and saying to omit `aggregation` for the default. A
 time-ordered statistic (`first_value`, `last_value`) on a measure with no clock is refused by
-the clock rule instead. An override equal to the default changes nothing and is not stated.
+the clock rule instead. `parameters` holds what the statistic reads: `p` (0 to 1) for
+`percentile`, and nothing for any other. A parameter the statistic doesn't read, such as
+`{"expression": "LENGTH(title)"}` on an `avg`, is refused with `UNSUPPORTED_AGGREGATION` naming
+it (`details.unread_parameters`, beside `details.parameters_accepted`), never ignored; the same
+holds for a `distribution`'s `p` and `parameters`. To aggregate a row expression, write an
+`aggregate_if` with a `value` (above). An override equal to the default changes nothing and is not stated.
 Any other override is stated in `assumptions`, with the source rows the returned numbers
 aggregated (counted beside the measure in the same scan; a rollup holds no source rows, so an
 answer a rollup serves states none):
@@ -1492,6 +1528,16 @@ corrected shape to send:
  "recovery_hints": [{"code": "USE_FILTER_WORD", "message": "Write {\"op\": \"missing\", \"value\": true}."}]}
 ```
 
+A call nests at most 250 levels deep. The call is level 1, each object or list inside another
+is one more, and a boolean's arguments sit as many levels down as the engine joins
+them, and one at least: one per argument after the first, up to 16 arguments; a longer boolean joins its halves,
+so a thousand arguments sit 21 levels down. A deeper call is refused at the field where it is
+deepest, with `details.depth` and `details.max_depth`. The bound is what the compiler, which
+reads a call by recursion, fits in Python's default stack with room left for the program
+calling it; every dialect renders a call that deep. A sum of 248 measures, each added to the
+sum before it, is 250 levels deep. A long run of one arithmetic op nests far
+less when grouped in balanced pairs, `(a + b) + (c + d)`, and a list of values is one `in`.
+
 A clarification (`AMBIGUOUS_PATH`, `AMBIGUOUS_CHILD_SCOPE`, `MIXED_TIME_ROLES`,
 `ENTITY_FILTER_PERIOD_UNSTATED`) is a refusal whose options are ready to send: the engine
 never guesses which one the question meant.
@@ -1622,7 +1668,8 @@ The engine trusts the data as it is stored in three cases:
   ratio from a headcount part and a capacity part): it returns both columns.
 - A part grouped by more than the join keys (each list's owners beside its member count) and a
   part with no clock beside a timed call are refused, not answered.
-- Two models that hold the same code join only through a declared relationship between them.
+- Two models that hold the same code join only when one of them declares it in its key, or a
+  relationship pairs them; the engine doesn't check that the codes name the same things.
 
 ### Links and one-per-key models
 
@@ -1823,9 +1870,19 @@ group's column is: "weekly revenue by customer region" (orders, then customers, 
 reads `0` in a week the orders' load log covers with no order and `NULL` before the first order
 and past the log, as revenue by customer tier (one hop) does, and refunds and the refund rate
 read `0` in those loaded weeks. A load log declared only on the customers table covers signups,
-not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery, Databricks, Athena and ClickHouse, an
-empty period reads `0` only while the measure has data inside the window. Those warehouses
-read the stored timestamps as naive values in the clock's `column_timezone` (UTC by default);
+not orders, so the orders read with no declared edge. Otherwise, on Snowflake, BigQuery,
+Databricks and Athena, an empty period of a series whose periods come from its rows (an open
+window's, or a named window's grouped by a date or time dimension) reads `0` where the
+measure has data in scope, inside the window or outside it, and the period lies inside the
+measure's own loaded range, as on DuckDB and Postgres: "revenue and refunds until
+mid-November" reads `0` refunds in a month with none when refunds were recorded later, and
+their average `NULL`, since an average of nothing has no value. Past the measure's own last
+row the period reads `NULL` with `NO_DATA_YET`, however many rows came before: orders and
+shipment scans since July read `NULL` scans when the scans, on their own clock, stop in June.
+A window total there, and a part of a joined call (whose periods can come from another part's
+clock), read `0` only while the measure has data inside the window, as every empty period on
+ClickHouse does. These five warehouses read the stored
+timestamps as naive values in the clock's `column_timezone` (UTC by default);
 see "`times:` — temporal roles" in [PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 
 **No time window.** A call with no `time` reads one total over all of a table's rows that its
@@ -1843,9 +1900,13 @@ after the load log, as revenue beside it does.
 **Warnings.** An output that is a sum, count or distinct count (or a sum or difference of them)
 reading `NULL` on every returned row carries one `NO_DATA_IN_SCOPE` naming those outputs. A
 `prior_period`, ratio or rolling output never does, since it can be `NULL` while its measure
-has data, and neither does a truncated answer. An ungrouped distinct-population count over
-nothing reads `0` with no warning, a known limitation
-([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+has data, and neither does a truncated answer. A distinct-population count with no `group_by`
+and no `time` reads `NULL` with the warning when its filters keep no row ("customers" of a
+misspelled customer id), in either scope; a count reads `NULL` there only under
+`observation_scope: "query"`. One that read rows keeps its count, `0` included
+("repeat customers" among one-time customers), and one beside an entity filter counts the
+entities the filter keeps, which it judges one by one, with rows or none: `0` when it keeps
+none.
 
 **Zero-filled groups.** Two selected measures that the `group_by` joins answer a row for every
 group either one's rows hold, so a group can hold rows of one and none of the other. "Signups
