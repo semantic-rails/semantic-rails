@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -298,6 +299,21 @@ def test_every_correctness_ledger_entry_fits_the_schema():
     assert len(entries) > 300
     problems = {case_id: eval_answers.entry_problems(spec) for case_id, spec in entries}
     assert {case_id: found for case_id, found in problems.items() if found} == {}
+
+
+def test_eval_agrees_with_the_correctness_ledger(tmp_path):
+    """Every ledger answer the shop package states as written passes; variants are skipped."""
+    package = tmp_path / "shop"
+    shutil.copytree(LEDGER.parents[1], package, ignore=shutil.ignore_patterns("*.duckdb*"))
+    result = report(package)
+    assert result["errors"] == []
+    summary = result["summary"]
+    assert (summary[FAILED], summary[MISSED]) == (0, 0), [
+        row for row in result["answers"] if row["outcome"] in {FAILED, MISSED}
+    ]
+    assert summary[PASSED] > 250
+    skipped = [row for row in result["answers"] if row["outcome"] == SKIPPED]
+    assert all(row["reason"].startswith("variant ") for row in skipped)
 
 
 def test_eval_reads_every_ledger_key():
