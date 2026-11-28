@@ -132,16 +132,19 @@ def load_answers(path: Path) -> list[tuple[str, Any]]:
         raise _file_error(path, "the answers file is not valid YAML") from exc
     if not isinstance(raw, dict) or not isinstance(raw.get("tests"), dict):
         raise _file_error(path, "an answers file is a mapping with a tests mapping of entries")
+    if not raw["tests"]:
+        # A file that checks nothing must not read as a clean pass.
+        raise _file_error(path, "the answers file has no entries")
     unknown = sorted(str(key) for key in set(raw) - FILE_KEYS)
     if unknown:
         raise _file_error(path, f"unknown top-level keys: {', '.join(unknown)}")
     shared = {"now": raw["now"]} if "now" in raw else {}
     entries: list[tuple[str, Any]] = []
-    for entry_id, spec in raw["tests"].items():
+    # Both loads read the same mapping, so its entries line up in order.
+    for (entry_id, spec), frozen in zip(raw["tests"].items(), exact["tests"].values(), strict=True):
         if not isinstance(spec, dict):
             entries.append((str(entry_id), spec))
             continue
-        frozen = exact["tests"][entry_id]
         rows = {
             key: frozen[key] for key in ("expected_rows", "expected_rows_by_backend") if key in spec
         }

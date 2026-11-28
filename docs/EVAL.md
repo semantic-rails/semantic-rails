@@ -82,7 +82,7 @@ A wrong number counts against a change more heavily than a missing one.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Every entry passed (or is known wrong or skipped). |
-| 1 | At least one failure, or the package or answers file can't be loaded. With `--strict`, any miss too. |
+| 1 | At least one failure, or the package or answers file can't be loaded, or the file has no entries. With `--strict`, any miss too. |
 | 2 | Misses only. |
 
 A failure names the entry and its call. Wrong rows show each differing cell beside the

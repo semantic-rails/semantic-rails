@@ -259,6 +259,13 @@ def test_a_missing_answers_file_fails(monkeypatch, capsys, package):
     assert "ERROR [INVALID_CONFIG]" in out and "no answers file" in out
 
 
+def test_an_answers_file_without_entries_fails(package):
+    write_answers(package, {})
+    result = report(package)
+    assert result["exit_code"] == 1
+    assert "has no entries" in result["errors"][0]["message"]
+
+
 def test_known_wrong_marks_a_failing_entry_until_it_passes(package):
     wrong = {**REPEAT_ORDERS, "expected_rows": REPEAT_ORDERS["expected_rows"][:1]}
     write_answers(
