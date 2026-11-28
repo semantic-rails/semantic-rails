@@ -28,6 +28,7 @@ from semantic_rails.metadata import discover_payload, inspect_payload
 from semantic_rails.planner import plan_payload
 from semantic_rails.request_context import context_from_policy_context
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 SHOP = Path(__file__).resolve().parents[1] / "integration" / "correctness" / "shop"
 SCANS = "entity.shop_shipment_scans"
@@ -87,7 +88,7 @@ def _runtime(package: Path) -> Runtime:
 
 @pytest.fixture(scope="module")
 def shop(tmp_path_factory: pytest.TempPathFactory) -> Any:
-    runtime = _runtime(_shop(tmp_path_factory.mktemp("row_grain")))
+    runtime = opened(_runtime(_shop(tmp_path_factory.mktemp("row_grain"))))
     yield runtime
     runtime.close()
 

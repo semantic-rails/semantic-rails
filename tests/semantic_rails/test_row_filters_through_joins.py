@@ -175,8 +175,8 @@ def package(tmp_path):
 
 
 @pytest.fixture
-def runtime(package):
-    return Runtime.from_path(str(package))
+def runtime(package, owned_runtime):
+    return owned_runtime(package)
 
 
 def _context(region=None, roles=(), audience="regional", **attributes):
@@ -590,7 +590,7 @@ def test_a_restricted_models_declared_values_are_read_live_under_the_filter(runt
     assert "Pine" not in str(card)
 
 
-def _home_stores(root, *, pickup: bool = False) -> Runtime:
+def _home_stores(root, owned_runtime, *, pickup: bool = False) -> Runtime:
     """Customers have a home store too (c1 Pine, c2 Elm, c3 Pine), so the region filter
     reaches customers through their home store, which isn't how an order is owned. With
     ``pickup``, an order also names the store it is picked up from (o1 at Oak)."""
@@ -621,12 +621,12 @@ def _home_stores(root, *, pickup: bool = False) -> Runtime:
         )
         connection.execute("ALTER TABLE order_fact ADD COLUMN pickup_store_id VARCHAR")
         connection.execute("UPDATE order_fact SET pickup_store_id = 's2' WHERE order_id = 'o1'")
-    return Runtime.from_path(str(root))
+    return owned_runtime(root)
 
 
 @pytest.fixture
-def home_stores(tmp_path):
-    return _home_stores(tmp_path / "rj_home")
+def home_stores(tmp_path, owned_runtime):
+    return _home_stores(tmp_path / "rj_home", owned_runtime)
 
 
 def test_a_lookup_that_is_not_the_owners_route_is_held(home_stores, monkeypatch):
@@ -662,9 +662,9 @@ def test_a_lookup_default_is_held_under_a_filter_its_routes_carry(home_stores):
     assert held.value.code == "POLICY_DENIED" and "clarification" not in held.value.details
 
 
-def test_an_ambiguous_route_is_offered_only_if_every_option_answers(tmp_path):
+def test_an_ambiguous_route_is_offered_only_if_every_option_answers(tmp_path, owned_runtime):
     # An order's store, or the store it is picked up from: no one lookup, so it is asked.
-    pickup = _home_stores(tmp_path / "rj_pickup", pickup=True)
+    pickup = _home_stores(tmp_path / "rj_pickup", owned_runtime, pickup=True)
     by_store = _query({"qty": QTY}, ["dimension.rj_store_store_name"])
     with pytest.raises(SemanticLayerError) as asked:
         pickup.compile(by_store, context=EVERYONE)

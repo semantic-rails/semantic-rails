@@ -202,8 +202,8 @@ def package(tmp_path):
 
 
 @pytest.fixture
-def runtime(package):
-    return Runtime.from_path(str(package))
+def runtime(package, owned_runtime):
+    return owned_runtime(package)
 
 
 def _ctx(audience="customer", **attributes):
@@ -714,11 +714,11 @@ def test_a_uuid_parameter_is_cast_only_where_text_never_compares_with_a_uuid_col
     assert rendered["duckdb"] == rendered["snowflake"] == ("t.c = ? AND t.s = ?", "(t.c IN (?, ?))")
 
 
-def test_unless_roles_exempts_only_the_named_roles(tmp_path):
+def test_unless_roles_exempts_only_the_named_roles(tmp_path, owned_runtime):
     root = _package(tmp_path / "rf", [{**OWN_ORDERS, "unless_roles": ["auditor"]}])
     with duckdb.connect(str(root / "rf.duckdb")) as connection:
         connection.execute(SEED)
-    runtime = Runtime.from_path(str(root))
+    runtime = owned_runtime(root)
 
     def ask(*roles, verified=(), **attributes):
         """``roles`` as the context claims them; ``verified`` as the host verified them."""

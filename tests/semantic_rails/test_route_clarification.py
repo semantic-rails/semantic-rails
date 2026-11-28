@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import textwrap
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -274,8 +275,8 @@ def _engine(query: dict[str, Any], config: Any) -> dict[str, Any]:
 
 
 def _refusal(pkg: Path, query: dict[str, Any]) -> SemanticLayerError:
-    with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(str(pkg)).query(query)
+    with pytest.raises(SemanticLayerError) as exc_info, closing(Runtime.from_path(str(pkg))) as rt:
+        rt.query(query)
     assert exc_info.value.code == "AMBIGUOUS_PATH", exc_info.value
     return exc_info.value
 
@@ -479,7 +480,9 @@ def test_the_diamond_asks_in_business_words(tmp_path):
 
 
 @pytest.mark.parametrize("shape", SHAPES)
-def test_every_option_answers_with_its_route_per_query_or_in_the_package(tmp_path, shape):
+def test_every_option_answers_with_its_route_per_query_or_in_the_package(
+    tmp_path, shape, owned_runtime
+):
     """The invariant: whatever option is chosen, its decision answers with that route, sent
     with the query or recorded in the package."""
     query, columns, (start, target), options = SHAPES[shape]
@@ -487,7 +490,7 @@ def test_every_option_answers_with_its_route_per_query_or_in_the_package(tmp_pat
     clarification = err.details["clarification"]
     assert (err.details["start"], err.details["target"]) == (start, target)
     assert [option["id"] for option in clarification["options"]] == sorted(options)
-    runtime = Runtime.from_path(str(_write_package(tmp_path / "per_query")))
+    runtime = owned_runtime(_write_package(tmp_path / "per_query"))
     golds = set()
     for option in clarification["options"]:
         meaning, route, gold = options[option["id"]]
@@ -502,13 +505,15 @@ def test_every_option_answers_with_its_route_per_query_or_in_the_package(tmp_pat
         assert chosen["row"] == {key: option["decision"][key] for key in chosen["row"]}
         assert chosen["replaced"] == "undecided"
         recorded = _write_package(tmp_path / option["id"], decisions=[option["decision"]])
-        in_package = Runtime.from_path(str(recorded)).query(query)
+        in_package = owned_runtime(recorded).query(query)
         assert _rows(in_package, columns) == _gold(gold)
         assert _chosen_by_query(in_package) == []
     assert len(golds) == len(options)  # the routes disagree
 
 
-def test_a_lookup_answers_over_a_shorter_fan_out_and_the_fan_out_is_one_switch_away(tmp_path):
+def test_a_lookup_answers_over_a_shorter_fan_out_and_the_fan_out_is_one_switch_away(
+    tmp_path, owned_runtime
+):
     """Accounts by membership tier: the owner's membership is one row per account, the
     account's own memberships are many. The lookup answers by default (a lookup beats an "any
     of" reading), and the answer says which reading it took at every verbosity. The fan-out
@@ -518,7 +523,7 @@ def test_a_lookup_answers_over_a_shorter_fan_out_and_the_fan_out_is_one_switch_a
     lookup_meaning, lookup_route, lookup_gold = options["owner_membership"]
     _, fan_route, fan_gold = options["account_membership"]
     assert _gold(lookup_gold) != _gold(fan_gold)
-    runtime = Runtime.from_path(str(_write_package(tmp_path / "default")))
+    runtime = owned_runtime(_write_package(tmp_path / "default"))
     switch = {"from": start, "to": target, "via": fan_route}
     for verbosity in ("minimal", "compact"):
         out = runtime.query(query, verbosity=verbosity)
@@ -533,17 +538,17 @@ def test_a_lookup_answers_over_a_shorter_fan_out_and_the_fan_out_is_one_switch_a
     assert _rows(switched, columns) == _gold(fan_gold)
     (chosen,) = _chosen_by_query(switched)
     assert chosen["replaced"] == "default"
-    recorded = Runtime.from_path(str(_write_package(tmp_path / "recorded", decisions=[fan_row])))
+    recorded = owned_runtime(_write_package(tmp_path / "recorded", decisions=[fan_row]))
     assert _rows(recorded.query(query), columns) == _gold(fan_gold)
 
 
-def test_plan_asks_which_route_a_question_means_with_a_call_per_reading(tmp_path):
+def test_plan_asks_which_route_a_question_means_with_a_call_per_reading(tmp_path, owned_runtime):
     """A question whose pieces connect by two routes gets plan's route question in business
     words, not a failed draft: each reading is a call ready to send (its route answers this
     question only) and the row that makes it the package default. Each call returns its own
     reading's numbers; once a row is recorded, the question is not asked again."""
     pkg = _write_package(tmp_path / "asked")
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     seed = {"policy_context": {"now": "2020-01-01T00:00:00Z"}}
     payload = plan_payload(runtime, intent="balance by district", partial_query=seed)
     assert (payload["status"], payload["next"]) == ("needs_clarification", {"action": "clarify"})
@@ -575,14 +580,14 @@ def test_plan_asks_which_route_a_question_means_with_a_call_per_reading(tmp_path
         assert sorted(tuple(row.values()) for row in out["rows"]) == _gold(sql)
     assert _gold(by_branch) != _gold(by_owner)
     recorded = _write_package(tmp_path / "recorded", decisions=[options[1]["decision"]])
-    runtime = Runtime.from_path(str(recorded))
+    runtime = owned_runtime(recorded)
     again = plan_payload(runtime, intent="balance by district", partial_query=seed)
     # The package has no time, so plan never calls a draft ready; the question is not asked.
     assert again["why"]["code"] == "INVALID_TEMPORAL_ROLE"
     assert again["best"]["validation_ok"] is True
 
 
-def test_a_query_row_overrides_the_package_default_for_that_query_only(tmp_path):
+def test_a_query_row_overrides_the_package_default_for_that_query_only(tmp_path, owned_runtime):
     branch = SHAPES["diamond"][3]["branch_district"]
     pkg = _write_package(
         tmp_path,
@@ -592,7 +597,7 @@ def test_a_query_row_overrides_the_package_default_for_that_query_only(tmp_path)
             ], "label": branch[0]}
         ],
     )  # fmt: skip
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     columns = ["dimension.bank_district_name", "v"]
     owner_row = {
         "source_entity": ACCOUNT,
@@ -687,10 +692,10 @@ REPLACED: dict[str, tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], 
 
 
 @pytest.mark.parametrize("basis", REPLACED)
-def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
+def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis, owned_runtime):
     rows, query, row, gold, columns = REPLACED[basis]
     pkg = _write_package(tmp_path, decisions=rows or None)
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     out = runtime.query(_routed(query, row))
     assert _rows(out, columns) == _gold(gold)
     (chosen,) = _chosen_by_query(out)
@@ -727,8 +732,10 @@ ROUTE = _routes(DIAMOND_ROW)[0]
         pytest.param([ROUTE, {"from": FLIGHT, "to": AIRPORT, "via": ["relationship.flights_origin"]}], "route_decision_unused", id="pair-never-walked"),
     ],
 )  # fmt: skip
-def test_a_bad_route_decision_is_invalid_query(tmp_path, monkeypatch, routes, reason):
-    runtime = Runtime.from_path(str(_write_package(tmp_path)))
+def test_a_bad_route_decision_is_invalid_query(
+    tmp_path, monkeypatch, routes, reason, owned_runtime
+):
+    runtime = owned_runtime(_write_package(tmp_path))
     sql = []
     monkeypatch.setattr(runtime, "_get_adapter", lambda: sql.append("ran") or None)
     query = {**BALANCE_BY_DISTRICT, "routes": routes}
@@ -843,7 +850,9 @@ def _refused_at(
 
 
 @pytest.mark.parametrize("entry", ["query", "build_options", "live_valid_values", "mcp_execute"])
-def test_every_entry_point_refuses_a_route_row_under_a_row_policy(tmp_path, monkeypatch, entry):
+def test_every_entry_point_refuses_a_route_row_under_a_row_policy(
+    tmp_path, monkeypatch, entry, owned_runtime
+):
     """Under a row filter a query row is POLICY_DENIED before any SQL runs, disclosing what
     the other row-filter refusals do (reason, path, policy ids, hint) and no filtered entity."""
     pkg = _write_package(tmp_path)
@@ -852,7 +861,7 @@ def test_every_entry_point_refuses_a_route_row_under_a_row_policy(tmp_path, monk
         load_package_config(str(pkg)),
         semantic_policies=[SemanticPolicyConfig(id="policy.bank.owner", kind="row_filter", config=policy)],
     )  # fmt: skip
-    runtime = Runtime.from_config(config, source_path=str(pkg))
+    runtime = owned_runtime(pkg, config=config)
     sql: list[Any] = []
     monkeypatch.setattr(runtime, "_get_adapter", lambda: sql.append("ran") or None)
     query = _routed(BALANCE_BY_DISTRICT, {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE})
@@ -873,12 +882,12 @@ def test_every_entry_point_refuses_a_route_row_under_a_row_policy(tmp_path, monk
     [("minimal", "query", 0), ("compact", "mcp_execute", 1), ("full", "query", 1)],
 )
 def test_query_route_switches_are_disclosed_without_another_execution(
-    tmp_path, monkeypatch, verbosity, entry, option_index
+    tmp_path, monkeypatch, verbosity, entry, option_index, owned_runtime
 ):
     pkg = _write_package(tmp_path)
     options = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]["options"]
     chosen, other = options[option_index], options[1 - option_index]
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     warehouse = runtime._get_adapter()
     execute = Mock(wraps=warehouse.query)
     monkeypatch.setattr(warehouse, "query", execute)
@@ -913,7 +922,9 @@ def test_query_route_switches_are_disclosed_without_another_execution(
 
 
 @pytest.mark.parametrize("selected_index", [0, 1, 2])
-def test_query_switches_use_only_the_options_the_package_refusal_offered(tmp_path, selected_index):
+def test_query_switches_use_only_the_options_the_package_refusal_offered(
+    tmp_path, selected_index, owned_runtime
+):
     pkg = _write_package(tmp_path)
     graph_file = pkg / "graph.yml"
     document = yaml.safe_load(graph_file.read_text())
@@ -944,7 +955,7 @@ def test_query_switches_use_only_the_options_the_package_refusal_offered(tmp_pat
         "relationship_path": ["relationship.accounts_other_branch", BRANCH_ROUTE[1]],
     }
     selected = options[selected_index]["decision"] if selected_index < 2 else excluded
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     try:
         out = runtime.query(_routed(BALANCE_BY_DISTRICT, selected))
     finally:
@@ -989,7 +1000,7 @@ def test_route_switch_notes_reuse_the_cached_refusal_without_enumerating(tmp_pat
 @pytest.mark.parametrize("entry", ["query", "compile", "validate", "mcp_execute"])
 @pytest.mark.parametrize("hidden", [OWNER, OWNER_ROUTE[0]])
 def test_query_route_switches_never_disclose_hidden_waypoints(
-    tmp_path, monkeypatch, verbosity, entry, hidden
+    tmp_path, monkeypatch, verbosity, entry, hidden, owned_runtime
 ):
     pkg = _write_package(tmp_path)
     config = load_package_config(str(pkg))
@@ -1012,7 +1023,7 @@ def test_query_route_switches_never_disclose_hidden_waypoints(
             )
         ],
     )
-    runtime = Runtime.from_config(config, source_path=str(pkg))
+    runtime = owned_runtime(pkg, config=config)
     warehouse = runtime._get_adapter()
     execute = Mock(wraps=warehouse.query)
     monkeypatch.setattr(warehouse, "query", execute)
@@ -1044,7 +1055,9 @@ def test_query_route_switches_never_disclose_hidden_waypoints(
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
 @pytest.mark.parametrize("hidden", [resolution.OWNER, resolution.HOME[0]])
-def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch, verbosity, hidden):
+def test_own_key_route_notes_never_offer_hidden_waypoints(
+    tmp_path, monkeypatch, verbosity, hidden, owned_runtime
+):
     pkg = resolution._write_package(tmp_path)
     config = load_package_config(str(pkg))
     config = replace(
@@ -1058,7 +1071,7 @@ def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch,
             )
         ],
     )
-    runtime = Runtime.from_config(config, source_path=str(pkg))
+    runtime = owned_runtime(pkg, config=config)
     execute = Mock(wraps=runtime._get_adapter().query)
     monkeypatch.setattr(runtime._get_adapter(), "query", execute)
     try:
@@ -1155,7 +1168,7 @@ def _many_route_config(tmp_path):
 
 @pytest.mark.parametrize("hidden", [None, "entity.bank_a4"])
 def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
-    tmp_path, monkeypatch, hidden
+    tmp_path, monkeypatch, hidden, owned_runtime
 ):
     config, warehouse = _many_route_config(tmp_path)
     if hidden:
@@ -1170,7 +1183,7 @@ def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
                 )
             ],
         )
-    runtime = Runtime.from_config(config, source_path=str(tmp_path / "bank"))
+    runtime = owned_runtime(tmp_path / "bank", config=config)
     runtime.set_adapter(warehouse)
     execute = Mock(wraps=runtime._get_adapter().query)
     monkeypatch.setattr(runtime._get_adapter(), "query", execute)
@@ -1220,7 +1233,7 @@ def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
 
 
 def test_many_route_compact_execute_keeps_rows_with_an_oversized_chosen_label(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, owned_runtime
 ):
     config, warehouse = _many_route_config(tmp_path)
     config = replace(
@@ -1230,7 +1243,7 @@ def test_many_route_compact_execute_keeps_rows_with_an_oversized_chosen_label(
             for entity in config.entities
         ],
     )
-    runtime = Runtime.from_config(config, source_path=str(tmp_path / "bank"))
+    runtime = owned_runtime(tmp_path / "bank", config=config)
     runtime.set_adapter(warehouse)
     execute = Mock(wraps=warehouse.query)
     monkeypatch.setattr(warehouse, "query", execute)
@@ -1276,12 +1289,14 @@ def test_many_route_compact_execute_keeps_rows_with_an_oversized_chosen_label(
 
 
 @pytest.mark.parametrize("option_index", [0, 1])
-def test_package_route_decisions_have_no_query_switches(tmp_path, monkeypatch, option_index):
+def test_package_route_decisions_have_no_query_switches(
+    tmp_path, monkeypatch, option_index, owned_runtime
+):
     options = _refusal(_write_package(tmp_path / "refused"), BALANCE_BY_DISTRICT).details[
         "clarification"
     ]["options"]
-    runtime = Runtime.from_path(
-        str(_write_package(tmp_path / "recorded", decisions=[options[option_index]["decision"]]))
+    runtime = owned_runtime(
+        _write_package(tmp_path / "recorded", decisions=[options[option_index]["decision"]])
     )
     warehouse = runtime._get_adapter()
     execute = Mock(wraps=warehouse.query)
@@ -1311,7 +1326,9 @@ def _graph_rows(project: ArchitectProject) -> list[dict[str, Any]]:
     return list(graph.get("path_preferences", []))
 
 
-def test_record_route_decision_previews_the_row_then_makes_the_query_answer(tmp_path):
+def test_record_route_decision_previews_the_row_then_makes_the_query_answer(
+    tmp_path, owned_runtime
+):
     project = _project(tmp_path)
     before = (project.project_path / "graph.yml").read_bytes()
     err = _refusal(project.project_path, BALANCE_BY_DISTRICT)
@@ -1336,7 +1353,7 @@ def test_record_route_decision_previews_the_row_then_makes_the_query_answer(tmp_
     committed = project.record_route_decision(**decision).report
     assert (committed["status"], committed["changed_files"]) == ("recorded", ["graph.yml"])
     assert _graph_rows(project) == [decision]
-    out = Runtime.from_path(str(project.project_path)).query(BALANCE_BY_DISTRICT)
+    out = owned_runtime(project.project_path).query(BALANCE_BY_DISTRICT)
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_OWNER)
 
 
@@ -1360,7 +1377,7 @@ BRANCH_BY_KEY = {
 }
 
 
-def test_record_route_decision_replaces_every_spelling_of_the_pair(tmp_path):
+def test_record_route_decision_replaces_every_spelling_of_the_pair(tmp_path, owned_runtime):
     """Two rows for the pair, by key and by id, become the one recorded row, which answers."""
     branch_by_id = {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}
     pkg = _write_package(tmp_path, decisions=[BRANCH_BY_KEY, branch_by_id])
@@ -1368,7 +1385,7 @@ def test_record_route_decision_replaces_every_spelling_of_the_pair(tmp_path):
     report = project.record_route_decision(**DIAMOND_ROW).report
     assert report["replaced"] == branch_by_id
     assert _graph_rows(project) == [DIAMOND_ROW]
-    out = Runtime.from_path(str(pkg)).query(BALANCE_BY_DISTRICT)
+    out = owned_runtime(pkg).query(BALANCE_BY_DISTRICT)
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_OWNER)
 
 
@@ -1463,10 +1480,10 @@ def test_a_row_label_round_trips_through_the_package_writer(tmp_path):
 # --- MCP ---------------------------------------------------------------------------------
 
 
-def test_the_query_mcp_keeps_the_clarification_and_discloses_the_query_row(tmp_path):
+def test_the_query_mcp_keeps_the_clarification_and_discloses_the_query_row(tmp_path, owned_runtime):
     pkg = _write_package(tmp_path)
     expected = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]
-    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(pkg)))
+    adapter = SemanticLayerMCPAdapter(owned_runtime(pkg))
     try:
         refused = adapter.call_tool("execute", {"query": BALANCE_BY_DISTRICT})
         (error,) = refused["errors"]
@@ -1490,7 +1507,7 @@ def test_the_query_mcp_keeps_the_clarification_and_discloses_the_query_row(tmp_p
         adapter.close()
 
 
-def test_the_architect_mcp_records_a_route_decision(tmp_path):
+def test_the_architect_mcp_records_a_route_decision(tmp_path, owned_runtime):
     pkg = _write_package(tmp_path)
     decision = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]["options"][0]["decision"]
     server = create_architect_mcp_server(workspace_root=tmp_path)
@@ -1513,7 +1530,7 @@ def test_the_architect_mcp_records_a_route_decision(tmp_path):
     assert "record_route_decision" in tools
     assert (report["status"], report["changed_files"]) == ("recorded", ["graph.yml"]), report
     assert report["summary"].startswith("For an Account, 'District' now means the District of the")
-    out = Runtime.from_path(str(pkg)).query(BALANCE_BY_DISTRICT)
+    out = owned_runtime(pkg).query(BALANCE_BY_DISTRICT)
     assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_BRANCH)
 
 
@@ -1545,17 +1562,17 @@ def _entry_gold(entry: str, route: list[str]) -> list[tuple]:
 
 
 @pytest.mark.parametrize("entry", resolution.ENTRY_POINTS)
-def test_every_entry_point_asks_and_every_option_answers_both_ways(tmp_path, entry):
+def test_every_entry_point_asks_and_every_option_answers_both_ways(tmp_path, entry, owned_runtime):
     query, columns = resolution.ENTRY_POINTS[entry]
     err = resolution._refusal(_entry_package(tmp_path / "refused"), query)
     start, target = err.details["start"], err.details["target"]
     options = err.details["clarification"]["options"]
     assert len(options) >= 2 and len({option["id"] for option in options}) == len(options)
-    runtime = Runtime.from_path(str(_entry_package(tmp_path / "per_query")))
+    runtime = owned_runtime(_entry_package(tmp_path / "per_query"))
     for index, option in enumerate(options):
         route, decision = option["relationship_path"], option["decision"]
         assert (decision["source_entity"], decision["target_entity"]) == (start, target)
-        recorded = Runtime.from_path(str(_entry_package(tmp_path / f"o{index}", pins=[decision])))
+        recorded = owned_runtime(_entry_package(tmp_path / f"o{index}", pins=[decision]))
         per_query = _routed(query, decision)
         if columns is None:  # the conversion: its SQL reads the chosen route's key only
             key, other = (
@@ -1614,7 +1631,7 @@ def test_path_reach_is_cached_per_package_but_never_under_a_query_row(tmp_path):
     assert get_package_analysis(reloaded).path_reach == {}
 
 
-def test_build_options_follows_a_query_row(tmp_path):
+def test_build_options_follows_a_query_row(tmp_path, owned_runtime):
     config = load_package_config(str(_write_package(tmp_path)))
     availability = _path_availability(config, ACCOUNT, DISTRICT)
     assert (availability["available"], availability["error_code"]) == (False, "AMBIGUOUS_PATH")
@@ -1624,7 +1641,7 @@ def test_build_options_follows_a_query_row(tmp_path):
     with query_route_decisions({(ACCOUNT, DISTRICT): OWNER_ROUTE}):
         assert _path_availability(config, ACCOUNT, DISTRICT)["path"] == OWNER_ROUTE
     assert _path_availability(config, ACCOUNT, DISTRICT)["available"] is False
-    runtime = Runtime.from_path(str(_write_package(tmp_path / "options")))
+    runtime = owned_runtime(_write_package(tmp_path / "options"))
     partial = {"select": BALANCE_BY_DISTRICT["select"]}
     for routes, available in (([], False), ([DIAMOND_ROW], True)):
         payload = build_options_payload(
@@ -1647,10 +1664,10 @@ def test_build_options_follows_a_query_row(tmp_path):
             assert row["blocked_reason"] == "route decision required"
 
 
-def test_every_available_build_options_patch_validates(tmp_path):
+def test_every_available_build_options_patch_validates(tmp_path, owned_runtime):
     """A patch that would leave the caller's route row unused is offered blocked with that
     refusal, never with the row stripped; every patch offered as available validates."""
-    runtime = Runtime.from_path(str(_write_package(tmp_path)))
+    runtime = owned_runtime(_write_package(tmp_path))
     partial = _routed({"select": BALANCE_BY_DISTRICT["select"]}, DIAMOND_ROW)
     payload = build_options_payload(
         runtime,
@@ -1681,7 +1698,7 @@ def test_every_available_build_options_patch_validates(tmp_path):
     ids=["undecided-measure", "decided-metric"],
 )
 def test_live_valid_values_read_through_the_query_rows_route(
-    tmp_path, monkeypatch, package_rows, reference
+    tmp_path, monkeypatch, package_rows, reference, owned_runtime
 ):
     rows = [*package_rows, {"source_entity": FLIGHT, "target_entity": AIRPORT,
                            "relationship_path": ["relationship.flights_origin"]}]  # fmt: skip
@@ -1692,7 +1709,7 @@ def test_live_valid_values_read_through_the_query_rows_route(
         metric_recipes=[MetricConfig("metric.bank.balance", "aggregate", MeasureRefExpr("measure.bank.balance"))],
     )  # fmt: skip
     assert config.measures[0].id == "measure.bank.budget"
-    runtime = Runtime.from_config(config, source_path=str(pkg))
+    runtime = owned_runtime(pkg, config=config)
     query = {
         **BALANCE_BY_DISTRICT,
         "select": [{"expression": f"{reference}.bank.balance", "as": "v"}],
@@ -1759,8 +1776,10 @@ def test_live_valid_values_read_through_the_query_rows_route(
     [([], BRANCH_ROUTE), ([BRANCH_BY_KEY], OWNER_ROUTE)],
     ids=["undecided-branch", "decided-owner"],
 )
-def test_live_valid_values_keeps_routes_read_only_by_metric_filters(tmp_path, package_rows, route):
-    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=package_rows)))
+def test_live_valid_values_keeps_routes_read_only_by_metric_filters(
+    tmp_path, package_rows, route, owned_runtime
+):
+    runtime = owned_runtime(_write_package(tmp_path, decisions=package_rows))
     row = {**DIAMOND_ROW, "relationship_path": route}
     dimension = "dimension.bank_account_kind"
     rich_districts = {
@@ -1800,8 +1819,10 @@ def test_live_valid_values_keeps_routes_read_only_by_metric_filters(tmp_path, pa
     [(BRANCH_ROUTE, False), (OWNER_ROUTE, True)],
     ids=["branch-conditional-last", "owner-conditional-first"],
 )
-def test_live_valid_values_accepts_conditional_aggregates(tmp_path, route, conditional_first):
-    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=[BRANCH_BY_KEY])))
+def test_live_valid_values_accepts_conditional_aggregates(
+    tmp_path, route, conditional_first, owned_runtime
+):
+    runtime = owned_runtime(_write_package(tmp_path, decisions=[BRANCH_BY_KEY]))
     conditional = {
         "expression": {
             "kind": "aggregate_if",
@@ -1844,9 +1865,9 @@ def test_live_valid_values_accepts_conditional_aggregates(tmp_path, route, condi
 
 
 def test_live_valid_values_without_a_query_measure_explains_the_missing_anchor(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, owned_runtime
 ):
-    runtime = Runtime.from_path(str(_write_package(tmp_path)))
+    runtime = owned_runtime(_write_package(tmp_path))
     monkeypatch.setattr(
         runtime, "_get_adapter", lambda: pytest.fail("missing anchor must not run SQL")
     )
@@ -1861,9 +1882,9 @@ def test_live_valid_values_without_a_query_measure_explains_the_missing_anchor(
     assert refused.value.details == {"attempts": []}
 
 
-def test_mcp_a_route_named_by_its_option_id_is_refused(tmp_path):
+def test_mcp_a_route_named_by_its_option_id_is_refused(tmp_path, owned_runtime):
     """A route is ``{from, to, via}``, copied from the refusal's option; an option id is not."""
-    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(_write_package(tmp_path))))
+    adapter = SemanticLayerMCPAdapter(owned_runtime(_write_package(tmp_path)))
     try:
         out = adapter.call_tool(
             "execute", {"query": {**BALANCE_BY_DISTRICT, "routes": ["owner_district"]}}
@@ -1876,7 +1897,7 @@ def test_mcp_a_route_named_by_its_option_id_is_refused(tmp_path):
         adapter.close()
 
 
-def test_mcp_routes_cannot_bypass_row_policy(tmp_path, monkeypatch):
+def test_mcp_routes_cannot_bypass_row_policy(tmp_path, monkeypatch, owned_runtime):
     pkg = _write_package(tmp_path)
     option = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]["options"][0]
     config = replace(
@@ -1893,7 +1914,7 @@ def test_mcp_routes_cannot_bypass_row_policy(tmp_path, monkeypatch):
             )
         ],
     )
-    runtime = Runtime.from_config(config, source_path=str(pkg))
+    runtime = owned_runtime(pkg, config=config)
     monkeypatch.setattr(
         runtime, "_get_adapter", lambda: pytest.fail("A refused route must not execute SQL")
     )

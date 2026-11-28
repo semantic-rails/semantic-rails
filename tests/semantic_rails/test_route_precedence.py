@@ -322,9 +322,9 @@ def _allow_external_package_paths(monkeypatch):
 
 
 def _gold(sql: str, seed: str = SEED_SQL) -> list[tuple]:
-    con = duckdb.connect(":memory:")
-    con.execute(seed)
-    return sorted(tuple(row) for row in con.execute(sql).fetchall())
+    with duckdb.connect(":memory:") as con:
+        con.execute(seed)
+        return sorted(tuple(row) for row in con.execute(sql).fetchall())
 
 
 def _rows(out: dict[str, Any], columns: list[str]) -> list[tuple]:
@@ -345,8 +345,11 @@ def _notes(out: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
 
 
 def _refusal(pkg: Path, query: dict[str, Any], code: str = "AMBIGUOUS_PATH") -> SemanticLayerError:
-    with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(str(pkg)).query(query)
+    with (
+        pytest.raises(SemanticLayerError) as exc_info,
+        contextlib.closing(Runtime.from_path(str(pkg))) as rt,
+    ):
+        rt.query(query)
     assert exc_info.value.code == code, exc_info.value
     return exc_info.value
 
@@ -393,7 +396,7 @@ R1_CASES = {
 
 
 @pytest.mark.parametrize("case", R1_CASES)
-def test_a_decision_holds_wherever_a_route_walks_its_pair(tmp_path, case):
+def test_a_decision_holds_wherever_a_route_walks_its_pair(tmp_path, case, owned_runtime):
     """With (account, district) recorded as the owner route, accounts, the loans one level
     below, the cards and transactions two levels below, and the region beyond the district
     all answer with the owner route's gold. Without the row each is refused."""
@@ -401,9 +404,7 @@ def test_a_decision_holds_wherever_a_route_walks_its_pair(tmp_path, case):
     query = _query(measure, group_by=[dimension])
     err = _refusal(_write_package(tmp_path / "none"), query)
     assert err.details["reason"] == "route_decision_required"
-    out = Runtime.from_path(str(_write_package(tmp_path / "row", rows=[ACCOUNT_OWNER_ROW]))).query(
-        query
-    )
+    out = owned_runtime(_write_package(tmp_path / "row", rows=[ACCOUNT_OWNER_ROW])).query(query)
     gold = _gold(_by_account_route(start, "owner", region=region))
     assert _rows(out, [dimension, "v"]) == gold
     assert gold != _gold(_by_account_route(start, "branch", region=region))
@@ -414,9 +415,9 @@ def test_a_decision_holds_wherever_a_route_walks_its_pair(tmp_path, case):
         assert note["recorded_for"] == [{"from": ACCOUNT, "to": DISTRICT}]
 
 
-def test_hop_profile_reports_how_each_route_was_chosen(tmp_path):
+def test_hop_profile_reports_how_each_route_was_chosen(tmp_path, owned_runtime):
     pkg = _write_package(tmp_path / "row", rows=[ACCOUNT_OWNER_ROW])
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
 
     def basis(query: dict[str, Any]) -> dict[str, str]:
         targets = runtime.compile(query)["hop_profile"]["targets"]
@@ -425,7 +426,7 @@ def test_hop_profile_reports_how_each_route_was_chosen(tmp_path):
     assert basis(_query(BALANCE, group_by=[DISTRICT_NAME])) == {DISTRICT: "decided"}
     assert basis(_query(LOAN_AMOUNT, group_by=[DISTRICT_NAME])) == {DISTRICT: "inherited"}
     assert basis(_query(CARD_COUNT, group_by=[ACCOUNT_KIND])) == {ACCOUNT: "only_route"}
-    own = Runtime.from_path(str(_write_package(tmp_path / "own", relationships=OWN_DISTRICT)))
+    own = owned_runtime(_write_package(tmp_path / "own", relationships=OWN_DISTRICT))
     targets = own.compile(_query(LOAN_AMOUNT, group_by=[DISTRICT_NAME]))["hop_profile"]["targets"]
     assert targets[DISTRICT]["route_basis"] == "colocated_key"
 
@@ -439,7 +440,7 @@ REVERSE_GOLD = {
 }
 
 
-def test_a_route_walked_the_other_way_follows_the_row_reversed(tmp_path):
+def test_a_route_walked_the_other_way_follows_the_row_reversed(tmp_path, owned_runtime):
     """District to account walks the (account, district) pair backwards: with the owner route
     recorded, the districts of each kind of account are their owners' districts."""
     query = _query(DISTRICT_COUNT, group_by=[ACCOUNT_KIND])
@@ -447,12 +448,12 @@ def test_a_route_walked_the_other_way_follows_the_row_reversed(tmp_path):
     pkg = _write_package(tmp_path / "row", rows=[ACCOUNT_OWNER_ROW])
     resolution = resolve_route(load_package_config(str(pkg)), start=DISTRICT, target=ACCOUNT)
     assert (resolution.basis, list(resolution.routes[0])) == ("inherited", OWNER[::-1])
-    out = Runtime.from_path(str(pkg)).query(query)
+    out = owned_runtime(pkg).query(query)
     assert _rows(out, [ACCOUNT_KIND, "v"]) == _gold(REVERSE_GOLD["owner"])
     assert _gold(REVERSE_GOLD["owner"]) != _gold(REVERSE_GOLD["branch"])
 
 
-def test_a_row_with_a_one_way_hop_does_not_decide_the_reverse_walk(tmp_path):
+def test_a_row_with_a_one_way_hop_does_not_decide_the_reverse_walk(tmp_path, owned_runtime):
     """The client's district can't be walked back to its clients, so the owner route has no
     reverse: the row says nothing about district to account, whose only route is the branch's,
     and the row still decides account to district."""
@@ -460,7 +461,7 @@ def test_a_row_with_a_one_way_hop_does_not_decide_the_reverse_walk(tmp_path):
     config = load_package_config(str(pkg))
     resolution = resolve_route(config, start=DISTRICT, target=ACCOUNT)
     assert (resolution.basis, list(resolution.routes[0])) == ("only_route", BRANCH[::-1])
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     out = runtime.query(_query(DISTRICT_COUNT, group_by=[ACCOUNT_KIND]))
     assert _rows(out, [ACCOUNT_KIND, "v"]) == _gold(REVERSE_GOLD["branch"])
     assert resolve_path(config, start=LOAN, target=DISTRICT)[0] == [*LOAN_ACCOUNT, *OWNER]
@@ -534,7 +535,7 @@ def _write_shop(root: Path, rows: list[dict[str, Any]] | None = None) -> Path:
     return pkg
 
 
-def test_fan_out_only_alternatives_refuse_and_a_row_decides(tmp_path):
+def test_fan_out_only_alternatives_refuse_and_a_row_decides(tmp_path, owned_runtime):
     """Customers filtered by an order status: the orders a customer placed (one hop) or the
     orders made in the customer's sessions (two hops). Both fan out; neither wins by length."""
     customer, order = "entity.shop_customer", "entity.shop_order"
@@ -555,7 +556,7 @@ def test_fan_out_only_alternatives_refuse_and_a_row_decides(tmp_path):
     }
     for index, (path, sql) in enumerate(golds.items()):
         pkg = _write_shop(tmp_path / f"row{index}", rows=[_row(customer, order, list(path))])
-        out = Runtime.from_path(str(pkg)).query(query)
+        out = owned_runtime(pkg).query(query)
         assert _rows(out, ["v"]) == _gold(sql, SHOP_SEED)
     # The data tells the routes apart: two customers placed them, one held the sessions.
     assert [_gold(sql, SHOP_SEED) for sql in golds.values()] == [[(2,)], [(1,)]]
@@ -662,12 +663,12 @@ def _sql_joins(sql: str, route: list[str]) -> bool:
     return True
 
 
-def test_a_rewrite_notes_only_the_route_its_sql_reads(tmp_path):
+def test_a_rewrite_notes_only_the_route_its_sql_reads(tmp_path, owned_runtime):
     """Customers by district are counted from their orders' rows, along the recorded store
     route. The order holds its own district too, and its own pair (order, district) resolves
     to it; resolved first in the same process, that route still never shows up as the query's:
     every note names joins the SQL makes, and the answer is the store route's gold."""
-    runtime = Runtime.from_path(str(_write_chain(tmp_path)))
+    runtime = owned_runtime(_write_chain(tmp_path))
     # The runtime's own configuration (``runtime.config`` is a copy), so its queries see this.
     resolution = resolve_route(runtime._config, start=CHAIN_ORDER, target=CHAIN_DISTRICT)
     assert (resolution.basis, list(resolution.routes[0])) == ("colocated_key", ORDER_OWN_DISTRICT)
@@ -688,12 +689,12 @@ def test_a_rewrite_notes_only_the_route_its_sql_reads(tmp_path):
     assert all(_sql_joins(sql, note["via"]) for note in notes.values())
 
 
-def test_a_querys_route_notes_do_not_depend_on_what_ran_before(tmp_path):
+def test_a_querys_route_notes_do_not_depend_on_what_ran_before(tmp_path, owned_runtime):
     """The same query's notes on a fresh runtime, and on one where every pair has been resolved
     and other queries have run."""
     pkg = _write_chain(tmp_path)
-    fresh = _notes(Runtime.from_path(str(pkg)).query(_chain_query("name")))
-    runtime = Runtime.from_path(str(pkg))
+    fresh = _notes(owned_runtime(pkg).query(_chain_query("name")))
+    runtime = owned_runtime(pkg)
     entities = [entity.id for entity in runtime._config.entities]
     for start in entities:
         for target in entities:
@@ -704,12 +705,12 @@ def test_a_querys_route_notes_do_not_depend_on_what_ran_before(tmp_path):
     assert _notes(runtime.query(_chain_query("name"))) == fresh
 
 
-def test_the_anchors_own_key_never_answers_for_the_roots_route(tmp_path):
+def test_the_anchors_own_key_never_answers_for_the_roots_route(tmp_path, owned_runtime):
     """Customers by district key: the orders' rows hold a district key of their own, but the
     customers' recorded route reaches the district through the store. The rewrite does not read
     the order's column: the query answers with the store route's gold, and no note names the
     order's own key."""
-    runtime = Runtime.from_path(str(_write_chain(tmp_path)))
+    runtime = owned_runtime(_write_chain(tmp_path))
     query = _chain_query("id")
     out = runtime.query(query)
     sql = runtime.compile(query)["explain"]["rendered_sql"]
@@ -725,7 +726,9 @@ OWN_KEY_GOLD = (
 )
 
 
-def test_the_starts_own_key_answers_and_lists_each_other_route_with_its_row(tmp_path):
+def test_the_starts_own_key_answers_and_lists_each_other_route_with_its_row(
+    tmp_path, owned_runtime
+):
     """The loan holds its own district. With no rows, and even with the account's district
     recorded as the owner route, "loan amount by district" reads the loan's own district and
     says so; the other routes come with the row that would make each the default. A card,
@@ -752,16 +755,16 @@ def test_the_starts_own_key_answers_and_lists_each_other_route_with_its_row(tmp_
         ),
     ):
         pkg = _write_package(tmp_path / name, relationships=OWN_DISTRICT, rows=rows)
-        out = Runtime.from_path(str(pkg)).query(query)
+        out = owned_runtime(pkg).query(query)
         assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(OWN_KEY_GOLD)
         note = _notes(out)[(LOAN, DISTRICT)]
         assert note == {"from": LOAN, "to": DISTRICT, "via": OWN_KEY, "basis": "own_key", **details}
     assert _gold(OWN_KEY_GOLD) != _gold(_by_account_route("loan", "owner"))
-    cards = Runtime.from_path(str(pkg)).query(_query(CARD_COUNT, group_by=[DISTRICT_NAME]))
+    cards = owned_runtime(pkg).query(_query(CARD_COUNT, group_by=[DISTRICT_NAME]))
     assert _rows(cards, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("card", "owner"))
 
 
-def test_two_own_keys_are_not_one_and_an_inherited_row_decides(tmp_path):
+def test_two_own_keys_are_not_one_and_an_inherited_row_decides(tmp_path, owned_runtime):
     """A loan's district and its payout district are two keys to one entity: refused. The
     row for district -> loan, walked back, names the loan's district."""
     two_keys = (*OWN_DISTRICT, "loans_payout_district")
@@ -773,7 +776,7 @@ def test_two_own_keys_are_not_one_and_an_inherited_row_decides(tmp_path):
     )
     resolution = resolve_route(load_package_config(str(pkg)), start=LOAN, target=DISTRICT)
     assert (resolution.basis, list(resolution.routes[0])) == ("inherited", OWN_KEY)
-    out = Runtime.from_path(str(pkg)).query(query)
+    out = owned_runtime(pkg).query(query)
     assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(OWN_KEY_GOLD)
 
 
@@ -803,7 +806,7 @@ def test_rows_that_agree_load_and_a_single_route_pair_may_be_recorded(tmp_path):
     assert resolve_route(config, start=DISTRICT, target=REGION).basis == "decided"
 
 
-def test_rows_built_in_code_must_agree_too(tmp_path):
+def test_rows_built_in_code_must_agree_too(tmp_path, owned_runtime):
     """A configuration built in code never meets the YAML loader, but the package analysis runs
     the same check: two rows that disagree are refused when the query binds, before any SQL
     runs, naming both."""
@@ -812,9 +815,7 @@ def test_rows_built_in_code_must_agree_too(tmp_path):
     loan_branch = PathPreferenceConfig(LOAN, DISTRICT, [*LOAN_ACCOUNT, *BRANCH])
     built = replace(config, path_preferences=[*config.path_preferences, loan_branch])
     with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_config(built, source_path=str(pkg)).query(
-            _query(LOAN_AMOUNT, group_by=[DISTRICT_NAME])
-        )
+        owned_runtime(pkg, config=built).query(_query(LOAN_AMOUNT, group_by=[DISTRICT_NAME]))
     assert exc_info.value.code == "INVALID_CONFIG"
     assert exc_info.value.details["rows"] == [
         ACCOUNT_OWNER_ROW,
@@ -858,7 +859,7 @@ SUGGESTIONS = {
 
 
 @pytest.mark.parametrize("case", SUGGESTIONS)
-def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case):
+def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case, owned_runtime):
     """Every row the engine suggests, an own-key note's alternative or a refusal's pin, loads
     beside the package's rows and answers with its route's gold. A route whose row would not
     load is not offered: it stays among the routes, in ``details.conflicts_with`` with the rows
@@ -868,7 +869,7 @@ def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case):
     query = _query(measure, group_by=[DISTRICT_NAME])
     pkg = _write_package(tmp_path / "package", relationships=relationships, rows=rows)
     if start == LOAN:
-        details = _notes(Runtime.from_path(str(pkg)).query(query))[(LOAN, DISTRICT)]
+        details = _notes(owned_runtime(pkg).query(query))[(LOAN, DISTRICT)]
         suggested, routes = details.get("alternatives", []), [LOAN_BRANCH, LOAN_OWNER]
     else:
         options = _refusal(pkg, query).details["clarification"]["options"]
@@ -893,7 +894,7 @@ def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case):
         added = _write_package(
             tmp_path / f"offered{index}", relationships=relationships, rows=[*rows, row]
         )
-        out = Runtime.from_path(str(added)).query(query)
+        out = owned_runtime(added).query(query)
         route = "branch" if row["relationship_path"][-2:] == BRANCH else "owner"
         gold = _by_account_route("loan" if start == LOAN else "account", route)
         assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(gold)
@@ -908,7 +909,7 @@ def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case):
         assert exc_info.value.details["rows"] == [*conflict["rows"], row]
 
 
-def test_every_route_excluded_by_rows_is_refused_naming_the_rows(tmp_path):
+def test_every_route_excluded_by_rows_is_refused_naming_the_rows(tmp_path, owned_runtime):
     """The account holds its own district, but the owner route is recorded for the pair.
     Within two hops a loan reaches its district only through the account's own key, which the
     row rules out: refused, naming the row. Three hops admit the owner route."""
@@ -925,7 +926,7 @@ def test_every_route_excluded_by_rows_is_refused_naming_the_rows(tmp_path):
     pkg = _write_package(
         tmp_path / "three", relationships=relationships, rows=[ACCOUNT_OWNER_ROW], max_hops=3
     )
-    out = Runtime.from_path(str(pkg)).query(query)
+    out = owned_runtime(pkg).query(query)
     assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("loan", "owner"))
 
 
@@ -1019,14 +1020,14 @@ def _entry_gold(entry: str, route: str) -> str:
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS)
-def test_every_entry_point_follows_an_inherited_row(tmp_path, entry):
+def test_every_entry_point_follows_an_inherited_row(tmp_path, entry, owned_runtime):
     """The bypass guard with an inherited row: unrecorded, every way a query reaches the
     district from a loan refuses; with (account, district) recorded as the owner route, each
     follows it and never reads the branch route."""
     query, columns = ENTRY_POINTS[entry]
     err = _refusal(_write_package(tmp_path / "none"), query)
     assert err.details["target"] == DISTRICT
-    runtime = Runtime.from_path(str(_write_package(tmp_path / "row", rows=[ACCOUNT_OWNER_ROW])))
+    runtime = owned_runtime(_write_package(tmp_path / "row", rows=[ACCOUNT_OWNER_ROW]))
     if columns is not None:
         out = runtime.query(query)
         assert _rows(out, columns) == _gold(_entry_gold(entry, "owner"))
@@ -1037,12 +1038,14 @@ def test_every_entry_point_follows_an_inherited_row(tmp_path, entry):
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS)
-def test_every_entry_point_reads_the_starts_own_key_over_an_inherited_row(tmp_path, entry):
+def test_every_entry_point_reads_the_starts_own_key_over_an_inherited_row(
+    tmp_path, entry, owned_runtime
+):
     """The bypass guard with a co-located key: the loan's own district answers every entry
     point, even with the account's district recorded, and each says so."""
     query, columns = ENTRY_POINTS[entry]
     pkg = _write_package(tmp_path, relationships=OWN_DISTRICT, rows=[ACCOUNT_OWNER_ROW])
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     out = runtime.query(query)
     if columns is not None:
         assert _rows(out, columns) == _gold(_entry_gold(entry, "own"))
@@ -1075,7 +1078,7 @@ def test_discovery_grain_recovery_and_entity_determination_follow_the_ladder(tmp
     )
 
 
-def test_a_child_filter_through_an_inherited_route_counts_each_loan_once(tmp_path):
+def test_a_child_filter_through_an_inherited_route_counts_each_loan_once(tmp_path, owned_runtime):
     """Loans whose owner's district has a branch named Main: a lookup to the owner's district,
     then one-to-many to its branches, reached only through rows (the account's branch is a
     second route, which the account -> branch row rules out). The filter lowers to EXISTS."""
@@ -1087,7 +1090,7 @@ def test_a_child_filter_through_an_inherited_route_counts_each_loan_once(tmp_pat
     resolution = resolve_route(load_package_config(str(pkg)), start=LOAN, target=_entity("branch"))
     assert resolution.basis == "inherited"
     query = _query(LOAN_AMOUNT, where=[{"field": BRANCH_NAME, "op": "is", "value": "Main"}])
-    runtime = Runtime.from_path(str(pkg))
+    runtime = owned_runtime(pkg)
     out = runtime.query(query)
     gold = (
         "SELECT SUM(l.amount) FROM loans l JOIN accounts a USING (account_id) "

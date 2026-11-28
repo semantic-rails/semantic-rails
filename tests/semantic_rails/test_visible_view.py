@@ -13,6 +13,7 @@ import json
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -113,23 +114,33 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, PackageConf
 
 
 @pytest.fixture(scope="module")
-def runtimes(package: tuple[Path, PackageConfig]) -> Iterator[Callable[..., Runtime]]:
-    root, config = package
+def _made_runtimes(package: tuple[Path, PackageConfig]) -> Iterator[dict[str, Runtime]]:
+    """The runtimes built so far in this module, keyed by their policies, closed at its end."""
     made: dict[str, Runtime] = {}
+    yield made
+    for value in made.values():
+        value.close()
+
+
+@pytest.fixture()
+def runtimes(
+    package: tuple[Path, PackageConfig], _made_runtimes: dict[str, Runtime]
+) -> Iterator[Callable[..., Runtime]]:
+    root, config = package
 
     def runtime(*policies: SemanticPolicyConfig, hide: frozenset[str] | None = None) -> Runtime:
         key = repr((policies, sorted(hide) if hide is not None else None))
-        if key not in made:
+        if key not in _made_runtimes:
             governed = with_policies(config, *policies)
             if hide is not None:
                 governed = absent(governed, hide)
-            made[key] = Runtime.from_config(governed, source_path=str(root))
-        # Each test opens (and its teardown closes) its own warehouse connection.
-        made[key].close()
-        return made[key]
+            _made_runtimes[key] = Runtime.from_config(governed, source_path=str(root))
+        # Start each call from a closed warehouse connection; the test's own is closed below.
+        _made_runtimes[key].close()
+        return _made_runtimes[key]
 
     yield runtime
-    for value in made.values():
+    for value in _made_runtimes.values():
         value.close()
 
 
@@ -321,7 +332,8 @@ def on_disk(tmp_path_factory: pytest.TempPathFactory) -> Path:
         },
     ]
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-    write_manifest(Runtime.from_path(str(root)))
+    with closing(Runtime.from_path(str(root))) as runtime:
+        write_manifest(runtime)
     return root
 
 

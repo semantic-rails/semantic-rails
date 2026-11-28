@@ -131,12 +131,40 @@ def package_config_factory(tmp_path: Path) -> Callable[[str], tuple[object, Path
 
 
 @pytest.fixture()
-def runtime_factory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[[str], Runtime]:
+def runtime_factory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[Callable[[str], Runtime]]:
+    built: list[Runtime] = []
+
     def _build(package_id: str) -> Runtime:
         config_path = copy_package_config(tmp_path, package_id, preseed_db=True)
         monkeypatch.setattr(
             config_module, "list_package_paths", lambda: {package_id: str(config_path)}
         )
-        return Runtime(package_id)
+        built.append(Runtime(package_id))
+        return built[-1]
 
-    return _build
+    yield _build
+    for runtime in built:
+        runtime.close()
+
+
+@pytest.fixture()
+def owned_runtime() -> Iterator[Callable[..., Runtime]]:
+    """Build a `Runtime` from a package path, or from `config` read at `path`.
+
+    Every runtime built is closed at the test's teardown, so a test never leaves its warehouse
+    connection to garbage collection.
+    """
+    built: list[Runtime] = []
+
+    def _build(path: Path | str, *, config: object | None = None, **options: object) -> Runtime:
+        if config is None:
+            built.append(Runtime.from_path(str(path), **options))
+        else:
+            built.append(Runtime.from_config(config, source_path=str(path), **options))
+        return built[-1]
+
+    yield _build
+    for runtime in built:
+        runtime.close()
