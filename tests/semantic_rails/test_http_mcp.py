@@ -10,7 +10,6 @@ import ipaddress
 import json
 import socket
 import threading
-import time
 from contextlib import contextmanager
 from io import StringIO
 from types import SimpleNamespace
@@ -55,36 +54,72 @@ class _BodyReads:
         return getattr(self._stream, name)
 
 
-@contextmanager
-def _uvicorn(app, *, root_path=""):
-    """Serve ``app`` with uvicorn's h11 parser on loopback; yield its address and body reads."""
-    reads = []
+class _Uvicorn(uvicorn.Server):
+    """A uvicorn server that signals once it listens, so the caller waits on an event."""
 
-    async def recording(scope, receive, send):
-        async def counted():
-            reads.append("asgi")
-            return await receive()
+    def __init__(self, config):
+        super().__init__(config)
+        self.ready = threading.Event()
 
-        await app(scope, counted, send)
+    async def startup(self, sockets=None):
+        try:
+            await super().startup(sockets)
+        finally:
+            self.ready.set()
 
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    config = uvicorn.Config(
-        recording, http="h11", lifespan="off", log_level="warning", root_path=root_path
-    )
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 10
-    while not server.started:
-        assert time.monotonic() < deadline, "uvicorn did not start"
-        time.sleep(0.01)
+
+@pytest.fixture(scope="module")
+def uvicorn_serve():
+    """One uvicorn (h11 parser, loopback) per root path for the module, serving each test's app.
+
+    ``with uvicorn_serve(app, root_path=...) as (address, reads)`` routes the server to ``app``
+    and yields its address and the body reads seen since. Every ``_raw`` call still opens a
+    fresh connection; only the listening server is shared.
+    """
+    servers = {}
+
+    def start(root_path):
+        state = SimpleNamespace(app=None, reads=[])
+
+        async def recording(scope, receive, send):
+            async def counted():
+                state.reads.append("asgi")
+                return await receive()
+
+            assert state.app is not None, "uvicorn served a request outside a test"
+            await state.app(scope, counted, send)
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        config = uvicorn.Config(
+            recording, http="h11", lifespan="off", log_level="warning", root_path=root_path
+        )
+        server = _Uvicorn(config)
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        assert server.ready.wait(timeout=10) and server.started, "uvicorn did not start"
+        state.server, state.thread, state.sock = server, thread, sock
+        return state
+
+    @contextmanager
+    def serve(app, *, root_path=""):
+        if root_path not in servers:
+            servers[root_path] = start(root_path)
+        state = servers[root_path]
+        state.app, state.reads = app, []
+        try:
+            yield state.sock.getsockname(), state.reads
+        finally:
+            state.app = None
+
     try:
-        yield sock.getsockname(), reads
+        yield serve
     finally:
-        server.should_exit = True
-        thread.join(timeout=10)
-        sock.close()
+        for state in servers.values():
+            state.server.should_exit = True
+        for state in servers.values():
+            state.thread.join(timeout=10)
+            state.sock.close()
 
 
 def _raw(address, request):
@@ -118,7 +153,10 @@ def _frontends(runtime):
             self.rfile = _BodyReads(self.rfile, reads)
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), LocalHandler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    # A short poll so shutdown() returns at once; the default 0.5 s dominated each test's teardown.
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    )
     thread.start()
 
     def call(
@@ -664,32 +702,32 @@ RAW_REQUESTS = {
 
 @pytest.mark.parametrize("backend", ["serve", "asgi"])
 @pytest.mark.parametrize("name", RAW_REQUESTS)
-def test_raw_requests_are_refused_before_any_body_read(frontends, backend, name):
+def test_raw_requests_are_refused_before_any_body_read(frontends, uvicorn_serve, backend, name):
     request, status = RAW_REQUESTS[name]
     if backend == "serve":
         got, body = _raw(frontends.address, request)
         reads = frontends.reads
     else:
-        with _uvicorn(frontends.app) as (address, reads):
+        with uvicorn_serve(frontends.app) as (address, reads):
             got, body = _raw(address, request)
     assert got == status
     assert b"jaffle" not in body
     assert reads == []
 
 
-def test_raw_loopback_requests_are_still_served(frontends):
+def test_raw_loopback_requests_are_still_served(frontends, uvicorn_serve):
     request = b"GET /api/v1/catalog HTTP/1.1\r\nHost: localhost:1\r\nConnection: close\r\n\r\n"
     assert _raw(frontends.address, request)[0] == 200
-    with _uvicorn(frontends.app) as (address, _):
+    with uvicorn_serve(frontends.app) as (address, _):
         assert _raw(address, request)[0] == 200
 
 
-def test_package_load_failure_refuses_an_absolute_target_before_its_diagnostics():
+def test_package_load_failure_refuses_an_absolute_target_before_its_diagnostics(uvicorn_serve):
     app = PackageLoadFailureApp(package_id="broken", error=RuntimeError("/private/path failed"))
     request = RAW_REQUESTS["absolute target"][0].replace(
         b"Host: localhost", b"Host: localhost\r\nOrigin: http://localhost"
     )
-    with _uvicorn(app) as (address, reads):
+    with uvicorn_serve(app) as (address, reads):
         got, body = _raw(address, request)
         assert (
             _raw(
@@ -704,12 +742,12 @@ def test_package_load_failure_refuses_an_absolute_target_before_its_diagnostics(
 
 
 @pytest.mark.parametrize("which", ["app", "package load failure"])
-def test_a_root_path_does_not_hide_an_absolute_target(frontends, which):
+def test_a_root_path_does_not_hide_an_absolute_target(frontends, uvicorn_serve, which):
     # Uvicorn prefixes the target with the root path: /enginehttp://evil.example:8090/...
     app = frontends.app
     if which == "package load failure":
         app = PackageLoadFailureApp(package_id="broken", error=RuntimeError("/private/path failed"))
-    with _uvicorn(app, root_path="/engine") as (address, reads):
+    with uvicorn_serve(app, root_path="/engine") as (address, reads):
         for target in [b"http://evil.example:8090/api/v1/catalog", b"http://evil.example/mcp"]:
             request = b"GET %s HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" % target
             got, body = _raw(address, request)
