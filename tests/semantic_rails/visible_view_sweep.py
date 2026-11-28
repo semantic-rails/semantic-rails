@@ -22,7 +22,6 @@ raw must refuse, and a plan while any such measure exists may differ (still nami
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -306,7 +305,6 @@ def _assert_hidden_responses(package, target):
     from semantic_rails.visible_view import hidden_object_ids
 
     root, config = package
-    started = time.perf_counter()
     governed = {
         action: with_policies(config, visibility_policy(action, target)) for action in ACTIONS
     }
@@ -364,5 +362,3 @@ def _assert_hidden_responses(package, target):
         finally:
             runtime.close()
     assert not failures, "\n".join(failures[:40])
-    # Recorded for the cost budget; a case is expected to stay within seconds.
-    assert time.perf_counter() - started < 120

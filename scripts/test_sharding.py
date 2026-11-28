@@ -3,8 +3,9 @@
 A pull request also runs one sixth of the visible-view sweep (``SWEEP_FILES``): set
 ``SR_SWEEP_SEED`` (CI passes the pull request's head commit) and only the parametrized
 cases whose node ID hashes to that seed's slice run there. Each push picks a slice from
-its own commit, so a pull request's pushes cover different sixths; the merge queue and
-every other run leave the seed unset and run every case.
+its own commit, so a pull request's pushes cover different sixths. The merge queue seeds
+its Python 3.11 and 3.14 shards with the merge group's head commit and leaves the seed
+unset on 3.12; manual and nightly runs leave it unset and run every case.
 """
 
 from __future__ import annotations

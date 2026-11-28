@@ -889,9 +889,13 @@ def test_backend_matrix_and_push_policy():
     assert backend["env"] == {
         "SR_SHARD_COUNT": "5",
         "SR_SHARD_INDEX": "${{ matrix.shard }}",
-        # Only a pull request runs one sixth of the sweep, seeded by its head commit.
+        # A pull request runs one sixth of the sweep, seeded by its head commit, and the
+        # merge queue's 3.11 and 3.14 shards one seeded by the merge group's
+        # (test_sweep_sharding.py evaluates it).
         "SR_SWEEP_SEED": (
-            "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}"
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha"
+            " || github.event_name == 'merge_group' && matrix.python-version != '3.12'"
+            " && github.event.merge_group.head_sha || '' }}"
         ),
     }
     assert "github.event_name != 'push'" in backend["if"]
@@ -973,12 +977,12 @@ def test_every_supported_python_passes_before_a_merge_or_a_release():
     assert supported == {"3.11", "3.12", "3.13", "3.14"}
     assert merged | released == supported
     assert supported - merged == {"3.13"}
-    # The manual release gate and its nightly run on main cover 3.13 as well.
+    # The manual release gate covers 3.13 as well, and its nightly run on main every version.
     readiness = yaml.safe_load((workflows / "release-readiness.yml").read_text())
     trigger = readiness.get("on", readiness.get(True))
     assert trigger["schedule"] == [{"cron": "41 5 * * *"}]
     versions = readiness["jobs"]["suite"]["strategy"]["matrix"]["python-version"]
-    assert _evaluate(versions, "schedule") == ["3.13"]
+    assert _evaluate(versions, "schedule") == ["3.11", "3.12", "3.13", "3.14"]
     assert _evaluate(versions, "workflow_dispatch") == ["3.12", "3.13"]
     assert (
         readiness["jobs"]["release-readiness"]["if"] == "github.event_name == 'workflow_dispatch'"

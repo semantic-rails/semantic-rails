@@ -2,7 +2,8 @@ name: Release Readiness
 
 on:
   workflow_dispatch:
-  # Nightly on main: the full suite on Python 3.13, which the merge queue doesn't run.
+  # Nightly on main: the full suite, with the whole visible-view sweep, on every supported
+  # Python. The merge queue leaves out 3.13 and runs only a sixth of the sweep on 3.11 and 3.14.
   schedule:
     - cron: "41 5 * * *"
 
@@ -23,8 +24,9 @@ jobs:
       fail-fast: true
       matrix:
         # A release runs the suite on 3.12 and on 3.13, the version the merge queue
-        # leaves out (it runs 3.11, 3.12 and 3.14 on every merge); the nightly on 3.13.
-        python-version: ${{ fromJSON(github.event_name == 'schedule' && '["3.13"]' || '["3.12", "3.13"]') }}
+        # leaves out (it runs 3.11, 3.12 and 3.14 on every merge). The nightly runs every
+        # supported Python, with the whole sweep: SR_SWEEP_SEED is unset here.
+        python-version: ${{ fromJSON(github.event_name == 'schedule' && '["3.11", "3.12", "3.13", "3.14"]' || '["3.12", "3.13"]') }}
         shard: [0, 1, 2, 3]
     env:
       # The full suite outgrew one job's time limit; shard it the way ci.yml does.

@@ -145,15 +145,17 @@ version. Pull requests run Python 3.12 only, and one sixth of the visible-view s
 and `test_hidden_as_unknown.py`, about half the suite's test time). The pull request's
 head commit seeds the choice: a parametrized case in those files runs when its node ID
 hashes to that commit's sixth, so each push covers a different sixth, and every
-unparametrized test there always runs. The merge queue and manual runs take the whole
-sweep, so a regression a pull request's sixth missed still stops the merge. Set
+unparametrized test there always runs. The merge queue takes the whole sweep on Python
+3.12, so a regression a pull request's sixth missed still stops the merge; its 3.11 and
+3.14 shards take the sixth the merge group's head commit picks. Manual runs and the
+nightly release-readiness run take the whole sweep on every Python they run. Set
 `SR_SWEEP_SEED` to a pull request's head commit to rerun its sixth locally; the test
 report header names the slice. Merge groups
 cover the oldest and newest supported Pythons, 3.11 and 3.14, plus 3.12; a failure
 on any of them ejects the change before merging. Python 3.13 runs in every release's
-publish suite (`publish.yml` tests 3.12 and 3.13 before anything is uploaded), in
-the manual release-readiness gate and nightly on main; manual CI runs cover all
-four versions. In the merge queue and manual runs, the Python 3.14 shards also record line
+publish suite (`publish.yml` tests 3.12 and 3.13 before anything is uploaded) and in
+the manual release-readiness gate; the nightly run on main and manual CI runs cover
+all four versions. In the merge queue and manual runs, the Python 3.14 shards also record line
 coverage of `semantic_rails/`, and the "All checks pass" job combines them and fails below 93%
 (93.55% in CI when the floor was set; CLI subprocesses aren't traced). To measure it locally,
 run `uv run pytest tests/semantic_rails -n 4 --cov`. The lint job also records the compile
