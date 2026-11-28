@@ -1,1 +1,1 @@
-"""``semantic-rails`` subcommands, one module per area: project, query, mcp, package."""
+"""``semantic-rails`` subcommands, one module per area: project, query, mcp, package, eval."""

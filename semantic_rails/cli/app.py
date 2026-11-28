@@ -13,6 +13,7 @@ from ..errors import SemanticLayerError
 from ..mcp_manager import CLIENTS, MCP_KINDS
 from ..runtime import _enrich_runtime_error
 from ..visible_view import view_of
+from .commands.eval import add_eval_cli
 from .commands.mcp import (
     cmd_mcp_client_config,
     cmd_mcp_doctor,
@@ -396,6 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_optional_reference_args(p_test_package, package_choices, required=True)
     _add_now_arg(p_test_package)
     p_test_package.set_defaults(func=cmd_test_package)
+    add_eval_cli(sub, package_choices)
 
     p_diff_package = sub.add_parser(
         "diff-package",
