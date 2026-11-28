@@ -89,6 +89,7 @@ class PartStatement:
     keys: tuple[str, ...]
     outputs: tuple[str, ...]
     hidden: tuple[str, ...]
+    keys_cte: str = KEYS
 
 
 def shared_name(part: int, other: int) -> str:
@@ -353,10 +354,6 @@ def refuse_shared_outputs(keys: Sequence[JoinKey], outputs: Sequence[Sequence[st
             taken[name] = _part(part)
 
 
-def _keys_cte(name: str) -> str:
-    return f"{name}__{KEYS}"
-
-
 def joined_statement(
     parts: Sequence[PartStatement],
     keys: Sequence[JoinKey],
@@ -377,8 +374,9 @@ def joined_statement(
             _namespace_sql_select(replace(part.sql_ast, order_by=[], limit=None), f"{prefix}__")
         )
         names = [cte.name for cte in flat.ctes]
-        at = names.index(_keys_cte(prefix)) if _keys_cte(prefix) in names else -1
-        if at < 0 or names.count(_keys_cte(prefix)) != 1:
+        key_name = f"{prefix}__{part.keys_cte}"
+        at = names.index(key_name) if key_name in names else -1
+        if at < 0 or names.count(key_name) != 1:
             raise SemanticLayerError(
                 "REWRITE_NOT_SUPPORTED",
                 f"{_part(index)}: this call can't be a part of a joined call yet",

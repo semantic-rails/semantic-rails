@@ -27,7 +27,7 @@ from ..ast import NormalizedQuery, child_groups
 from ..fanout import entity_label, route_reading
 from ..ir import BoundMeasure, MeasurePlan, PathSelection, RewriteStep
 from ..schema import MeasureConfig, PackageConfig
-from ..sql_ast import SqlCte, SqlField, SqlJoin, SqlSelect, SqlTableRef
+from ..sql_ast import SqlCte, SqlField, SqlIdentifier, SqlJoin, SqlSelect, SqlSourceRef, SqlTableRef
 from .bind import _bound_metric_predicates, is_conditional_aggregate
 from .indexes import _dimension_index, _entity_index, _measure_index, _relationship_index
 from .lowering_common import _edge_cap
@@ -164,7 +164,7 @@ def child_values_cte(
             *(SqlField(_column_ref(child.table, column), column) for column in to_parent),
             *grouped,
         ],
-        from_table=SqlTableRef(name=child.table),
+        from_table=SqlSourceRef(name=child.table),
         distinct=True,
     )
     return child.id, SqlCte(name=name, query=values)
@@ -179,7 +179,7 @@ def child_value_dimension(dim_id: str, child: str, cte: str, config: PackageConf
     other dimension."""
     if _dimension_index(config)[dim_id].entity != child:
         return None
-    return _column_ref(cte, _value_alias(dim_id))
+    return SqlIdentifier(parts=[cte, _value_alias(dim_id)])
 
 
 def keep_rows(joins: list[SqlJoin], cte: str) -> list[SqlJoin]:

@@ -1,178 +1,196 @@
-"""SQL CTE namespacing: prefix a nested select's CTE names so it can sit beside others."""
+"""Allocate CTE and relation aliases, then rewrite their bound references."""
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Iterable, Mapping
+from dataclasses import fields, is_dataclass, replace
+from itertools import count
 from typing import Any
 
-from ..errors import SemanticLayerError
 from ..sql_ast import (
-    SqlAggregateFilter,
-    SqlBinary,
-    SqlCall,
-    SqlCallWithOrder,
-    SqlCase,
-    SqlCaseWhen,
-    SqlCast,
+    ROW_FILTER_OWNER,
     SqlCte,
-    SqlExists,
-    SqlField,
     SqlIdentifier,
-    SqlIn,
-    SqlIndexAccess,
-    SqlInterval,
-    SqlIsNull,
-    SqlJoin,
-    SqlLike,
     SqlLiteral,
-    SqlNamedArg,
-    SqlOrder,
-    SqlOrderTerm,
-    SqlParameterizedCall,
+    SqlParameter,
+    SqlPipelineCte,
     SqlSelect,
+    SqlSourceColumn,
+    SqlSourceCte,
+    SqlSourceRef,
     SqlTableFunction,
     SqlTableRef,
-    SqlWindow,
-    SqlWithinGroup,
+    sql_nodes,
 )
 
 
+def reserve_name(candidates: Iterable[str], occupied: set[str], *, paired: bool = False) -> str:
+    """Claim the first free spelling and, for a probe, its companion rows name."""
+    for candidate in candidates:
+        names = {candidate.casefold()}
+        if paired:
+            names.add(f"{candidate.casefold()}_rows")
+        if names.isdisjoint(occupied):
+            occupied.update(names)
+            return candidate
+    raise AssertionError("Generated names require an unbounded sequence of candidates")
+
+
 def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
-    cte_names: set[str] = set()
+    ctes = [node for node in sql_nodes(select) if isinstance(node, SqlCte)]
+    if not ctes:
+        return select
+    rename = {cte.name: f"{prefix}{cte.name}" for cte in ctes}
+    return _rewrite_names(
+        select, rename, {}, {cte.name for cte in ctes if isinstance(cte, SqlSourceCte)}
+    )
 
-    def _collect_ctes(node: SqlSelect) -> None:
-        for cte in node.ctes:
-            cte_names.add(cte.name)
-            _collect_ctes(cte.query)  # type: ignore[arg-type]  # CTE queries are SqlSelect here
 
-    _collect_ctes(select)
-    rename = {name: f"{prefix}{name}" for name in cte_names}
+def avoid_name_collisions(
+    select: SqlSelect, reserved: Iterable[str] = ()
+) -> tuple[SqlSelect, dict[str, str]]:
+    """Separate package relations from generated names before WITH clauses are hoisted."""
+    nodes = list(sql_nodes(select))
+    sourced = {node.name for node in nodes if isinstance(node, SqlSourceCte)}
+    sources = {node.name for node in nodes if isinstance(node, SqlSourceRef)}
+    blocked = {
+        part.casefold() for name in [*reserved, *sources, *sourced] for part in name.split(".")
+    }
+    ctes = {
+        node.name
+        for node in nodes
+        if isinstance(node, SqlCte) and not isinstance(node, SqlSourceCte)
+    }
+    aliases = {node.alias for node in nodes if isinstance(node, SqlTableRef | SqlTableFunction)}
+    occupied = blocked | {name.casefold() for name in ctes | aliases}
+    paired = {
+        name
+        for name in ctes
+        if f"{name}_rows" in ctes and name.rsplit("__", 1)[-1].startswith(("edge_", "observed_"))
+    }
+    rename: dict[str, str] = {}
 
-    def _expr(expr: Any) -> Any:
-        if isinstance(expr, SqlIdentifier):
-            if expr.parts and expr.parts[0] in rename:
-                return SqlIdentifier(parts=[rename[expr.parts[0]], *expr.parts[1:]])
-            return expr
-        if isinstance(expr, SqlLiteral):
-            return expr
-        if isinstance(expr, SqlCall):
-            return SqlCall(
-                name=expr.name, args=[_expr(arg) for arg in expr.args], distinct=expr.distinct
-            )
-        if isinstance(expr, SqlBinary):
-            return SqlBinary(left=_expr(expr.left), op=expr.op, right=_expr(expr.right))
-        if isinstance(expr, SqlIn):
-            return SqlIn(
-                expr=_expr(expr.expr),
-                values=[_expr(value) for value in expr.values],
-                negated=expr.negated,
-            )
-        if isinstance(expr, SqlInterval):
-            return SqlInterval(value=_expr(expr.value), unit=expr.unit)
-        if isinstance(expr, SqlExists):
-            return SqlExists(query=_select(expr.query), negated=expr.negated)
-        if isinstance(expr, SqlIsNull):
-            return SqlIsNull(expr=_expr(expr.expr))
-        if isinstance(expr, SqlLike):
-            return replace(expr, expr=_expr(expr.expr))
-        if isinstance(expr, SqlCaseWhen):
-            return SqlCaseWhen(condition=_expr(expr.condition), result=_expr(expr.result))
-        if isinstance(expr, SqlCase):
-            return SqlCase(
-                whens=[_expr(item) for item in expr.whens],
-                else_expr=_expr(expr.else_expr) if expr.else_expr is not None else None,
-            )
-        if isinstance(expr, SqlCast):
-            return SqlCast(expr=_expr(expr.expr), type_name=expr.type_name)
-        if isinstance(expr, SqlOrderTerm):
-            return SqlOrderTerm(expr=_expr(expr.expr), direction=expr.direction)
-        if isinstance(expr, SqlWindow):
-            return SqlWindow(
-                function=_expr(expr.function),
-                partition_by=[_expr(item) for item in expr.partition_by],
-                order_by=[_expr(item) for item in expr.order_by],
-                frame=expr.frame,
-            )
-        if isinstance(expr, SqlWithinGroup):
-            return SqlWithinGroup(
-                function=_expr(expr.function), order_by=[_expr(item) for item in expr.order_by]
-            )
-        if isinstance(expr, SqlCallWithOrder):
-            return replace(
-                expr, call=_expr(expr.call), order_by=[_expr(item) for item in expr.order_by]
-            )
-        if isinstance(expr, SqlAggregateFilter):
-            return SqlAggregateFilter(call=_expr(expr.call), where=_expr(expr.where))
-        if isinstance(expr, SqlIndexAccess):
-            return SqlIndexAccess(
-                expr=_expr(expr.expr), index=_expr(expr.index), wrapper=expr.wrapper
-            )
-        if isinstance(expr, SqlParameterizedCall):
-            return SqlParameterizedCall(
-                name=expr.name,
-                params=[_expr(param) for param in expr.params],
-                args=[_expr(arg) for arg in expr.args],
-            )
-        return expr
+    def available(name: str, *, pair: bool = False) -> str:
+        return reserve_name((f"{name}_{index}" for index in count(2)), occupied, paired=pair)
 
-    def _table(table: SqlTableRef | SqlTableFunction) -> SqlTableRef | SqlTableFunction:
-        if isinstance(table, SqlTableFunction):
-            # A generated series (the implicit calendar's days) reads its bounds' CTE.
-            return SqlTableFunction(
-                name=table.name,
-                args=[_expr(arg) for arg in table.args],
-                named_args=[SqlNamedArg(arg.name, _expr(arg.value)) for arg in table.named_args],
-                alias=table.alias,
-                columns=list(table.columns),
-                lateral=table.lateral,
-            )
-        return SqlTableRef(name=rename.get(table.name, table.name), alias=table.alias)
+    for name in sorted(ctes - {f"{name}_rows" for name in paired}):
+        rows = f"{name}_rows"
+        if name.casefold() in blocked or (name in paired and rows.casefold() in blocked):
+            rename[name] = available(name, pair=name in paired)
+            if name in paired:
+                rename[rows] = f"{rename[name]}_rows"
+    alias_rename = {
+        name: rename.get(name) or available(name)
+        for name in sorted(aliases - {"", ROW_FILTER_OWNER})
+        if name.casefold() in blocked
+    }
+    if not (rename or alias_rename):
+        return select, rename
+    return _rewrite_names(select, rename, alias_rename, set()), rename
 
-    def _select(node: SqlSelect) -> SqlSelect:
-        # A one-row select reads no relation (a window total's spine).
-        if not isinstance(node.from_table, (SqlTableRef, SqlTableFunction, type(None))) or not all(
-            isinstance(join.table, (SqlTableRef, SqlTableFunction)) for join in node.joins
+
+def _rewrite_names(
+    select: SqlSelect,
+    cte_names: Mapping[str, str],
+    aliases: Mapping[str, str],
+    sourced: set[str],
+) -> SqlSelect:
+    def table_name(table: SqlTableRef) -> str:
+        if isinstance(table, SqlSourceRef) and table.name not in sourced:
+            return table.name
+        return cte_names.get(table.name, table.name)
+
+    # A caller may already be deep in its own stack. Walk the SQL tree without
+    # adding a Python frame for each level of a supported expression.
+    Scope = tuple[Mapping[str, str], set[str], Mapping[str, str]]
+    stack: list[tuple[Any, Scope, tuple[str, ...] | None]] = [
+        (select, (cte_names, set(), {}), None)
+    ]
+    values: list[Any] = []
+    while stack:
+        node, scope, keys = stack.pop()
+        qualifiers, sources, values_by_table = scope
+        if keys is not None:
+            length = len(node) if isinstance(node, list | tuple) else len(keys)
+            children = values[-length:] if length else []
+            if length:
+                del values[-length:]
+            if isinstance(node, list | tuple):
+                values.append(type(node)(children))
+            else:
+                values.append(replace(node, **dict(zip(keys, children, strict=True))))
+            continue
+
+        if isinstance(node, SqlIdentifier):
+            if len(node.parts) == 1 and node.parts[0] in values_by_table:
+                node = replace(node, parts=[values_by_table[node.parts[0]]])
+            if len(node.parts) == 2:
+                prefix, column = node.parts
+                if not (isinstance(node, SqlSourceColumn) and prefix in sources):
+                    name = qualifiers.get(prefix, prefix)
+                    if name != prefix:
+                        node = replace(node, parts=[name, column])
+            values.append(node)
+            continue
+        if isinstance(node, SqlTableRef):
+            name, alias = table_name(node), aliases.get(node.alias, node.alias)
+            if isinstance(node, SqlSourceRef) and node.name in sourced:
+                node = SqlTableRef(name, alias)
+            values.append(replace(node, name=name, alias=alias))
+            continue
+        if isinstance(node, list | tuple):
+            stack.append((node, scope, ()))
+            stack.extend((item, scope, None) for item in reversed(node))
+            continue
+        if (
+            isinstance(node, SqlLiteral | SqlParameter)
+            or not is_dataclass(node)
+            or isinstance(node, type)
         ):
-            # Refuse any other relation rather than emit SQL that lost its arguments.
-            raise SemanticLayerError(
-                "REWRITE_NOT_SUPPORTED",
-                "This query compiles its parts as separate sub-queries, which cannot hold "
-                "this relation",
-            )
-        return SqlSelect(
-            select=[SqlField(_expr(field.expression), field.alias) for field in node.select],
-            from_table=None if node.from_table is None else _table(node.from_table),
-            joins=[
-                SqlJoin(
-                    join_type=join.join_type,
-                    table=_table(join.table),
-                    on=_expr(join.on),
-                )
-                for join in node.joins
-            ],
-            where=[_expr(item) for item in node.where],
-            group_by=[_expr(item) for item in node.group_by],
-            having=[_expr(item) for item in node.having],
-            qualify=[_expr(item) for item in node.qualify],
-            order_by=[
-                SqlOrder(
-                    expression=_expr(item.expression),
-                    direction=item.direction,
-                    nulls_last=item.nulls_last,
-                )
-                for item in node.order_by
-            ],
-            limit=node.limit,
-            offset=node.offset,
-            ctes=[
-                SqlCte(
-                    name=rename.get(cte.name, cte.name),
-                    query=_select(cte.query),  # type: ignore[arg-type]  # CTE queries are SqlSelect here
-                )
-                for cte in node.ctes
-            ],
-            distinct=getattr(node, "distinct", False),
-            observation_scan=node.observation_scan,
-        )
+            values.append(node)
+            continue
 
-    return _select(select)
+        current = scope
+        if isinstance(node, SqlSelect):
+            tables = (node.from_table, *(join.table for join in node.joins))
+            raw = {
+                table.name
+                for table in tables
+                if isinstance(table, SqlSourceRef) and not table.alias and table.name not in sourced
+            }
+            local = {**qualifiers, **{name: name for name in raw}}
+            for table in tables:
+                if table is None:
+                    continue
+                if table.alias:
+                    local[table.alias] = aliases.get(table.alias, table.alias)
+                elif isinstance(table, SqlTableRef) and (
+                    not isinstance(table, SqlSourceRef) or table.name in sourced
+                ):
+                    local[table.name] = table_name(table)
+            value_names = {
+                table.alias: aliases[table.alias]
+                for table in tables
+                if isinstance(table, SqlTableFunction)
+                and not table.columns
+                and table.alias in aliases
+            }
+            current = local, sources | raw, {**values_by_table, **value_names}
+        elif isinstance(node, SqlCte):
+            name = cte_names.get(node.name, node.name)
+            node = (
+                SqlPipelineCte(name, node.query)
+                if isinstance(node, SqlSourceCte) and node.name in sourced
+                else replace(node, name=name)
+            )
+        elif isinstance(node, SqlTableFunction):
+            node = replace(node, alias=aliases.get(node.alias, node.alias))
+        keys = tuple(item.name for item in fields(node))
+        stack.append((node, scope, keys))
+        stack.extend(
+            (getattr(node, key), scope if key == "ctes" else current, None)
+            for key in reversed(keys)
+        )
+    result = values.pop()
+    assert isinstance(result, SqlSelect)
+    return result

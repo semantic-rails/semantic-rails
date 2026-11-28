@@ -21,6 +21,7 @@ from .errors import SemanticLayerError
 from .policy_rules import policy_action, role_scope_matches
 from .schema import PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import (
+    ROW_FILTER_OWNER,
     SqlBinary,
     SqlCall,
     SqlCast,
@@ -32,7 +33,9 @@ from .sql_ast import (
     SqlInQuery,
     SqlLiteral,
     SqlParameter,
+    SqlPipelineCte,
     SqlSelect,
+    SqlSourceRef,
     SqlTableFunction,
     SqlTableRef,
     sql_nodes,
@@ -98,7 +101,7 @@ class RowFilter:
 
 # The alias of an owner read inside a visibility predicate. Every column the subquery reads is
 # qualified by it, and it names the subquery's only relation, so no outer name is captured.
-OWNER = "rf_owner"
+OWNER = ROW_FILTER_OWNER
 
 
 def relation_key(name: str) -> str:
@@ -151,7 +154,7 @@ class Visibility:
         for hop in self.parents.get(table, ()):
             owners = SqlSelect(
                 [SqlField(SqlIdentifier([OWNER, hop.key]), hop.key)],
-                SqlTableRef(hop.parent, OWNER),
+                SqlSourceRef(hop.parent, OWNER),
                 where=[self._predicate(relation_key(hop.parent), [OWNER], (*seen, table))],
             )
             parts.append(SqlInQuery(SqlIdentifier([*qualifier, hop.fk]), owners))
@@ -360,7 +363,11 @@ def _verify(node: Any, visibility: Visibility, ctes: set[str], *, in_pipeline: b
     if isinstance(node, SqlTableRef | SqlTableFunction):
         raise unsupported(visibility.filters)  # a relation read outside FROM or JOIN
     if isinstance(node, SqlCte):
-        inside = in_pipeline or relation_key(node.name) in visibility.pipelines
+        inside = (
+            in_pipeline
+            or isinstance(node, SqlPipelineCte)
+            or relation_key(node.name) in visibility.pipelines
+        )
         _verify(node.query, visibility, ctes, in_pipeline=inside)
         return
     if not is_dataclass(node) or isinstance(node, type):

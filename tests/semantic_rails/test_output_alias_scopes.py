@@ -122,37 +122,37 @@ GROUP BY
 ),
 guarded_base AS (
 SELECT
-  base.g1 AS g1,
-  base.g2 AS g2,
-  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1,
-  CASE WHEN MAX(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2,
-  base.m3 AS m3,
-  base.m4 AS m4
-FROM leaf_1 AS base
+  base_2.g1 AS g1,
+  base_2.g2 AS g2,
+  COALESCE(base_2.m1, CASE WHEN COUNT(base_2.m1) OVER () > 0 AND ((base_2.m1_rows IS NULL) OR base_2.m1_rows = 0) THEN 0 END) AS m1,
+  CASE WHEN MAX(base_2.m2) OVER () > 0 THEN COALESCE(base_2.m2, 0) END AS m2,
+  base_2.m3 AS m3,
+  base_2.m4 AS m4
+FROM leaf_1 AS base_2
 ),
-projected AS (
+projected_2 AS (
 SELECT
-  base.g1 AS g1,
-  base.g2 AS g2,
-  base.m1 AS {q}amount{q},
-  base.m2 AS {q}REGION{q},
-  base.m3 AS {q}store_id{q},
-  base.m4 AS {q}order{q},
-  base.m1 AS p1
-FROM guarded_base AS base
+  base_2.g1 AS g1,
+  base_2.g2 AS g2,
+  base_2.m1 AS {q}amount{q},
+  base_2.m2 AS {q}REGION{q},
+  base_2.m3 AS {q}store_id{q},
+  base_2.m4 AS {q}order{q},
+  base_2.m1 AS p1
+FROM guarded_base AS base_2
 )
 SELECT
-  projected.g1 AS {region},
-  projected.g2 AS {channel},
-  projected.{q}amount{q} AS {q}amount{q},
-  projected.{q}REGION{q} AS {q}REGION{q},
-  projected.{q}store_id{q} AS {q}store_id{q},
-  projected.{q}order{q} AS {q}order{q}
-FROM projected
+  projected_2.g1 AS {region},
+  projected_2.g2 AS {channel},
+  projected_2.{q}amount{q} AS {q}amount{q},
+  projected_2.{q}REGION{q} AS {q}REGION{q},
+  projected_2.{q}store_id{q} AS {q}store_id{q},
+  projected_2.{q}order{q} AS {q}order{q}
+FROM projected_2
 WHERE
-  projected.p1 >= 6
+  projected_2.p1 >= 6
 ORDER BY
-  projected.{q}store_id{q} DESC NULLS LAST{tail}"""
+  projected_2.{q}store_id{q} DESC NULLS LAST{tail}"""
 _STANDARD = {
     "q": '"',
     "join": "LEFT",

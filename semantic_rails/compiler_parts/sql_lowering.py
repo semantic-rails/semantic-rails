@@ -23,7 +23,6 @@ from ..expressions import (
 from ..ir import (
     LogicalPlan,
 )
-from ..relation_pipelines import relation_source_tables
 from ..schema import PackageConfig
 from ..sql_ast import (
     SqlBinary,
@@ -524,7 +523,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     if fill_binding is None and not total_spine and (plan.measure_plans or conversion_exprs):
         ctes: list[SqlCte] = list(base_leaf_select.ctes)
         assert isinstance(base_leaf_select.from_table, SqlTableRef)  # leaf select uses table ref
-        base_table = SqlTableRef(name=base_leaf_select.from_table.name, alias="base")
+        base_table = replace(base_leaf_select.from_table, alias="base")
         base_name = base_table.alias
     else:
         ctes = [SqlCte(name="leaf_base", query=base_leaf_select)]
@@ -736,22 +735,6 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         )
 
     if zero:
-        relation_names: set[str] = set()
-        if scopes:
-            # A coverage CTE can be prefixed or sit beside pipeline reads added later.
-            # Namespacing rewrites the first qualifier, which can also be a schema or catalog.
-            package_relations = {
-                *(row.table for row in config.entities),
-                *(row.relation for row in config.aggregate_relations),
-                *(row.output_name for row in config.relations),
-                *(row.zero_through.relation for row in config.measures if row.zero_through),
-                *relation_source_tables(config, (row.id for row in config.relations)),
-            }
-            relation_names = {
-                name.partition(".")[0] for name in _cte_names([ctes, projected_fields, base_table])
-            } | {
-                name.casefold().partition(".")[0].rsplit("__", 1)[-1] for name in package_relations
-            }
         ctes.extend(
             guard_empty_groups(
                 base_table.name,
@@ -780,7 +763,6 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     for measure in measure_aliases
                 },
                 absent=marked,
-                relation_names=relation_names,
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")

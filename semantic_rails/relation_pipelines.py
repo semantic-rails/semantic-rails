@@ -14,8 +14,10 @@ from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
+from itertools import count
 from typing import Any
 
+from .compiler_parts.namespacing import _rewrite_names, avoid_name_collisions, reserve_name
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError
 from .expressions import (
@@ -51,13 +53,13 @@ from .sql_ast import (
     SqlIn,
     SqlIsNull,
     SqlJoin,
-    SqlJsonExtract,
     SqlLiteral,
     SqlOrderTerm,
-    SqlQuery,
+    SqlPipelineCte,
     SqlSelect,
     SqlSetQuery,
-    SqlTableFunction,
+    SqlSourceCte,
+    SqlSourceRef,
     SqlTableRef,
     SqlWindow,
     boolean_chain,
@@ -65,6 +67,7 @@ from .sql_ast import (
     build_filter_condition,
     build_negation,
     is_null_literal,
+    sql_nodes,
 )
 
 # The date and timestamp columns a filter reads, by table alias, and the alias an unqualified
@@ -77,6 +80,7 @@ _TEMPORAL_COLUMNS: ContextVar[tuple[Mapping[str, frozenset[str]], str]] = Contex
 @dataclass
 class _RelationState:
     source_name: str = ""
+    authored_source: bool = False
     columns: list[str] = field(default_factory=list)
     ctes: list[SqlCte] = field(default_factory=list)
     preaggregated: bool = False
@@ -86,13 +90,16 @@ class _RelationState:
     # timestamp when what the relation's readers or its source declare shares its lineage.
     lineage: dict[str, str] = field(default_factory=dict)
 
+    def source(self, alias: str) -> SqlTableRef:
+        return (SqlSourceRef if self.authored_source else SqlTableRef)(self.source_name, alias)
+
 
 @dataclass(frozen=True)
 class _LoweredRelation:
     relation: RelationConfig
     ctes: list[SqlCte]
-    cte_names: set[str]
-    dependencies: set[str] = field(default_factory=set)
+    source_tables: set[str]
+    dependencies: set[str]
 
 
 def _step_name(relation: RelationConfig, index: int, kind: str, *, final: bool) -> str:
@@ -442,7 +449,7 @@ def _lower_select(
         SqlField(_expr(expr_raw, warehouse=warehouse), str(alias))
         for alias, expr_raw in columns.items()
     ]
-    query = SqlSelect(select=select_fields, from_table=SqlTableRef(state.source_name, alias="src"))
+    query = SqlSelect(select=select_fields, from_table=state.source("src"))
     output_columns = [str(alias) for alias in columns]
     grain_columns = set(state.grain_columns) & set(output_columns)
     return _RelationState(
@@ -474,7 +481,7 @@ def _lower_where(
     ]
     query = SqlSelect(
         select=_column_fields(state.columns),
-        from_table=SqlTableRef(state.source_name, alias="src"),
+        from_table=state.source("src"),
         where=predicates,
     )
     return _RelationState(
@@ -505,7 +512,7 @@ def _lower_json_extract(
         SqlIdentifier(parts=["src", source_column]), path, as_text=bool(config.get("as_text", True))
     )
     fields.append(SqlField(json_expr, alias))
-    query = SqlSelect(select=fields, from_table=SqlTableRef(state.source_name, alias="src"))
+    query = SqlSelect(select=fields, from_table=state.source("src"))
     return _RelationState(
         source_name=output_name,
         columns=[*state.columns, alias],
@@ -530,7 +537,7 @@ def _lower_explode(
     fields.append(SqlField(element, alias))
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(state.source_name, alias="src"),
+        from_table=state.source("src"),
         joins=[SqlJoin("CROSS", table=table)],
     )
     output_columns = [column for column in state.columns if column != source_column]
@@ -577,9 +584,7 @@ def _lower_group_by(
         SqlField(_aggregate_expr(spec, warehouse=warehouse), str(alias))
         for alias, spec in aggregates.items()
     )
-    query = SqlSelect(
-        select=fields, from_table=SqlTableRef(state.source_name, alias="src"), group_by=group_exprs
-    )
+    query = SqlSelect(select=fields, from_table=state.source("src"), group_by=group_exprs)
     columns = [str(alias) for alias in dimensions] + [str(alias) for alias in aggregates]
     return _RelationState(
         source_name=output_name,
@@ -657,10 +662,12 @@ def _lower_preaggregate_side(
     warehouse: str,
     on_items: list[Any],
     side: str,
+    authored_source: bool,
 ) -> tuple[SqlCte, list[str], set[str]]:
     spec = _ensure_mapping(spec_raw, path=f"relation join pre_aggregate.{side}")
     state = _RelationState(
         source_name=source_name,
+        authored_source=authored_source,
         columns=[str(item) for item in _ensure_list(spec.get("columns", []))],
     )
     lowered = _lower_group_by(spec, state, output_name=output_name, warehouse=warehouse)
@@ -697,6 +704,7 @@ def _lower_join(
             warehouse=warehouse,
             on_items=on_items,
             side="left",
+            authored_source=state.authored_source,
         )
         join_ctes.append(left_cte)
         left_source = left_cte.name
@@ -708,6 +716,7 @@ def _lower_join(
             warehouse=warehouse,
             on_items=on_items,
             side="right",
+            authored_source=True,
         )
         join_ctes.append(right_cte)
         right_source = right_cte.name
@@ -741,11 +750,17 @@ def _lower_join(
     ]
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(left_source, alias="left"),
+        from_table=(
+            SqlTableRef(left_source, alias="left")
+            if pre_aggregate.get("left")
+            else state.source("left")
+        ),
         joins=[
             SqlJoin(
                 str(config.get("type", "inner")).upper(),
-                SqlTableRef(right_source, alias="right"),
+                (SqlTableRef if pre_aggregate.get("right") else SqlSourceRef)(
+                    right_source, alias="right"
+                ),
                 condition,
             )
         ],
@@ -788,12 +803,12 @@ def _lower_semi_join(
     subquery_where = [condition, *right_predicates]
     subquery = SqlSelect(
         select=[SqlField(SqlLiteral(1), "match")],
-        from_table=SqlTableRef(relation, alias="right"),
+        from_table=SqlSourceRef(relation, alias="right"),
         where=subquery_where,
     )
     query = SqlSelect(
         select=_column_fields(state.columns),
-        from_table=SqlTableRef(state.source_name, alias="src"),
+        from_table=state.source("src"),
         where=[SqlExists(subquery, negated=negated)],
     )
     return _RelationState(
@@ -839,7 +854,7 @@ def _lower_window(
                 str(alias),
             )
         )
-    query = SqlSelect(select=fields, from_table=SqlTableRef(state.source_name, alias="src"))
+    query = SqlSelect(select=fields, from_table=state.source("src"))
     return _RelationState(
         source_name=output_name,
         columns=[*state.columns, *[str(alias) for alias in windows]],
@@ -898,8 +913,8 @@ def _lower_state_as_of(
     ]
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(state.source_name, alias="src"),
-        joins=[SqlJoin("INNER", SqlTableRef(spine, alias="spine"), condition)],
+        from_table=state.source("src"),
+        joins=[SqlJoin("INNER", SqlSourceRef(spine, alias="spine"), condition)],
     )
     return _RelationState(
         source_name=output_name,
@@ -980,11 +995,11 @@ def _lower_attribution_join(
     ]
     query = SqlSelect(
         select=fields,
-        from_table=SqlTableRef(base, alias="base"),
+        from_table=SqlSourceRef(base, alias="base"),
         joins=[
             SqlJoin(
                 str(config.get("type", "left")).upper(),
-                SqlTableRef(attributed, alias="attributed"),
+                SqlSourceRef(attributed, alias="attributed"),
                 condition,
             )
         ],
@@ -1002,7 +1017,7 @@ def _branch_select(source: str, columns: dict[str, Any], *, warehouse: str) -> S
             SqlField(_expr(expr_raw, warehouse=warehouse), str(alias))
             for alias, expr_raw in columns.items()
         ],
-        from_table=SqlTableRef(source, alias="src"),
+        from_table=SqlSourceRef(source, alias="src"),
     )
 
 
@@ -1073,7 +1088,9 @@ def _lower_step_sql(
     if step.kind == "source":
         source = _source_from_config(config)
         columns = [str(item) for item in _ensure_list(config.get("columns", relation.columns))]
-        return _RelationState(source_name=source, columns=columns, ctes=list(state.ctes))
+        return _RelationState(
+            source_name=source, authored_source=True, columns=columns, ctes=list(state.ctes)
+        )
     if step.kind == "date_spine":
         query, columns = _date_spine_query(config)
         return _RelationState(
@@ -1172,109 +1189,53 @@ def lower_relation(
             )
         query = SqlSelect(
             select=_column_fields(state.columns),
-            from_table=SqlTableRef(state.source_name, alias="src"),
+            from_table=state.source("src"),
         )
         state.ctes.append(SqlCte(relation.output_name, query))
         state.source_name = relation.output_name
-    return state.ctes, state.columns
+    return [
+        (SqlSourceCte if cte.name == relation.output_name else SqlPipelineCte)(cte.name, cte.query)
+        for cte in state.ctes
+    ], state.columns
 
 
-def _table_ref_name(table: Any) -> str:
-    if isinstance(table, SqlTableFunction):  # UNNEST(...) and friends read no relation
-        return ""
-    return str(getattr(table, "name", "") or "").strip()
+def _authored_reads(node: SqlSelect | list[SqlCte]) -> set[str]:
+    return {ref.name for ref in sql_nodes(node) if isinstance(ref, SqlSourceRef)}
 
 
-def _collect_table_refs(query: SqlQuery) -> set[str]:
-    refs: set[str] = set()
-
-    def _walk_expr(expr: SqlExpr | None) -> None:
-        if expr is None:
-            return
-        if isinstance(expr, SqlBinary):
-            _walk_expr(expr.left)
-            _walk_expr(expr.right)
-        elif isinstance(expr, SqlCall):
-            for arg in expr.args:
-                _walk_expr(arg)
-        elif isinstance(expr, SqlIn):
-            _walk_expr(expr.expr)
-            for value in expr.values:
-                _walk_expr(value)
-        elif isinstance(expr, SqlExists):
-            _walk_select(expr.query)
-        elif isinstance(expr, SqlCase):
-            for when in expr.whens:
-                _walk_expr(when.condition)
-                _walk_expr(when.result)
-            _walk_expr(expr.else_expr)
-        elif isinstance(expr, SqlCast):
-            _walk_expr(expr.expr)
-        elif isinstance(expr, SqlWindow):
-            _walk_expr(expr.function)
-            for item in expr.partition_by:
-                _walk_expr(item)
-            for order_term in expr.order_by:
-                _walk_expr(order_term.expr)
-        elif isinstance(expr, SqlJsonExtract):
-            _walk_expr(expr.expr)
-
-    def _walk_select(node: SqlSelect) -> None:
-        if node.from_table is not None:
-            name = _table_ref_name(node.from_table)
-            if name:
-                refs.add(name)
-        for join in node.joins:
-            name = _table_ref_name(join.table)
-            if name:
-                refs.add(name)
-            _walk_expr(join.on)
-        for select_field in node.select:
-            _walk_expr(select_field.expression)
-        for expr in [*node.where, *node.group_by, *node.having, *node.qualify]:
-            _walk_expr(expr)
-        for order in node.order_by:
-            _walk_expr(order.expression)
-        for cte in node.ctes:
-            _walk_query(cte.query)
-
-    def _walk_query(node: SqlQuery) -> None:
-        if isinstance(node, SqlSetQuery):
-            for branch in node.queries:
-                _walk_select(branch)
-            return
-        _walk_select(node)
-
-    _walk_query(query)
-    return refs
-
-
-def _lower_relations_for_config(config: PackageConfig) -> dict[str, _LoweredRelation]:
-    lowered: dict[str, _LoweredRelation] = {}
-    output_to_relation: dict[str, str] = {}
-    cte_to_relation: dict[str, str] = {}
-
+def lower_relations(config: PackageConfig) -> dict[str, _LoweredRelation]:
+    if not config.relations:
+        return {}
     tables = _temporal_tables(config)
+    ctes_by_id = {
+        row.id: lower_relation(row, warehouse=config.package.warehouse, tables=tables)[0]
+        for row in config.relations
+    }
+    outputs = {row.output_name: row.id for row in config.relations}
+    reads = {relation_id: _authored_reads(ctes) for relation_id, ctes in ctes_by_id.items()}
+    occupied = {
+        part.casefold() for name in set(outputs).union(*reads.values()) for part in name.split(".")
+    }
+    lowered: dict[str, _LoweredRelation] = {}
     for relation in config.relations:
-        ctes, _ = lower_relation(relation, warehouse=config.package.warehouse, tables=tables)
-        cte_names = {cte.name for cte in ctes}
-        lowered[relation.id] = _LoweredRelation(relation=relation, ctes=ctes, cte_names=cte_names)
-        output_to_relation[relation.output_name] = relation.id
-        for cte_name in cte_names:
-            cte_to_relation[cte_name] = relation.id
-
-    for relation_id, row in list(lowered.items()):
-        dependencies: set[str] = set()
-        for cte in row.ctes:
-            for ref in _collect_table_refs(cte.query):
-                dep = output_to_relation.get(ref) or cte_to_relation.get(ref)
-                if dep and dep != relation_id:
-                    dependencies.add(dep)
-        lowered[relation_id] = _LoweredRelation(
-            relation=row.relation,
-            ctes=row.ctes,
-            cte_names=row.cte_names,
-            dependencies=dependencies,
+        ctes = ctes_by_id[relation.id]
+        blocked = occupied.copy()
+        occupied.update(cte.name.casefold() for cte in ctes)
+        # A stage has meaning only inside its own pipeline until it is attached.
+        renamed = {
+            cte.name: reserve_name((f"{cte.name}_{i}" for i in count(2)), occupied)
+            for cte in ctes
+            if type(cte) is SqlPipelineCte and cte.name.casefold() in blocked
+        }
+        if renamed:
+            ctes = _rewrite_names(SqlSelect(select=[], ctes=ctes), renamed, {}, set()).ctes
+        sources = reads[relation.id]
+        dependencies = {outputs[name] for name in sources & outputs.keys()} - {relation.id}
+        lowered[relation.id] = _LoweredRelation(
+            relation,
+            ctes,
+            {name for name in sources if outputs.get(name) not in dependencies},
+            dependencies,
         )
     return lowered
 
@@ -1282,11 +1243,9 @@ def _lower_relations_for_config(config: PackageConfig) -> dict[str, _LoweredRela
 def relation_source_tables(config: PackageConfig, relation_ids: Iterable[str]) -> set[str]:
     """Return the stored tables the given relation pipelines read.
 
-    Follows each pipeline's dependencies on other pipelines and drops every
-    compiler-generated CTE name, so only warehouse relations remain.
+    Follows each pipeline's dependencies on other declared pipeline outputs.
     """
-    lowered = _lower_relations_for_config(config)
-    generated = {name for row in lowered.values() for name in row.cte_names}
+    lowered = lower_relations(config)
     tables: set[str] = set()
     pending = [relation_id for relation_id in relation_ids if relation_id in lowered]
     seen: set[str] = set()
@@ -1296,29 +1255,21 @@ def relation_source_tables(config: PackageConfig, relation_ids: Iterable[str]) -
             continue
         seen.add(relation_id)
         pending.extend(lowered[relation_id].dependencies)
-        for cte in lowered[relation_id].ctes:
-            tables.update(ref for ref in _collect_table_refs(cte.query) if ref not in generated)
+        tables.update(lowered[relation_id].source_tables)
     return tables
 
 
-def _required_relation_ctes(config: PackageConfig, query: SqlSelect) -> list[SqlCte]:
-    lowered = _lower_relations_for_config(config)
-    if not lowered:
-        return []
+def _required_relation_ctes(
+    query: SqlSelect, lowered: Mapping[str, _LoweredRelation]
+) -> list[SqlCte]:
     output_to_relation = {
         row.relation.output_name: relation_id for relation_id, row in lowered.items()
     }
-    cte_to_relation = {
-        cte_name: relation_id for relation_id, row in lowered.items() for cte_name in row.cte_names
-    }
     query_cte_names = {cte.name for cte in query.ctes}
-    roots: set[str] = set()
-    for ref in _collect_table_refs(query):
-        if ref in query_cte_names:
-            continue
-        relation_id = output_to_relation.get(ref) or cte_to_relation.get(ref)
-        if relation_id:
-            roots.add(relation_id)
+    roots = {
+        output_to_relation[ref]
+        for ref in _authored_reads(query) & output_to_relation.keys() - query_cte_names
+    }
 
     ordered: list[str] = []
     permanent: set[str] = set()
@@ -1344,33 +1295,58 @@ def _required_relation_ctes(config: PackageConfig, query: SqlSelect) -> list[Sql
         visit(relation_id)
 
     ctes: list[SqlCte] = []
-    seen: set[str] = set()
     for relation_id in ordered:
         for cte in lowered[relation_id].ctes:
-            if cte.name in seen or cte.name in query_cte_names:
-                continue
-            seen.add(cte.name)
-            ctes.append(cte)
+            if cte.name not in query_cte_names:
+                query_cte_names.add(cte.name)
+                ctes.append(cte)
     return ctes
 
 
-def pipeline_cte_names(config: PackageConfig) -> frozenset[str]:
-    """Every CTE name ``attach_relation_ctes`` may add: each pipeline's output and steps."""
-    if not config.relations:
-        return frozenset()
-    lowered = _lower_relations_for_config(config).values()
-    return frozenset(
-        {row.relation.output_name for row in lowered}
-        | {name for row in lowered for name in row.cte_names}
-    )
+def pipeline_cte_names(lowered: Mapping[str, _LoweredRelation]) -> set[str]:
+    """Every CTE name attachment may add, including each declared output."""
+    return {row.relation.output_name for row in lowered.values()} | {
+        cte.name for row in lowered.values() for cte in row.ctes
+    }
 
 
-def attach_relation_ctes(config: PackageConfig, query: SqlSelect) -> SqlSelect:
-    if not config.relations:
-        return query
-    relation_ctes = _required_relation_ctes(config, query)
+def _separate_pipeline_outputs(
+    query: SqlSelect, ctes: list[SqlCte]
+) -> tuple[SqlSelect, list[SqlCte]]:
+    declared = {cte.name for cte in ctes if isinstance(cte, SqlSourceCte)}
+    reads = _authored_reads(query) | _authored_reads(ctes)
+    stored = {name.casefold() for name in reads - declared}
+    conflicts = sorted(name for name in declared if name.casefold() in stored)
+    if not conflicts:
+        return query, ctes
+    occupied = {
+        part.casefold()
+        for name in reads
+        | {node.name for node in sql_nodes([query, ctes]) if isinstance(node, SqlCte)}
+        for part in name.split(".")
+    }
+    names = {name: reserve_name((f"{name}_{i}" for i in count(2)), occupied) for name in conflicts}
+    visible: dict[str, str] = {}
+    rewritten: list[SqlCte] = []
+    for cte in ctes:
+        # A source with the declaration's own spelling can still read its stored table
+        # before the output is visible.
+        if visible:
+            cte = _rewrite_names(SqlSelect(select=[], ctes=[cte]), visible, {}, set(visible)).ctes[
+                0
+            ]
+        if cte.name in names:
+            visible[cte.name] = names[cte.name]
+            cte = SqlPipelineCte(names[cte.name], cte.query)
+        rewritten.append(cte)
+    return _rewrite_names(query, visible, {}, set(visible)), rewritten
+
+
+def attach_relation_ctes(query: SqlSelect, lowered: Mapping[str, _LoweredRelation]) -> SqlSelect:
+    relation_ctes = _required_relation_ctes(query, lowered)
     if not relation_ctes:
         return query
+    query, relation_ctes = _separate_pipeline_outputs(query, relation_ctes)
     return SqlSelect(
         select=query.select,
         from_table=query.from_table,
@@ -1384,3 +1360,19 @@ def attach_relation_ctes(config: PackageConfig, query: SqlSelect) -> SqlSelect:
         offset=query.offset,
         ctes=[*relation_ctes, *query.ctes],
     )
+
+
+def attach_and_name_relations(
+    config: PackageConfig, select: SqlSelect
+) -> tuple[SqlSelect, dict[str, str]]:
+    reserved = {
+        *(entity.table for entity in config.entities),
+        *(aggregate.relation for aggregate in config.aggregate_relations),
+        *(measure.zero_through.relation for measure in config.measures if measure.zero_through),
+    }
+    if not config.relations:
+        return avoid_name_collisions(select, reserved)
+    lowered = lower_relations(config)
+    select, early = avoid_name_collisions(select, reserved | pipeline_cte_names(lowered))
+    select, late = avoid_name_collisions(attach_relation_ctes(select, lowered), reserved)
+    return select, {**late, **{name: late.get(new, new) for name, new in early.items()}}

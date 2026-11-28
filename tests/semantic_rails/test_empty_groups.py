@@ -33,13 +33,14 @@ from semantic_rails.compiler_parts import (
 from semantic_rails.compiler_parts.empty_groups import resolves_to_zero, sql_nodes
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.dialects import DuckDbDialect
+from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
-from semantic_rails.schema import MetricConfig
-from semantic_rails.sql_ast import SqlCte
+from semantic_rails.schema import MetricConfig, RelationConfig, RelationPipelineStep
+from semantic_rails.sql_ast import SqlCte, SqlTableFunction, SqlTableRef
 from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
@@ -1163,6 +1164,252 @@ def test_coverage_does_not_shadow_a_source_relation(
     assert response["window"]["data_through"] == "2024-08-01"
 
 
+@pytest.mark.parametrize("warehouse_simulation", [False, True], ids=["duckdb", "warehouse"])
+@pytest.mark.parametrize(
+    "relation",
+    [
+        "leaf_1",
+        "LEAF_1",
+        "main.leaf_1",
+        "leaf_1.tickets",
+        "leaf_base",
+        "combined_2",
+        "guarded_base",
+        "coverage_1",
+        "edge_1",
+        "edge_1_rows",
+        "observed_1",
+        "observed_1_rows",
+        "zero_through_log",
+        "base",
+        "dense_bounds",
+        "implicit_days",
+        "implicit_calendar",
+        "leaf_time_keys",
+        "dense_time",
+        "series_base",
+        "projected",
+    ],
+)
+def test_generated_names_do_not_shadow_ticket_rows(
+    tmp_path: Path, request: pytest.FixtureRequest, relation: str, warehouse_simulation: bool
+) -> None:
+    schema, _, _ = relation.partition(".")
+    create_schema = [f"CREATE SCHEMA {schema}"] if "." in relation and schema != "main" else []
+    package = _shop_package(
+        tmp_path, *create_schema, f"CREATE TABLE {relation} AS SELECT * FROM tickets"
+    )
+    config = load_package_config(str(package))
+    renamed = replace(
+        config,
+        entities=[
+            replace(entity, table=relation) if entity.table == "tickets" else entity
+            for entity in config.entities
+        ],
+    )
+    if warehouse_simulation:
+        request.getfixturevalue("coverage_for_named_windows_only")
+    query = {
+        "select": _select(
+            orders=SHOP_ORDERS,
+            opened=TICKETS_OPENED,
+            tickets=TICKETS_BY_LAST_ROW,
+        ),
+        "time": {
+            "temporal_role": "temporal_role.shop_ticket_row_opened_at",
+            "grain": "week",
+            "start": "2024-07-01",
+        },
+    }
+    if relation in {
+        "dense_bounds",
+        "implicit_days",
+        "implicit_calendar",
+        "leaf_time_keys",
+        "dense_time",
+        "series_base",
+    }:
+        query["time"].pop("start")
+        query["time"].update(end="2024-10-21", fill=True)
+    if relation == "projected":
+        query["having"] = [{"field": SHOP_ORDERS["measure"], "op": ">=", "value": 1}]
+    answers = []
+    for candidate in (config, renamed):
+        rt = Runtime.from_config(candidate, source_path=str(package))
+        try:
+            response = rt.query(query, now="2024-10-21T06:00:00Z")
+            answers.append((typed_rows(response), response["warnings"], response["window"]))
+            if candidate is renamed:
+                generated = {
+                    (node.name if isinstance(node, SqlCte) else node.alias).casefold()
+                    for node in sql_nodes(
+                        compile_query(
+                            candidate, None, rt.engine_payload(query, now="2024-10-21T06:00:00Z")
+                        )["sql_ast"]
+                    )
+                    if isinstance(node, (SqlCte, SqlTableRef, SqlTableFunction))
+                }
+                assert generated.isdisjoint(part.casefold() for part in relation.split("."))
+        finally:
+            rt.close()
+    assert answers[0] == answers[1]
+
+
+def test_coverage_names_keep_loading_warnings_on_their_outputs(
+    tmp_path: Path, coverage_for_named_windows_only: None
+) -> None:
+    package = _shop_package(tmp_path, "CREATE TABLE coverage_1 AS SELECT * FROM tickets")
+    model_path = package / "models" / "ticket_rows.yml"
+    model = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    model["model"]["relation"] = "coverage_1"
+    model_path.write_text(yaml.safe_dump(model), encoding="utf-8")
+    rt = Runtime.from_path(str(package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    orders=SHOP_ORDERS,
+                    scans={"kind": "measure", "measure": "measure.shop.scan_count"},
+                    tickets=TICKETS_BY_LAST_ROW,
+                    signups={"kind": "measure", "measure": "measure.shop.signup_count"},
+                    opened=TICKETS_OPENED,
+                ),
+                "time": {
+                    "temporal_role": "temporal_role.shop_ticket_row_opened_at",
+                    "grain": "month",
+                    "start": "2024-05-01",
+                },
+            },
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    assert [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")] == [
+        ["orders", "scans", "signups", "opened"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "relation", ["rf_owner", "main.rf_owner", "joined_part_keys", "joined_rows"]
+)
+def test_joined_generated_names_preserve_bound_row_filters(tmp_path: Path, relation: str) -> None:
+    package = _shop_package(tmp_path, f"CREATE TABLE {relation} AS SELECT * FROM orders")
+    config = load_package_config(str(package))
+    config = replace(
+        config,
+        entities=[
+            replace(entity, table=relation) if entity.table == "orders" else entity
+            for entity in config.entities
+        ],
+    )
+    context = RequestContext(actor="manager", roles=("regional",), attributes={"region": "East"})
+    rt = Runtime.from_config(config, source_path=str(package))
+    try:
+        response = rt.query(
+            {
+                "parts": [
+                    {"select": _select(order_1=SHOP_ORDERS), "group_by": [SHOP_STORE]},
+                    {"select": _select(order_2=SHOP_ORDERS), "group_by": [SHOP_STORE]},
+                ],
+                "join": {"on": [[SHOP_STORE, SHOP_STORE]]},
+            },
+            context=context,
+        )
+    finally:
+        rt.close()
+    assert response["rows"] == [{SHOP_STORE: "b", "order_1": 4, "order_2": 4}]
+
+
+@pytest.mark.parametrize(
+    ("table", "relation", "query", "column", "gold"),
+    [
+        (
+            "orders",
+            "agent_branch_1__median__entity_values__leaf_2__leaf_2_source_rollup",
+            {
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "distribution",
+                            "function": "median",
+                            "over": {
+                                "kind": "entity_value",
+                                "entity": "entity.shop_order",
+                                "input": {
+                                    "kind": "arithmetic",
+                                    "op": "subtract",
+                                    "left": "measure.shop.revenue",
+                                    "right": "measure.shop.goods_refunded",
+                                },
+                            },
+                        },
+                        "as": "median",
+                    },
+                    SHOP_ORDERS["measure"],
+                ],
+                "group_by": ["dimension.shop_store_name"],
+            },
+            "median",
+            [4.5, 5.5, 6],
+        ),
+        (
+            "people",
+            "leaf_1__leaf_1_child_values",
+            {
+                "select": ["measure.shop.headcount"],
+                "group_by": ["dimension.shop_room_bookings_booker"],
+            },
+            "headcount",
+            [1, 3, 3],
+        ),
+    ],
+)
+def test_generated_join_names_preserve_both_sides(
+    tmp_path: Path, table: str, relation: str, query: dict[str, Any], column: str, gold: list[float]
+) -> None:
+    package = _shop_package(tmp_path, f"CREATE TABLE {relation} AS SELECT * FROM {table}")
+    config = load_package_config(str(package))
+    config = replace(
+        config,
+        entities=[
+            replace(entity, table=relation) if entity.table == table else entity
+            for entity in config.entities
+        ],
+    )
+    rt = Runtime.from_config(config, source_path=str(package))
+    try:
+        answer = rt.query(query, now="2024-10-21T06:00:00Z")
+    finally:
+        rt.close()
+    assert sorted(float(row[column]) for row in typed_rows(answer)) == gold
+
+
+def test_bigquery_series_uses_the_renamed_value_table_alias(shop_package: Path) -> None:
+    config = load_package_config(str(shop_package))
+    config = replace(
+        config,
+        package=replace(config.package, warehouse="bigquery"),
+        aggregate_relations=[],
+        entities=[
+            replace(entity, table="series_day") if entity.table == "orders" else entity
+            for entity in config.entities
+        ],
+    )
+    rt = Runtime.from_config(config, source_path=str(shop_package))
+    try:
+        sql = rt.compile(
+            {
+                "select": _select(orders=SHOP_ORDERS),
+                "time": {"temporal_role": SHOP_ROLE, "grain": "month", "fill": True},
+            },
+        )["rendered_sql"]
+    finally:
+        rt.close()
+    assert "FROM series_day\n" in sql
+    assert "AS series_day_2" in sql
+    assert "series_day_2 AS date_day" in sql
+
+
 def test_coverage_does_not_shadow_a_schema_in_a_subtotal(tmp_path: Path) -> None:
     package = _shop_package(
         tmp_path,
@@ -1200,6 +1447,90 @@ def test_coverage_does_not_shadow_a_schema_in_a_subtotal(tmp_path: Path) -> None
         (1, None, None),
         (1, None, None),
     ]
+
+
+@pytest.mark.parametrize("warehouse_simulation", [False, True], ids=["duckdb", "warehouse"])
+def test_pipeline_subtotal_keeps_loading_warnings_and_cutoff(
+    shop_package: Path, request: pytest.FixtureRequest, warehouse_simulation: bool
+) -> None:
+    if warehouse_simulation:
+        request.getfixturevalue("coverage_for_named_windows_only")
+    config = load_package_config(str(shop_package))
+    columns = ["order_id", "customer_id", "store_id", "ordered_at", "order_date", "amount"]
+    pipeline = RelationConfig(
+        id="relation.shop.order_view",
+        output_name="projected",
+        steps=[
+            RelationPipelineStep("source", {"relation": "orders"}),
+            RelationPipelineStep("select", {"columns": {column: column for column in columns}}),
+            RelationPipelineStep("select", {"columns": {column: column for column in columns}}),
+        ],
+        columns=columns,
+    )
+    config = replace(
+        config,
+        relations=[*config.relations, pipeline],
+        entities=[
+            replace(row, table=pipeline.output_name, relation_id=pipeline.id)
+            if row.table == "orders"
+            else row
+            for row in config.entities
+        ],
+    )
+    scans = "measure.shop.scan_count"
+    rt = Runtime.from_config(config, source_path=str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    orders=SHOP_ORDERS,
+                    scans={"kind": "measure", "measure": scans},
+                    scans_total={"kind": "total", "input": scans, "over": [SHOP_STORE]},
+                ),
+                "group_by": [SHOP_STORE],
+                "time": {"temporal_role": SHOP_ROLE, "grain": "quarter"},
+            },
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    assert response["row_count"] == 9
+    assert [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")] == [
+        ["scans_total", "scans"]
+    ]
+    assert len(_warnings(response, "PARTIAL_DATA")) == 1
+    assert response["window"]["data_through"] == "2024-06-01"
+
+
+def test_observation_probe_reads_the_hoisted_predicate_cte(shop_package: Path) -> None:
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_order",
+        "over": "all_time",
+        "input": SHOP_ORDERS,
+        "op": ">",
+        "value": 999,
+    }
+    rt = Runtime.from_path(str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    value={
+                        **SHOP_REVENUE,
+                        "kind": "aggregate",
+                        "filter": {"all": [{"expression": predicate}]},
+                    }
+                ),
+                "observation_scope": "dataset",
+                "where": [{"field": SHOP_STORE, "op": "is", "value": "a"}],
+            },
+            now="2024-10-21T06:00:00Z",
+        )
+    finally:
+        rt.close()
+    assert response["rows"] == [{"value": None}]
+    assert [item["details"]["outputs"] for item in _warnings(response)] == [["value"]]
 
 
 def test_orders_per_ticket_past_the_last_order_read_null_on_every_warehouse(

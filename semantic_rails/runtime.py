@@ -133,8 +133,8 @@ from .policies import (
 from .policy_rules import check_request_environment
 from .query_call import TOTAL_OVER, read_call, read_joined_call, route_options
 from .registry import Registry
-from .relation_pipelines import relation_source_tables
-from .renderer import render_with_slots
+from .relation_pipelines import attach_and_name_relations, relation_source_tables
+from .renderer import _flatten_ctes, render_with_slots
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -599,9 +599,25 @@ def _scope_refusal(payload: dict[str, Any]) -> SemanticLayerError | None:
 def _compiled_cte_row(runtime, compiled, payload, columns):
     """Read the settlement's own CTEs (``columns``: each CTE's columns), preserving bound row
     filters and request limits."""
-    from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlSelect, SqlTableRef
+    from .sql_ast import SqlJoin, SqlSourceCte, SqlSourceRef, sql_nodes
 
     probes = sorted(columns)
+    bound = _flatten_ctes(compiled["sql_ast"])
+    available = [*bound.ctes, *compiled.get("balance_coverage", ())]
+    declared = {cte.name for cte in available if isinstance(cte, SqlSourceCte)}
+    needed = set(probes)
+    ctes = []
+    # A bound CTE reads only earlier CTEs. Walk backwards to include its dependencies,
+    # retaining the same ordering and source names as the compiled answer.
+    for cte in reversed(available):
+        if cte.name in needed:
+            ctes.append(cte)
+            needed.update(
+                node.name
+                for node in sql_nodes(cte.query)
+                if isinstance(node, SqlTableRef)
+                and (not isinstance(node, SqlSourceRef) or node.name in declared)
+            )
     probe = SqlSelect(
         select=[
             SqlField(SqlIdentifier([name, column]), f"{name}__{column}")
@@ -610,11 +626,7 @@ def _compiled_cte_row(runtime, compiled, payload, columns):
         ],
         from_table=SqlTableRef(probes[0]),
         joins=[SqlJoin("CROSS", SqlTableRef(name)) for name in probes[1:]],
-        ctes=[
-            cte
-            for cte in [*compiled["sql_ast"].ctes, *compiled.get("balance_coverage", ())]
-            if cte.name in probes or cte.name in {f"{p}_rows" for p in probes}
-        ],
+        ctes=ctes[::-1],
     )
     return _probe_row(runtime, compiled, payload, probe)
 
@@ -623,10 +635,9 @@ def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
     """The first row of ``probe``, run as the answer's own SQL is: held to its row filters
     again (after its relation CTEs are attached), its slots read from its render, and the
     request's limits kept."""
-    from .relation_pipelines import attach_relation_ctes
     from .row_filters import apply_row_filters
 
-    probe = attach_relation_ctes(runtime._config, probe)
+    probe, _ = attach_and_name_relations(runtime._config, probe)
     visibility = compiled.get("row_filter_visibility")
     if visibility is not None:
         probe = apply_row_filters(probe, visibility)

@@ -72,7 +72,7 @@ class AliasRegistry:
 def _alias_identifier(expr: SqlIdentifier, registry: AliasRegistry) -> SqlIdentifier:
     if not expr.parts:
         return expr
-    return SqlIdentifier(parts=[*expr.parts[:-1], registry.internal(expr.parts[-1])])
+    return replace(expr, parts=[*expr.parts[:-1], registry.internal(expr.parts[-1])])
 
 
 def alias_expr(expr, registry: AliasRegistry):

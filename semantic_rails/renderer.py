@@ -465,7 +465,7 @@ def _flatten_ctes(query: SqlSelect) -> SqlSelect:
         for cte in node.ctes:
             cte_query, nested = _walk_query(cte.query)
             hoisted.extend(nested)
-            hoisted.append(SqlCte(name=cte.name, query=cte_query))
+            hoisted.append(replace(cte, query=cte_query))
         return replace(node, ctes=[]), hoisted
 
     root, ctes = _walk_select(query)

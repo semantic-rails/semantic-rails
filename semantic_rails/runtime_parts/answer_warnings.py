@@ -704,14 +704,24 @@ def _guard_probe_names(compiled, prefix):
     """The probes (CTEs named ``prefix``...) each guarded column reads, by the guard's column
     (``by_alias``), and by the answer's output (``by_output``). A total's output reads its
     coarser call, whose own guard (``<cte>__guarded_base``) and probes stand at the top too."""
-    from ..sql_ast import SqlIdentifier
+    from ..sql_ast import SqlIdentifier, SqlSelect, SqlSourceCte, SqlTableRef
 
+    renamed = compiled.get("sql_names", {})
+    original = {new: old for old, new in renamed.items()}
     ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
-    projection = ctes["projected"].query if "projected" in ctes else call_rows(compiled["sql_ast"])
+    projection = call_rows(compiled["sql_ast"])
+    if type(projection.from_table) is SqlTableRef:
+        projected = ctes.get(renamed.get("projected", "projected"))
+        if projected and projected.name == projection.from_table.name:
+            projection = projected.query
 
-    def probes(guard_name: str, start: str) -> dict[str, set[str]]:
-        guard = ctes.get(guard_name)
-        if guard is None:
+    def probes(select: SqlSelect, guard_name: str, start: str) -> dict[str, set[str]]:
+        source = select.from_table
+        name = getattr(source, "name", "")
+        guard = ctes.get(
+            name if name.startswith(guard_name) else renamed.get(guard_name, guard_name)
+        )
+        if guard is None or isinstance(guard, SqlSourceCte):
             return {}
         return {
             field.alias: {
@@ -725,18 +735,24 @@ def _guard_probe_names(compiled, prefix):
             for field in guard.query.select
         }
 
-    by_alias = probes(GUARDED_BASE, prefix)
+    def reads(select: SqlSelect, expr):
+        return base_reads(expr, getattr(select.from_table, "alias", "") or "base")
+
+    by_alias = probes(projection, GUARDED_BASE, prefix)
     # Each coarser call's columns, by (its CTE, its column): the probes its own guard read.
     nested: dict[tuple[str, str], set[str]] = {}
     for name, cte in ctes.items():
-        inner = probes(f"{name}__{GUARDED_BASE}", f"{name}__{prefix}")
+        if not isinstance(cte.query, SqlSelect):
+            continue
+        source = original.get(name, name)
+        inner = probes(cte.query, f"{source}__{GUARDED_BASE}", f"{source}__{prefix}")
         for field in cte.query.select if inner else ():
-            read = set().union(*(inner.get(a, set()) for a in base_reads(field.expression)))
+            read = set().union(*(inner.get(a, set()) for a in reads(cte.query, field.expression)))
             nested[(name, field.alias)] = read
             by_alias[f"{name}.{field.alias}"] = read
     by_output = {
         field.alias: set().union(
-            *(by_alias.get(a, set()) for a in base_reads(field.expression)),
+            *(by_alias.get(a, set()) for a in reads(projection, field.expression)),
             *(
                 nested.get((node.parts[0], node.parts[1]), set())
                 for node in sql_nodes(field.expression)
