@@ -8,9 +8,11 @@ and ``test-package`` agree on every verdict. This module adds the scoring: a wro
 counts against a change more heavily than a missed answer.
 
 - ``failed``: wrong rows, a number for a call that must refuse, a refusal with a different
-  code, a warehouse error, or an entry the file can't state.
+  code, a warehouse error, or an entry the file can't state. A true/false cell matches only
+  a true/false cell, never a number.
 - ``missed``: a refusal where rows were expected.
-- ``known_wrong``: an entry its ``known_wrong.engine`` marker says still fails.
+- ``known_wrong``: an entry its ``known_wrong.engine`` marker says still has the wrong
+  rows or refusal. A warehouse error still fails it.
 - ``skipped``: an entry with a correctness-harness ``variant``, which needs a rewritten
   package this runner does not build.
 
@@ -39,7 +41,7 @@ from ..route_census import defer_census_questions
 from ..runtime import Runtime, _time_zone
 from ..runtime_parts.joined_call import joined_output_columns
 from ..runtime_parts.responses import output_columns
-from ..yaml_loader import Yaml12SafeLoader, safe_load
+from ..yaml_loader import Yaml12SafeLoader
 
 ANSWERS_FILE = Path("tests") / "answers.yml"
 # ``expect`` names what the call must do; ``kind`` is the package test that checks it.
@@ -88,7 +90,31 @@ RUN_ERRORS = frozenset(
 SHOWN_ROWS = 5
 
 
-class _DecimalLoader(Yaml12SafeLoader):
+class _DuplicateKey(yaml.constructor.ConstructorError):
+    """A mapping names one key twice; a plain load would keep only the last."""
+
+    def __init__(self, key: Any, mark: Any) -> None:
+        super().__init__(None, None, f"duplicate key {key!r}", mark)
+        self.key = key
+
+
+class _UniqueKeyLoader(Yaml12SafeLoader):
+    """The package YAML loader, refusing a mapping that repeats a key."""
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        seen: set[tuple[str, Any]] = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue  # ``<<`` keys may be overridden; that's what they're for.
+            key = self.construct_object(key_node, deep=True)
+            marker = (type(key).__name__, key)
+            if marker in seen:
+                raise _DuplicateKey(key, key_node.start_mark)
+            seen.add(marker)
+        return super().construct_mapping(node, deep=deep)  # type: ignore[no-any-return]
+
+
+class _DecimalLoader(_UniqueKeyLoader):
     """Read frozen numbers without a binary-float intermediate, as the answer ledger does."""
 
 
@@ -117,7 +143,8 @@ def load_answers(path: Path) -> list[tuple[str, Any]]:
     """The file's entries in order. A top-level ``now`` applies to entries without one.
 
     Queries load as the package test loader reads them; frozen rows keep exact decimals.
-    Raises ``INVALID_CONFIG`` for a file that isn't an answers file.
+    Raises ``INVALID_CONFIG`` for a file that isn't an answers file, including one that
+    names a key twice in a mapping, such as two entries with one name.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -126,8 +153,12 @@ def load_answers(path: Path) -> list[tuple[str, Any]]:
     except OSError as exc:
         raise _file_error(path, f"the answers file can't be read ({exc.strerror})") from exc
     try:
-        raw = safe_load(text)
+        raw = yaml.load(text, Loader=_UniqueKeyLoader)
         exact = yaml.load(text, Loader=_DecimalLoader)
+    except _DuplicateKey as exc:
+        line = exc.problem_mark.line + 1 if exc.problem_mark else 0
+        message = f"the answers file names {exc.key!r} twice (line {line}); keys must be unique"
+        raise _file_error(path, message) from exc
     except yaml.YAMLError as exc:
         raise _file_error(path, "the answers file is not valid YAML") from exc
     if not isinstance(raw, dict) or not isinstance(raw.get("tests"), dict):
@@ -276,19 +307,21 @@ def row_differences(
 
     Ordered rows pair by position, which each changed row names (from 1). Otherwise each row that has an exact match pairs with it,
     and each remaining expected row pairs with the remaining actual row that shares the most
-    cells with it (its group, usually); one that shares none is missing.
+    cells with it (its group, usually); one that shares none is missing. A true/false cell
+    equals only a true/false cell, never the number 1 or 0.
     """
     changed: list[tuple[int | None, dict[str, Any], dict[str, Any]]] = []
     if ordered:
         pairs = zip(expected, actual, strict=False)
-        changed = [(i, e, a) for i, (e, a) in enumerate(pairs, start=1) if e != a]
+        changed = [(i, e, a) for i, (e, a) in enumerate(pairs, start=1) if not _same_row(e, a)]
         missing, unexpected = expected[len(actual) :], actual[len(expected) :]
     else:
         remaining = list(actual)
         unmatched = []
         for row in expected:
-            if row in remaining:
-                remaining.remove(row)
+            match = next((other for other in remaining if _same_row(row, other)), None)
+            if match is not None:
+                remaining.remove(match)
             else:
                 unmatched.append(row)
         missing = []
@@ -304,11 +337,13 @@ def row_differences(
         "changed_rows": [
             {
                 **({"position": i} if i else {}),
-                "row": {key: value for key, value in e.items() if key in a and a[key] == value},
+                "row": {
+                    key: value for key, value in e.items() if key in a and _same(a[key], value)
+                },
                 "cells": [
                     {"field": key, "expected": e.get(key), "actual": a.get(key)}
                     for key in _keys(e, a)
-                    if key not in e or key not in a or e[key] != a[key]
+                    if key not in e or key not in a or not _same(e[key], a[key])
                 ],
             }
             for i, e, a in changed
@@ -327,28 +362,32 @@ def _score_answer(
         report = package_tools._run_test(runtime, entry_id, {**spec, **call})
     except SemanticLayerError as exc:
         if exc.code in RUN_ERRORS:
-            return _result(entry_id, spec, FAILED, f"the call failed: {exc.code}", _issue(exc))
+            return _run_failure(entry_id, spec, exc.code, _issue(exc))
         reason = f"refused with {exc.code} where rows were expected"
         return _result(entry_id, spec, MISSED, reason, _issue(exc))
-    # The runner compares rows as a multiset; an order_by also fixes their order.
-    ordered = bool(query.get("order_by"))
-    if report["ok"] and not ordered:
-        return _result(entry_id, spec, PASSED)
     if not report["ok"] and report["error"]["code"] != "SNAPSHOT_MISMATCH":
         error = report["error"]
         return _result(entry_id, spec, FAILED, error["message"], error["details"])
-    expected = _expected_rows(runtime, query, call, spec["expected_rows"])
-    if ordered:
-        actual = _answer_rows(runtime, query, call, spec["expected_rows"])
-        if report["ok"] and actual == expected:
-            return _result(entry_id, spec, PASSED)
-    else:
+    # The runner compares rows as a multiset with Python equality, where true equals 1, so
+    # rows it passes are compared again keeping true/false apart from numbers. An order_by
+    # also fixes their order.
+    ordered = bool(query.get("order_by"))
+    try:
+        expected = _expected_rows(runtime, query, call, spec["expected_rows"])
+        if report["ok"] or ordered:
+            actual = _answer_rows(runtime, query, call, spec["expected_rows"])
+        else:
+            actual = report["error"]["details"]["actual_rows"]
+    except SemanticLayerError as exc:
+        return _run_failure(entry_id, spec, exc.code, _issue(exc))
+    if not ordered:
         expected = package_tools._normalize_rows(expected)
-        actual = report["error"]["details"]["actual_rows"]
-    reason = "the rows are in a different order" if report["ok"] else "wrong rows"
-    return _result(
-        entry_id, spec, FAILED, reason, row_differences(expected, actual, ordered=ordered)
-    )
+    differences = row_differences(expected, actual, ordered=ordered)
+    if report["ok"] and not any(differences.values()):
+        return _result(entry_id, spec, PASSED)
+    in_order = ordered and not any(row_differences(expected, actual).values())
+    reason = "the rows are in a different order" if in_order else "wrong rows"
+    return _result(entry_id, spec, FAILED, reason, differences)
 
 
 def _score_refusal(
@@ -379,7 +418,7 @@ def _refused(entry_id: str, spec: dict[str, Any], actual: str, details: dict[str
     if actual == spec["code"]:
         return _result(entry_id, spec, PASSED)
     if actual in RUN_ERRORS:
-        return _result(entry_id, spec, FAILED, f"the call failed: {actual}", details)
+        return _run_failure(entry_id, spec, actual, details)
     reason = f"refused with {actual} where {spec['code']} was expected"
     return _result(entry_id, spec, FAILED, reason, details)
 
@@ -401,9 +440,15 @@ def _clarification(
 
 
 def _known_wrong(spec: Any, result: dict[str, Any]) -> dict[str, Any]:
-    """A ``known_wrong.engine`` entry may fail; once it passes, the marker must go."""
+    """A ``known_wrong.engine`` entry may have the wrong rows or refusal; once it passes, the
+    marker must go. It never excuses a call that failed to run."""
     reason = spec.get("known_wrong", {}).get("engine") if isinstance(spec, dict) else None
-    if not reason or result["outcome"] == SKIPPED or "problems" in result.get("details", {}):
+    if (
+        not reason
+        or result["outcome"] == SKIPPED
+        or "run_error" in result
+        or "problems" in result.get("details", {})
+    ):
         return result
     if result["outcome"] == PASSED:
         return {
@@ -495,6 +540,16 @@ def _result(
     return result
 
 
+def _run_failure(
+    entry_id: str, spec: dict[str, Any], code: str, details: dict[str, Any]
+) -> dict[str, Any]:
+    """A call the warehouse or engine failed to run: a failure no marker excuses."""
+    return {
+        **_result(entry_id, spec, FAILED, f"the call failed: {code}", details),
+        "run_error": code,
+    }
+
+
 def _issue(exc: SemanticLayerError) -> dict[str, Any]:
     return {"code": exc.code, "message": str(exc), "details": dict(exc.details)}
 
@@ -504,7 +559,18 @@ def _file_error(path: Path, message: str) -> SemanticLayerError:
 
 
 def _shared(row: dict[str, Any], other: dict[str, Any]) -> int:
-    return sum(1 for key, value in row.items() if key in other and other[key] == value)
+    return sum(1 for key, value in row.items() if key in other and _same(other[key], value))
+
+
+def _same(value: Any, other: Any) -> bool:
+    """Equal, with true and false kept apart from 1 and 0."""
+    return isinstance(value, bool) == isinstance(other, bool) and bool(value == other)
+
+
+def _same_row(row: dict[str, Any], other: dict[str, Any]) -> bool:
+    return row.keys() == other.keys() and all(
+        _same(value, other[key]) for key, value in row.items()
+    )
 
 
 def _keys(*rows: dict[str, Any]) -> Iterable[str]:

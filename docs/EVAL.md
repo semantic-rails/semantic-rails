@@ -47,16 +47,18 @@ tests:
 | `expect` | `answer`, `refuse` or `clarify`. |
 | `kind` | The package test that checks the entry: `query_matches_snapshot` for an answer, `validate_fails_with_code` for a refusal or clarification. |
 | `query` | The [query call](QUERY_CALL.md), exactly as a client sends it. |
-| `expected_rows` | An answer's rows. Rows compare as a multiset. If the call has an `order_by`, their order must match too. A series' `period_partial` flag is compared only when the rows include it. |
+| `expected_rows` | An answer's rows. Rows compare as a multiset. If the call has an `order_by`, their order must match too. A series' `period_partial` flag is compared only when the rows include it. A `true` or `false` cell matches only a `true` or `false` value, never `1` or `0`. |
 | `expected_rows_by_backend` | Optional. Rows for one warehouse that represents a value differently, keyed by warehouse (for example `postgres`). |
 | `code` | The refusal code a `refuse` or `clarify` entry must return. The match is on the code alone, never on the message. |
 | `clarify.options` | Optional. The option ids a clarification must offer, in order. |
 | `now` | The instant relative windows resolve against. An entry's own `now` wins over the file's, and both win over `--now`. |
 | `context` | Who asks. Its `attributes` are treated as trusted attributes from the host, so a row filter that reads them applies. |
-| `known_wrong` | `{engine: reason}` marks an answer that is still wrong. A failing entry is reported as known wrong and doesn't change the exit code. Once it passes, `eval` fails until you remove the marker. |
+| `known_wrong` | `{engine: reason}` marks an answer that is still wrong. An entry with the wrong rows or refusal is reported as known wrong and doesn't change the exit code. A call that fails to run still fails, marker or not. Once it passes, `eval` fails until you remove the marker. |
 | `why`, `cites`, `tags` | Notes for reviewers. `eval` doesn't check them. |
 
-Numbers in `expected_rows` load as exact decimals, never as binary floats. Each entry runs
+Numbers in `expected_rows` load as exact decimals, never as binary floats. Every key in a
+mapping must be unique: a file that names two entries alike, or one cell twice, fails to
+load, so a copied entry can't silently replace the one before it. Each entry runs
 through the same package test runner as `semantic-rails test-package`, so both commands
 agree on whether an entry passes. Files under `tests/` other than `answers.yml` are
 `test-package`'s, and `eval` doesn't read them.
@@ -75,7 +77,7 @@ A wrong number counts against a change more heavily than a missing one.
 | --- | --- |
 | `failed` | The rows differ. A call that must refuse returns rows. A refusal comes back with a different code, or a clarification offers different options. The warehouse call errors. The entry can't be read. |
 | `missed` | A call refuses where rows were expected. |
-| `known_wrong` | An entry marked `known_wrong.engine` still fails. |
+| `known_wrong` | An entry marked `known_wrong.engine` still returns the wrong rows or refusal. |
 | `skipped` | The entry needs the correctness harness (`variant`). |
 | `passed` | Everything else. |
 
@@ -105,7 +107,7 @@ absent as `missing row`. For an ordered call, rows pair by position.
 | `--package ID` / `--path PATH` | The package to evaluate (one is required). |
 | `--answers PATH` | Another answers file instead of `tests/answers.yml`. |
 | `--strict` | A miss exits 1, as a failure does. |
-| `--json` | Print the report as JSON: `exit_code`, `summary` (count per outcome), and `answers`, one result per entry with its `outcome`, `reason`, `query` and `details` (`changed_rows`, `missing_rows`, `unexpected_rows`, or the refusal). |
+| `--json` | Print the report as JSON: `exit_code`, `summary` (count per outcome), and `answers`, one result per entry with its `outcome`, `reason`, `query` and `details` (`changed_rows`, `missing_rows`, `unexpected_rows`, or the refusal). A call that failed to run also carries `run_error`, its error code. |
 | `--now INSTANT` | The default `now` for entries and files that don't set one. |
 
 ## In CI

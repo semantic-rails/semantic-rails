@@ -15,6 +15,7 @@ from semantic_rails.cli import app as cli_app
 from semantic_rails.cli import eval_answers
 from semantic_rails.cli.eval_answers import FAILED, MISSED, PASSED, SKIPPED, row_differences
 from semantic_rails.config_validation import resolve_package_reference
+from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.conftest import copy_package_config
 
 REPO = Path(__file__).resolve().parents[2]
@@ -280,6 +281,118 @@ def test_known_wrong_marks_a_failing_entry_until_it_passes(package):
     assert result["exit_code"] == 1
 
 
+def test_two_entries_with_one_name_fail_to_load(monkeypatch, capsys, package):
+    """A copied entry left with its name must not hide the first one's check."""
+    wrong = {**REPEAT_ORDERS, "expected_rows": REPEAT_ORDERS["expected_rows"][:1]}
+    entries = [
+        yaml.safe_dump({"tests": {"jaffle/repeat-orders": spec}}, sort_keys=False)
+        for spec in (wrong, REPEAT_ORDERS)
+    ]
+    path = package / "tests" / "answers.yml"
+    path.write_text(entries[0] + entries[1].removeprefix("tests:\n"), encoding="utf-8")
+    assert path.read_text(encoding="utf-8").count("jaffle/repeat-orders:") == 2
+
+    code, out = run_eval(monkeypatch, capsys, package)
+    assert code == 1, out
+    assert "ERROR [INVALID_CONFIG]" in out
+    assert str(path) in out and "names 'jaffle/repeat-orders' twice" in out
+
+    with pytest.raises(SemanticLayerError, match="names 'jaffle/repeat-orders' twice"):
+        eval_answers.load_answers(path)
+
+
+def test_a_repeated_key_inside_an_entry_fails_to_load(tmp_path):
+    path = tmp_path / "answers.yml"
+    path.write_text(
+        "tests:\n  a:\n    kind: query_matches_snapshot\n    expect: answer\n"
+        "    query: {select: [measure.x]}\n"
+        "    expected_rows: [{x: 1, x: 2}]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SemanticLayerError, match="names 'x' twice"):
+        eval_answers.load_answers(path)
+
+
+@pytest.mark.parametrize("flags", [(), ("--json",), ("--strict",), ("--json", "--strict")])
+def test_known_wrong_never_excuses_a_call_that_failed_to_run(monkeypatch, capsys, package, flags):
+    def warehouse_down(self, *args, **kwargs):
+        raise SemanticLayerError("QUERY_EXECUTION_ERROR", "the warehouse is unavailable")
+
+    marker = {"known_wrong": {"engine": "Philadelphia is dropped."}}
+    wrong = {**REPEAT_ORDERS, "expected_rows": REPEAT_ORDERS["expected_rows"][:1], **marker}
+    # The refusal validates, so eval asks the warehouse, which fails.
+    answers_anyway = {**UNGOVERNED_PROFIT, "query": RANKED_STORES["query"], **marker}
+    write_answers(package, {"jaffle/still-wrong": wrong, "jaffle/answers-anyway": answers_anyway})
+    monkeypatch.setattr(eval_answers.Runtime, "query", warehouse_down)
+
+    code, out = run_eval(monkeypatch, capsys, package, *flags)
+    assert code == 1, out
+    if "--json" in flags:
+        payload = json.loads(out)
+        assert payload["ok"] is False and payload["exit_code"] == 1
+        assert payload["summary"][FAILED] == 2 and payload["summary"]["known_wrong"] == 0
+        for row in payload["answers"]:
+            assert row["outcome"] == FAILED
+            assert row["run_error"] == "QUERY_EXECUTION_ERROR"
+            assert row["reason"] == "the call failed: QUERY_EXECUTION_ERROR"
+    else:
+        assert "FAIL  jaffle/still-wrong: the call failed: QUERY_EXECUTION_ERROR" in out
+        assert "FAIL  jaffle/answers-anyway: the call failed: QUERY_EXECUTION_ERROR" in out
+
+
+LARGE = "dimension.jaffle_order_is_large_order"
+ORDER_NUMBER = "dimension.jaffle_order_customer_order_number"
+BY_DESC_ORDERS = [{"field": "orders", "direction": "desc"}]
+
+
+def boolean_answer(group: str, value, expected, *, ordered: bool) -> dict:
+    query = {
+        "select": [{"expression": "measure.jaffle.order_count", "as": "orders"}],
+        "group_by": [group],
+        **({"where": [{"field": group, "op": "is", "value": value}]} if value is not None else {}),
+        **({"order_by": BY_DESC_ORDERS} if ordered else {}),
+    }
+    return {
+        "kind": "query_matches_snapshot",
+        "expect": "answer",
+        "query": query,
+        "expected_rows": expected,
+    }
+
+
+@pytest.mark.parametrize("ordered", [False, True], ids=["unordered", "ordered"])
+def test_a_boolean_cell_matches_only_a_boolean(package, ordered):
+    """Python equality has true equal 1; an answer's true/false cells stay apart from numbers."""
+    first_orders = [{ORDER_NUMBER: True, "orders": 939}]
+    small_orders = [{LARGE: 0, "orders": 54742}]
+    split = [{LARGE: False, "orders": 54742}, {LARGE: True, "orders": 4910}]
+    write_answers(
+        package,
+        {
+            "jaffle/true-is-not-1": boolean_answer(ORDER_NUMBER, 1, first_orders, ordered=ordered),
+            "jaffle/0-is-not-false": boolean_answer(LARGE, False, small_orders, ordered=ordered),
+            "jaffle/true-is-true": boolean_answer(LARGE, None, split, ordered=ordered),
+        },
+    )
+    result = report(package)
+    assert outcomes(result) == {
+        "jaffle/true-is-not-1": FAILED,
+        "jaffle/0-is-not-false": FAILED,
+        "jaffle/true-is-true": PASSED,
+    }
+    assert result["exit_code"] == 1
+    rows = {row["id"]: row for row in result["answers"]}
+    for case_id, field, expected, actual in [
+        ("jaffle/true-is-not-1", ORDER_NUMBER, True, 1),
+        ("jaffle/0-is-not-false", LARGE, 0, False),
+    ]:
+        assert rows[case_id]["reason"] == "wrong rows"
+        [change] = rows[case_id]["details"]["changed_rows"]
+        [cell] = change["cells"]
+        assert cell == {"field": field, "expected": expected, "actual": actual}
+        assert type(cell["expected"]) is type(expected) and type(cell["actual"]) is type(actual)
+
+
 def test_a_harness_variant_is_skipped(package):
     write_answers(package, {"jaffle/variant": {**REPEAT_ORDERS, "variant": "local_authored"}})
     result = report(package)
@@ -343,6 +456,23 @@ def test_eval_reads_every_ledger_key():
             [],
         ),
         ([{"g": "a", "v": 1}], [{"h": "z"}], False, [], [{"g": "a", "v": 1}], [{"h": "z"}]),
+        (
+            [{"g": "a", "v": True}],
+            [{"g": "a", "v": 1}],
+            False,
+            [{"row": {"g": "a"}, "cells": [{"field": "v", "expected": True, "actual": 1}]}],
+            [],
+            [],
+        ),
+        (
+            [{"v": 0}],
+            [{"v": False}],
+            True,
+            [{"position": 1, "row": {}, "cells": [{"field": "v", "expected": 0, "actual": False}]}],
+            [],
+            [],
+        ),
+        ([{"v": False}], [{"v": False}], True, [], [], []),
         (
             [{"g": "a"}, {"g": "b"}],
             [{"g": "b"}],
