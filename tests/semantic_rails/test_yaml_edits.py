@@ -206,6 +206,26 @@ def _leaves(node, text, path=(), seen=None):
         yield path, node
 
 
+@pytest.fixture(scope="module")
+def bundled_yaml():
+    """Parse each bundled file once per module; its parts only read the result.
+
+    Every part deep-copies ``original`` before editing it. A part that mutated
+    the shared ``original`` would make the next part's expected value disagree
+    with its fresh ``safe_load`` of the edited text, so that part would fail.
+    """
+    cache = {}
+
+    def load(file):
+        if file not in cache:
+            text = file.read_text()
+            root = yaml.compose(text, Loader=Yaml12SafeLoader)
+            cache[file] = (text, safe_load(text), root, tuple(_leaves(root, text)))
+        return cache[file]
+
+    return load
+
+
 @pytest.mark.parametrize(
     "file,part,parts",
     [
@@ -219,10 +239,8 @@ def _leaves(node, text, path=(), seen=None):
         for part in range(16 if file.stat().st_size > 100_000 else 1)
     ],
 )
-def test_bundled_yaml_edit_properties(file, part, parts):
-    text = file.read_text()
-    original = safe_load(text)
-    root = yaml.compose(text, Loader=Yaml12SafeLoader)
+def test_bundled_yaml_edit_properties(bundled_yaml, file, part, parts):
+    text, original, root, cached_leaves = bundled_yaml(file)
     assert isinstance(root, MappingNode)
     for key, _node in root.value:
         if part:
@@ -246,7 +264,7 @@ def test_bundled_yaml_edit_properties(file, part, parts):
                     assert result[:start] == text[:start]
                     tail = result[start:]
                     assert text.endswith(tail)
-    leaves = list(_leaves(root, text))
+    leaves = list(cached_leaves)
     if parts > 1 and leaves:
         # Bound full-document reparses with evenly spaced paths, including both ends.
         leaves = [leaves[part * (len(leaves) - 1) // (parts - 1)]]
