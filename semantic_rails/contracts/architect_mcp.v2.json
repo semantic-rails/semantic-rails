@@ -1,7 +1,7 @@
 {
-  "$id": "https://semantic-rails.com/schemas/architect_mcp.v1.json",
+  "$id": "https://semantic-rails.com/schemas/architect_mcp.v2.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "interface_version": "v1",
+  "interface_version": "v2",
   "manifest_version": 1,
   "mcp_protocol": {
     "default": "2025-11-25",

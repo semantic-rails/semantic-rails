@@ -748,7 +748,9 @@ creating duplicate definitions elsewhere. Successful internal REPL mutations
 retain transaction snapshots for one-step undo.
 
 The generated stable interface artifact is
-`semantic_rails/contracts/architect_mcp.v1.json` (mirrored under `schemas/`).
+`semantic_rails/contracts/architect_mcp.v2.json` (mirrored under `schemas/`).
+Interface v2 removed v1's `upgrade_project` tool; loading the retired
+`architect_mcp.v1.json` raises `INVALID_CONTRACT` naming v2.
 It pins tool input/output schemas, annotations, protocol versions, and
 transaction capabilities. Run
 `python scripts/generate_contract_artifacts.py --check` to reject drift.

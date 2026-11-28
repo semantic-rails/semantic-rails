@@ -18,6 +18,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from semantic_rails.errors import SemanticLayerError
+
 from .drift import diff_semantic_contract
 from .metric_portability import (
     compare_metric_portability,
@@ -44,7 +46,7 @@ __all__ = [
 
 
 CONTRACT_NAMES = (
-    "architect_mcp.v1.json",
+    "architect_mcp.v2.json",
     "http_api.v1.openapi.json",
     "package.v1.json",
     "metric_portability.v1.json",
@@ -53,6 +55,34 @@ CONTRACT_NAMES = (
     "semantic_contract.v1.json",
     "validation_report.v1.json",
 )
+
+# A contract replaced by a new major, and the major that replaced it. Asking for the old
+# one is refused by name rather than as an unknown contract.
+RETIRED_CONTRACTS = {"architect_mcp.v1.json": "architect_mcp.v2.json"}
+
+
+def _require_contract_name(name: str) -> None:
+    current = RETIRED_CONTRACTS.get(name)
+    if current is not None:
+        raise SemanticLayerError(
+            "INVALID_CONTRACT",
+            f"Contract {name!r} (major {_major(name)}) is no longer supported; "
+            f"use {current!r} (major {_major(current)}).",
+            details={
+                "reason": "unsupported_version",
+                "requested": name,
+                "requested_version": _major(name),
+                "current": current,
+                "current_version": _major(current),
+            },
+        )
+    if name not in CONTRACT_NAMES:
+        raise ValueError(f"Unknown Semantic Rails contract {name!r}")
+
+
+def _major(name: str) -> str:
+    """The ``vN`` major in a contract filename such as ``architect_mcp.v2.json``."""
+    return name.removesuffix(".json").rsplit(".", 1)[-1]
 
 
 def contract_path(name: str) -> Path:
@@ -64,16 +94,14 @@ def contract_path(name: str) -> Path:
     path while :func:`load_contract` remains the portable read API.
     """
 
-    if name not in CONTRACT_NAMES:
-        raise ValueError(f"Unknown Semantic Rails contract {name!r}")
+    _require_contract_name(name)
     return Path(str(files(__package__).joinpath(name)))
 
 
 def load_contract(name: str) -> dict[str, Any]:
     """Load one canonical contract artifact from the installed distribution."""
 
-    if name not in CONTRACT_NAMES:
-        raise ValueError(f"Unknown Semantic Rails contract {name!r}")
+    _require_contract_name(name)
     resource = files(__package__).joinpath(name)
     return dict(json.loads(resource.read_text(encoding="utf-8")))
 

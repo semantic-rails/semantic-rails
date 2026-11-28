@@ -71,7 +71,7 @@ DEFAULT_ARCHITECT_PORT = 8010
 # Empty: the working directory the server starts in (an MCP client starts it in the user's
 # project), never the folder this package is installed in.
 DEFAULT_WORKSPACE_ROOT = ""
-ARCHITECT_INTERFACE_VERSION = "v1"
+ARCHITECT_INTERFACE_VERSION = "v2"
 ArchitectTransport = Literal["stdio", "streamable-http"]
 # The network transports can write files, so they require a bearer token.
 ARCHITECT_TOKEN_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN"

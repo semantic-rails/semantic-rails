@@ -8,6 +8,7 @@ change; concurrent consumers should never discover it only after release.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,35 @@ _JSON_SCHEMA_ARTIFACTS = {
 
 
 # Contracts a release stopped shipping; a baseline that has one reports it removed.
-_RETIRED_CONTRACT_NAMES = ("query_mcp.v1.json", "query_ir.preview.v2.json", "query_ir.v1.json")
+_RETIRED_CONTRACT_NAMES = (
+    "architect_mcp.v1.json",
+    "query_mcp.v1.json",
+    "query_ir.preview.v2.json",
+    "query_ir.v1.json",
+)
+
+# ``<name>.v<major>.json``: a contract's name and its major.
+_MAJOR_NAME = re.compile(r"^(?P<stem>.+)\.v(?P<major>\d+)\.json$")
+
+
+def _successor_major(name: str, current: Mapping[str, Any]) -> str | None:
+    """The artifact in ``current`` that declares a new major of ``name``, if there is one.
+
+    A removed ``architect_mcp.v1.json`` beside a new ``architect_mcp.v2.json`` is a
+    declared major bump: the change the compatibility rules require for a removal.
+    """
+    removed = _MAJOR_NAME.match(name)
+    if removed is None:
+        return None
+    for candidate in sorted(current):
+        added = _MAJOR_NAME.match(candidate)
+        if (
+            added is not None
+            and added["stem"] == removed["stem"]
+            and int(added["major"]) > int(removed["major"])
+        ):
+            return candidate
+    return None
 
 
 def load_contract_directory(path: str | Path) -> dict[str, dict[str, Any]]:
@@ -222,7 +251,18 @@ def compare_contract_bundles(
 
     breaking: list[dict[str, str]] = []
     additive: list[dict[str, str]] = []
+    majors: list[dict[str, str]] = []
     for name in sorted(set(baseline) - set(current)):
+        successor = _successor_major(name, current)
+        if successor is not None:
+            _change(
+                majors,
+                name,
+                "/",
+                "major_bumped",
+                f"Contract artifact {name!r} was replaced by the new major {successor!r}.",
+            )
+            continue
         _change(breaking, name, "/", "artifact_removed", f"Contract artifact {name!r} was removed.")
     for name in sorted(set(current) - set(baseline)):
         _change(additive, name, "/", "artifact_added", f"Contract artifact {name!r} was added.")
@@ -242,7 +282,7 @@ def compare_contract_bundles(
             breaking=breaking,
             additive=additive,
         )
-    for artifact in ("architect_mcp.v1.json", "query_mcp.v2.json"):
+    for artifact in ("architect_mcp.v2.json", "query_mcp.v2.json"):
         if artifact in baseline and artifact in current:
             _mcp_changes(
                 baseline[artifact],
@@ -255,8 +295,10 @@ def compare_contract_bundles(
         "ok": not breaking,
         "breaking_changes": breaking,
         "additive_changes": additive,
+        "major_changes": majors,
         "summary": {
             "breaking": len(breaking),
             "additive": len(additive),
+            "major": len(majors),
         },
     }

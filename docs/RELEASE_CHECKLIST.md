@@ -27,7 +27,7 @@ remaining controls live in GitHub or PyPI and must be confirmed by a repository 
 - Run `python scripts/generate_contract_artifacts.py --check` and
   `python scripts/check_contract_compatibility.py --baseline <previous-release-contracts>`.
   Classify contract changes as none/additive/breaking and require a contract-owner review.
-- Confirm `architect_mcp.v1.json` drift tests and the Architect transaction
+- Confirm `architect_mcp.v2.json` drift tests and the Architect transaction
   suite are green, including stale-writer conflict, cross-process serialization,
   idempotent replay, write-free preview, and raw-write rollback cases.
 - Build the release-candidate wheel once. Run the public dbt and SQLMesh

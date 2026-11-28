@@ -187,7 +187,7 @@ def query_mcp_manifest_document() -> dict[str, Any]:
 
 
 def architect_mcp_manifest_document() -> dict[str, Any]:
-    """Build the complete Architect MCP v1 manifest from FastMCP definitions."""
+    """Build the complete Architect MCP v2 manifest from FastMCP definitions."""
 
     from semantic_rails import __version__
     from semantic_rails.architect_mcp import (
@@ -213,7 +213,7 @@ def architect_mcp_manifest_document() -> dict[str, Any]:
     tools, prompts = asyncio.run(definitions())
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": f"{PUBLIC_SCHEMA_BASE}architect_mcp.v1.json",
+        "$id": f"{PUBLIC_SCHEMA_BASE}architect_mcp.v2.json",
         "manifest_version": 1,
         "interface_version": ARCHITECT_INTERFACE_VERSION,
         "producer": {"name": "semantic-rails", "version": __version__},
@@ -239,7 +239,7 @@ def generated_artifacts() -> dict[str, dict[str, Any]]:
     """Return every code-derived contract keyed by packaged filename."""
 
     return {
-        "architect_mcp.v1.json": architect_mcp_manifest_document(),
+        "architect_mcp.v2.json": architect_mcp_manifest_document(),
         "http_api.v1.openapi.json": http_openapi_document(),
         "query_mcp.v2.json": query_mcp_manifest_document(),
         "query.v2.json": query_call_schema_document(),
