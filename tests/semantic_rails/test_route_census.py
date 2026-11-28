@@ -677,6 +677,26 @@ def _with_home_region(project: ArchitectProject) -> dict[str, Any]:
     return graph
 
 
+def _relationship_and_base_routes(
+    project, *, from_entity, to_entity, columns, name, changes, decisions=()
+):
+    document = _graph(project)
+    graph = document["graph"]
+    graph["relationships"][name] = {
+        "entities": [from_entity, to_entity],
+        "via": columns,
+        "target": graph["entities"][to_entity]["key"],
+        "cardinality": "many_to_one",
+    }
+    rows = _base_decisions([change for change in changes if "relationship_path" in change["base"]])
+    graph["path_preferences"] = [
+        *graph.get("path_preferences", []),
+        *rows,
+        *decisions,
+    ]
+    return [{"path": "graph.yml", "content": yaml.safe_dump(document)}]
+
+
 @pytest.mark.parametrize(
     ("from_entity", "columns", "new_route"),
     [
@@ -690,9 +710,15 @@ def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     tmp_path, from_entity, columns, new_route
 ):
     project = _architect(tmp_path)
+    args = {
+        "from_entity": from_entity,
+        "to_entity": "region",
+        "columns": columns,
+        "name": f"{from_entity}s_region",
+    }
     revision, before = project.revision(), _files_and_receipts(project)
-    with pytest.raises(SemanticLayerError, match="record_route_decision") as raised:
-        project.upsert_relationship(from_entity=from_entity, to_entity="region", columns=columns)
+    with pytest.raises(SemanticLayerError, match="together with write_project_files") as raised:
+        project.upsert_relationship(**args)
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
     changes = {
         (row["source_entity"], row["target_entity"]): row
@@ -707,10 +733,11 @@ def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
-    for row in _base_decisions(raised.value.details["route_changes"]):
-        assert project.record_route_decision(**row).report["ok"]
-    report = project.upsert_relationship(
-        from_entity=from_entity, to_entity="region", columns=columns
+    report = project.write_files(
+        _relationship_and_base_routes(
+            project, **args, changes=raised.value.details["route_changes"]
+        ),
+        expected_revision=revision,
     ).report
     assert report["ok"] is True, report
     assert report["route_decisions_added"] == []
@@ -1171,17 +1198,21 @@ def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
     assert answers() == ([("B", "North")], [("North", 1)])
     project = ArchitectProject(pkg, workspace_root=tmp_path)
     revision, before = project.revision(), _files_and_receipts(project)
-    with pytest.raises(SemanticLayerError) as raised:
-        project.upsert_relationship(from_entity="b", to_entity="c", columns=["c_id"])
+    args = {"from_entity": "b", "to_entity": "c", "columns": ["c_id"], "name": "b_c"}
+    with pytest.raises(SemanticLayerError, match="together with write_project_files") as raised:
+        project.upsert_relationship(**args)
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert ("entity.small_b", "entity.small_c") in _pairs(raised.value.details["route_changes"])
     assert "rows" not in raised.value.details
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert answers() == ([("B", "North")], [("North", 1)])
-    for row in _base_decisions(raised.value.details["route_changes"]):
-        project.record_route_decision(**row)
-    report = project.upsert_relationship(from_entity="b", to_entity="c", columns=["c_id"]).report
+    report = project.write_files(
+        _relationship_and_base_routes(
+            project, **args, changes=raised.value.details["route_changes"]
+        ),
+        expected_revision=revision,
+    ).report
     assert report["route_decisions_added"] == []
     assert report["route_changes"] == []
     assert answers() == ([("B", "North")], [("North", 1)])

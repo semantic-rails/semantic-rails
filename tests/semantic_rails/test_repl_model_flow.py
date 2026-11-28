@@ -395,3 +395,22 @@ def test_an_existing_model_is_not_overwritten(shop: Path, entity: str, message: 
         _author(shop, {"Table to model": ORDERS, "Business entity": entity})
 
     assert (shop / "models" / "core" / "orders.yml").read_bytes() == before
+
+
+def test_an_as_of_column_holds_periodic_measures_in_the_wizard(shop, capsys):
+    with duckdb.connect(str(shop / "data" / "shop.duckdb")) as connection:
+        connection.execute(
+            "CREATE TABLE product_levels (level_id INT PRIMARY KEY, as_of_date DATE, quantity INT); "
+            "INSERT INTO product_levels VALUES (1, '2026-01-03', 7), (2, '2026-01-30', 10);"
+        )
+    script, undo = _author(shop, {"Table to model": "product_levels (", "Create this model?": True})
+
+    assert len(undo) == 1
+    assert script.defaults["Measures"] == ["product_level_count"]
+    assert (
+        "Choose whether quantity is a total for each period or a balance."
+        in capsys.readouterr().out
+    )
+    model = _model(shop, "product_levels")
+    assert set(model["measures"]) == {"product_level_count"}
+    assert model["times"]["as_of_date"]["class"] == "as_of_time"

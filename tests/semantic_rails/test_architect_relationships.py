@@ -78,12 +78,12 @@ def test_one_to_one_is_recorded_in_graph_relationships_and_can_be_reverted(proje
     relationship = _event_to_customer(project)
     assert (relationship.id, relationship.cardinality) == ("relationship.events_customer", "1:1")
 
-    _relate(project, ["buyer_id"])
+    _relate(project, ["customer_id"])
 
     entry = _file(project, "graph.yml")["graph"]["relationships"]["events_customer"]
     assert entry["cardinality"] == "many_to_one"
     relationship = _event_to_customer(project)
-    assert (relationship.source_columns, relationship.cardinality) == (["buyer_id"], "N:1")
+    assert (relationship.source_columns, relationship.cardinality) == (["customer_id"], "N:1")
 
 
 def test_composite_key_and_an_existing_entry_whose_via_would_override(project):
@@ -96,15 +96,23 @@ def test_composite_key_and_an_existing_entry_whose_via_would_override(project):
     }
     project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph, sort_keys=False)}])
 
-    project.upsert_relationship(from_entity="event", to_entity="visit", columns=["shop_id", "on"])
+    project.upsert_relationship(from_entity="event", to_entity="visit", columns=["a", "b"])
 
     entities = _file(project, "models/core/events.yml")["model"]["entities"]
-    assert entities["visit"] == {"expr": ["shop_id", "on"]}
+    assert entities["visit"] == {"expr": ["a", "b"]}
     entry = _file(project, "graph.yml")["graph"]["relationships"]["event_visit"]
-    assert entry == {"entities": ["event", "visit"], "safety": "safe", "cardinality": "many_to_one"}
+    assert entry == {
+        "entities": ["event", "visit"],
+        "via": ["a", "b"],
+        "safety": "safe",
+        "cardinality": "many_to_one",
+    }
     _, config = parse_config_report(PackageReference(source_path=str(project.project_path)))
     relationship = next(rel for rel in config.relationships if rel.id == "relationship.event_visit")
-    assert relationship.source_columns == ["shop_id", "on"]
+    assert (relationship.source_columns, relationship.target_columns) == (
+        ["a", "b"],
+        ["shop", "day"],
+    )
 
 
 @pytest.mark.parametrize(
