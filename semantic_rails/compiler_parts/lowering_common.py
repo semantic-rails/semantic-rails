@@ -71,6 +71,7 @@ from ..sql_ast import (
     SqlLiteral,
     SqlSelect,
     SqlSetQuery,
+    SqlSourceRef,
     SqlTableRef,
     build_negation,
 )
@@ -805,7 +806,7 @@ def _record_balance_edge(
         _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
     ]
     scope = LeafScope(
-        from_table=SqlTableRef(name=relation),
+        from_table=SqlSourceRef(name=relation),
         joins=(),
         where=(),
         value=None,
@@ -867,7 +868,7 @@ def _dataset_scope(
         ):
             return None
     return LeafScope(
-        from_table=SqlTableRef(name=relation),
+        from_table=SqlSourceRef(name=relation),
         joins=tuple(joins),
         where=tuple(where),
         value=SqlCall("COUNT", [_config_expr_to_sql(measure.expr, measure, config)]),

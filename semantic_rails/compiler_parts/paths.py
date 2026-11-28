@@ -49,9 +49,12 @@ from ..sql_ast import (
     SqlIsNull,
     SqlJoin,
     SqlLiteral,
+    SqlSourceColumn,
+    SqlSourceRef,
     SqlTableRef,
     build_filter_condition,
 )
+from ..sql_preparation import bigquery_quoted_identifier
 from .dependencies import holding, record_bound_object
 from .indexes import (
     _default_temporal_role,
@@ -71,8 +74,13 @@ from .temporal import (
 )
 
 
+class _GeneratedRelation(str):
+    """A path endpoint replaced by a CTE or generated alias during lowering."""
+
+
 def _column_ref(table: str, column: str) -> SqlIdentifier:
-    return SqlIdentifier(parts=[*str(table).split("."), column])
+    kind = SqlIdentifier if isinstance(table, _GeneratedRelation) else SqlSourceColumn
+    return kind(parts=[*table.split("."), column])
 
 
 def _path_selection(
@@ -178,24 +186,23 @@ def dimensions_over_column(entity: str, column: str, config: PackageConfig) -> l
 def column_key(name: str, config: PackageConfig) -> str:
     """A column name as the warehouse reads it: in ASCII lower case when the SQL leaves it
     unquoted (every warehouse but ClickHouse folds it) or quotes it on a warehouse that folds
-    quoted names too, else as it is. Never a Unicode casefold."""
+    quoted names too, else as it is. BigQuery compares the prepared field name."""
     from ..renderer import _quote_ident
 
     dialect = dialect_for_warehouse(config.package.warehouse)
     if _quote_ident(name) != name:
         sensitive = dialect.quoted_identifiers_case_sensitive
+        if dialect.name == "bigquery":
+            name = bigquery_quoted_identifier(name)
     else:
         sensitive = dialect.identifiers_case_sensitive
     return name if sensitive else name.translate(_ASCII_LOWER)
 
 
 def dimensions_sharing_column(entity: str, column: str, config: PackageConfig) -> list[Any]:
-    """The dimensions ``column`` binds to (``dimensions_over_column``), first, then every other
-    dimension of ``entity`` over a spelling the warehouse reads as the same column
-    (``column_key``); none for a spelling that binds to no dimension, which reads as itself."""
+    """The dimensions over every spelling the warehouse reads as ``column``, with dimensions
+    from ``dimensions_over_column`` first when the written spelling has a match."""
     over = dimensions_over_column(entity, column, config)
-    if not over:
-        return []
     key, ids = column_key(column, config), {dim.id for dim in over}
     others = [dim for dim in _dimension_index(config).values() if dim.id not in ids]
     return over + [
@@ -217,7 +224,7 @@ def text_dimension(entity: str, column: str, word: str, config: PackageConfig, p
             f"{declared}",
             details={
                 "path": path,
-                "dimensions": [dim.id for dim in dims],
+                "dimensions": sorted(dim.id for dim in dims),
                 "recovery_hints": [
                     {
                         "code": "USE_FILTER_WORD",
@@ -685,7 +692,11 @@ def _join_on_for_relationship(
     overrides = dict(table_overrides or {})
 
     def _table(entity_id: str) -> str:
-        return overrides.get(entity_id, entities[entity_id].table)
+        return (
+            _GeneratedRelation(overrides[entity_id])
+            if entity_id in overrides
+            else entities[entity_id].table
+        )
 
     if rel.source_entity == current_entity:
         next_entity = rel.target_entity
@@ -943,7 +954,7 @@ def _joins_for_paths(
     # the first join's semantics (e.g. ship-to city vs home city), so it
     # must be a structured refusal, not wrong numbers.
     root_table = overrides.get(source_entity, entities[source_entity].table)
-    joined_via: dict[str, tuple[str, str]] = {root_table: ("", "root")}
+    joined_via = {(source_entity in overrides, root_table): ("", "root")}
     for selection in path_selections:
         # A rewrite's anchor reads the root's route from the anchor's rows (the hop back to the
         # root, then the rest of the route): the root's own note names that route.
@@ -964,7 +975,8 @@ def _joins_for_paths(
                 table_overrides=overrides,
             )
             join_key = (rel.id, current_entity)
-            existing = joined_via.get(right_table)
+            table_key = (next_entity in overrides, right_table)
+            existing = joined_via.get(table_key)
             if existing is None:
                 kept = (keep_rows or rel.id in keeps_rows) and join_key not in inner_hops
                 lookup = kept and (
@@ -984,11 +996,13 @@ def _joins_for_paths(
                         join_type="LEFT"
                         if nullable_path or rel.temporal_validity or lookup
                         else "INNER",
-                        table=SqlTableRef(name=right_table),
+                        table=(SqlTableRef if next_entity in overrides else SqlSourceRef)(
+                            name=right_table
+                        ),
                         on=join_on,
                     )
                 )
-                joined_via[right_table] = join_key
+                joined_via[table_key] = join_key
             elif existing != join_key:
                 raise SemanticLayerError(
                     "PATH_JOIN_CONFLICT",
@@ -1022,7 +1036,8 @@ def _joins_for_paths(
         parent = _entity_in_terms_of_parent_relationship(source_entity, measure_entity, config)
         if (
             parent is None
-            or joined_via.get(measure_table) != (parent.id, source_entity)
+            or joined_via.get((measure_entity in overrides, measure_table))
+            != (parent.id, source_entity)
             or not any(
                 join.table.name == measure_table and join.join_type == "INNER" for join in joins
             )

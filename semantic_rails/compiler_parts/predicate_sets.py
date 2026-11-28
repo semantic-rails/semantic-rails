@@ -60,6 +60,7 @@ from ..sql_ast import (
     SqlLiteral,
     SqlOrder,
     SqlSelect,
+    SqlSourceRef,
     SqlTableRef,
 )
 from . import nested
@@ -848,7 +849,7 @@ def _anchored_snapshot_ctes(
         order=order_expr,
         day=None,
         first=window_choice == "first_value",
-        source=SqlTableRef(name=source_table),
+        source=SqlSourceRef(name=source_table),
         where=where_clauses,
     )
     ctes, snapshots = select_snapshots(

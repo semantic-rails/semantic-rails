@@ -60,6 +60,7 @@ from ..sql_ast import (
     SqlJoin,
     SqlLiteral,
     SqlSelect,
+    SqlSourceRef,
     SqlTableRef,
     SqlWindow,
     sql_nodes,
@@ -369,7 +370,6 @@ def guard_empty_groups(
     absent: Mapping[str, str] | None = None,
     probe_key: str = "",
     own_range: bool = False,
-    relation_names: Collection[str] = (),
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -432,12 +432,6 @@ def guard_empty_groups(
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
-    occupied = set(relation_names) | {
-        node.name.casefold().partition(".")[0]
-        for node in sql_nodes([list((scopes or {}).values()), list(observed.values())])
-        if isinstance(node, (SqlCte, SqlTableRef))
-    }
-    coverage_index = 0
     edges: dict[str, str] = {}
     probes: dict[str, str] = {}
 
@@ -452,14 +446,10 @@ def guard_empty_groups(
 
     def covered(scope: LeafScope) -> str:
         """The coverage CTE of the scope's base relation and bucket, read once."""
-        nonlocal coverage_index
         loaded = repr((scope.from_table, scope.raw_time, scope.storage_zone, scope.bucket))
         name = coverage.get(loaded)
         if name is None:
-            coverage_index += 1
-            while (candidate := f"coverage_{coverage_index}") in occupied:
-                coverage_index += 1
-            name = coverage[loaded] = candidate
+            name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
             ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
             joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
         return name
@@ -577,8 +567,10 @@ def guard_empty_groups(
                 if alias not in rows:
                     raise _unsettled_error({"measures": [alias], "missing": "row_count"})
                 # A populated sum always survives; a NULL one is 0 only if it read no rows.
-                count = SqlIdentifier(parts=["base", rows[alias]])
-                empty = SqlBinary(SqlIsNull(count), "OR", SqlBinary(count, "=", SqlLiteral(0)))
+                row_count = SqlIdentifier(parts=["base", rows[alias]])
+                empty = SqlBinary(
+                    SqlIsNull(row_count), "OR", SqlBinary(row_count, "=", SqlLiteral(0))
+                )
                 fill = SqlBinary(seen, "AND", empty)
                 value = SqlCall("COALESCE", [value, SqlCase([SqlCaseWhen(fill, SqlLiteral(0))])])
             elif scope is not None:
@@ -714,10 +706,10 @@ def declared_edge(
             if zone != "UTC":
                 through = dialect.convert_timezone("UTC", zone, through)
         through = SqlCase([SqlCaseWhen(SqlBinary(through, ">", clock), clock)], else_expr=through)
-        column = SqlIdentifier(parts=[edge.relation, edge.column])
+        column = SqlIdentifier(parts=[*edge.relation.split("."), edge.column])
         rows = SqlSelect(
             select=[SqlField(SqlCall("MAX", [column]), "watermark")],
-            from_table=SqlTableRef(name=edge.relation),
+            from_table=SqlSourceRef(name=edge.relation),
             observation_scan=True,
         )
         today = local_now(now, zone).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -838,7 +830,7 @@ def declared_cap(
             SqlExists(
                 SqlSelect(
                     select=[SqlField(SqlLiteral(1), "seen")],
-                    from_table=SqlTableRef(name=edge.relation, alias=LOAD_LOG),
+                    from_table=SqlSourceRef(name=edge.relation, alias=LOAD_LOG),
                     where=[covers],
                     observation_scan=True,
                 )
@@ -952,12 +944,12 @@ def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:
     )
 
 
-def base_reads(expr: Any) -> set[str]:
+def base_reads(expr: Any, table_alias: str = "base") -> set[str]:
     """The aliases an output expression reads from ``base``."""
     return {
         node.parts[-1]
         for node in sql_nodes(expr)
-        if isinstance(node, SqlIdentifier) and len(node.parts) == 2 and node.parts[0] == "base"
+        if isinstance(node, SqlIdentifier) and len(node.parts) == 2 and node.parts[0] == table_alias
     }
 
 

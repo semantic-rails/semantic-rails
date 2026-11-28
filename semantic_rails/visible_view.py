@@ -647,7 +647,7 @@ def public_error(exc: SemanticLayerError, config: PackageConfig) -> SemanticLaye
     }
     # A cut left out is still unmet: the refusal says so without saying what it is.
     unstated = len(details["policy_violations"]) < len(exc.details.get("policy_violations") or [])
-    return exc if details == exc.details else denied(details, unstated=unstated)
+    return exc if details == exc.details else denied(details, config, unstated=unstated)
 
 
 @dataclass

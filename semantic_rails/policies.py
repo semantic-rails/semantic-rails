@@ -11,7 +11,6 @@ effects to execution unchanged; responses carry ``visible_view.public_effects``.
 from __future__ import annotations
 
 import json
-import string
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache, partial
@@ -36,10 +35,10 @@ from .compiler_parts.bind import (
     measure_column_ref,
 )
 from .compiler_parts.lowering_common import _stock_row_key
-from .compiler_parts.paths import dimensions_over_column, display_key
+from .compiler_parts.paths import column_key as _column_key
+from .compiler_parts.paths import dimensions_over_column, dimensions_sharing_column, display_key
 from .compiler_parts.post_aggregation import share_over
 from .compiler_parts.totals import coarser_calls
-from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -72,7 +71,6 @@ from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .policy_rules import visible_only_listed as _visible_only_listed
 from .query_call import refusal
-from .renderer import _quote_ident
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, base_of, require_base
@@ -249,8 +247,6 @@ def enforce_query_policies(
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
     require_base(config)
-    if query is not None:
-        _refuse_unfilterable(config, query)
     object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
     # Caller-created measures have no authored object id to govern their raw columns, and a query
     # handed over without its binding cannot be checked: both refused while anything is hidden.
@@ -278,6 +274,8 @@ def enforce_query_policies(
                 ],
             },
         )
+    if query is not None:
+        _refuse_unfilterable(config, query)
     effects = query_policy_effects(
         config,
         object_ids,
@@ -303,7 +301,8 @@ def enforce_query_policies(
                     for row in blocking
                     for violation in list(row.get("violations", []) or [])
                 ],
-            }
+            },
+            config,
         )
     withheld = withheld_object_ids(
         config,
@@ -350,9 +349,12 @@ def _coarser_blocking(
     return blocking
 
 
-def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLayerError:
+def denied(
+    details: Mapping[str, Any], config: PackageConfig | None = None, *, unstated: bool = False
+) -> SemanticLayerError:
     """The refusal of a query a policy blocks. Its message and its one hint come from
-    ``details`` alone (the blocked objects and the effects with their violations), so
+    ``details`` (the blocked objects and the effects with their violations) and the package's
+    column declarations, so
     ``visible_view.public_error`` restates both from a caller's view of the same details;
     ``unstated`` says that view left out an unmet cut, which gets the generic words."""
     lines: list[str] = []
@@ -367,7 +369,7 @@ def denied(details: Mapping[str, Any], *, unstated: bool = False) -> SemanticLay
             lines.append(f"{names} is denied by policy")
             actions.append(f"Remove {names} from the call." if objects else "")
         for violation in violations:
-            line, action, fragment = _constraint_cut(violation)
+            line, action, fragment = _constraint_cut(violation, config)
             # An inner call's violation names the object it groups or filters.
             lines.append(f"{violation.get('object') or names} {line}")
             actions.append(action)
@@ -399,7 +401,9 @@ def _listed(items: Iterable[Any], word: str = "and") -> str:
     return f"{', '.join(texts[:-1])} {word} {texts[-1]}" if len(texts) > 1 else "".join(texts)
 
 
-def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+def _constraint_cut(
+    violation: Mapping[str, Any], config: PackageConfig | None
+) -> tuple[str, str, dict[str, Any]]:
     """What one metric constraint violation says, in the call's words: the cuts the policy
     allows, the one fix, and the call fragment that makes it (merged into the call)."""
     kind = violation.get("kind")
@@ -515,6 +519,14 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
             for field in violation.get("disallowed") or []
             if inline and kind == "disallowed_where" and str(field).startswith("entity.")
         ]
+        if config is not None:
+            for field in undeclared.copy():
+                spelling = _allowed_column_spelling(field, allowed, config)
+                if spelling:
+                    line += (
+                        f". For {field}, write the column as its dimension declares it, {spelling}"
+                    )
+                    undeclared.remove(field)
         if undeclared:
             one = len(undeclared) == 1
             it, column = ("it", "the column") if one else ("them", "each column")
@@ -541,6 +553,25 @@ def _constraint_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, A
         "Remove the having, entity filter or inline filter that reads it.",
         {},
     )
+
+
+def _allowed_column_spelling(field: str, allowed: list[str], config: PackageConfig) -> str:
+    """The written spelling of a dimension the constraint already allows on this column."""
+    for dim in config.dimensions:
+        prefix = f"{dim.entity}."
+        if dim.id not in allowed or dim.unknown_values or not field.startswith(prefix):
+            continue
+        spelling = field.removeprefix(prefix)
+        if spelling == dim.column or _column_key(spelling, config) != _column_key(
+            dim.column, config
+        ):
+            continue
+        if all(
+            match.id in allowed and match.filterable and not match.unknown_values
+            for match in _dimensions_over(dim.entity, dim.column, config)
+        ):
+            return dim.column
+    return ""
 
 
 def _inner_cut(violation: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
@@ -598,7 +629,6 @@ def _refuse_unfilterable(config: PackageConfig, payload: Mapping[str, Any]) -> N
     }
     fields = [
         *(item.field for item in every_filter(query.where)),
-        # Named as before, so every caller's call is refused exactly as it was.
         *(str(field) for _, field in _inline_filters(query, config)),
     ]
     refused = [field for field in dict.fromkeys(fields) if field in unfilterable]
@@ -1820,7 +1850,6 @@ _Operands = Callable[[ConditionalAggregateExpr, bool], frozenset[tuple[str, str]
 # The aggregations that count the rows where their value has a value (an average divides by that
 # count), so a column the value returns as it is picks those rows.
 _COUNTING = frozenset({"count", "count_distinct", "avg"})
-_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 
 def _condition_fields(
@@ -1844,8 +1873,8 @@ def _condition_fields(
     relation, named in full. With ``gating`` (the aggregate's value decides what else appears),
     every returned column is read but a key it counts.
     ``filterable: false``, which every caller meets and which only refuses, passes none and reads
-    columns as it always has: no count rule, the spelling as written, relations matched by their
-    last name part, and no value column that no dimension declares."""
+    filter words by column identity, including those inside an aggregate's value. Its raw
+    columns use their written spelling, no count rule and relations matched by last name part."""
     governed = operands is not None
     whens, columns = _value_reads(expr.value)
     conditions = [expr.condition, *whens] if expr.condition is not None else whens
@@ -1881,6 +1910,10 @@ def _condition_fields(
             ]
         if over or governed or not in_value:
             out.extend(over or [_Undeclared(entity, ref.column)])
+    if not governed:
+        for ref in collect_column_refs(expr, filter_words_only=True):
+            entity = _resolve_column_entity(ref, config)
+            out.extend(row.id for row in dimensions_sharing_column(entity, ref.column, config))
     return out
 
 
@@ -1970,9 +2003,8 @@ def _counted_operands(policy: SemanticPolicyConfig, binding: BoundQuery) -> _Ope
 
 def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[Any]:
     """The dimensions of ``entity`` over every spelling of ``column`` the warehouse reads as that
-    column (``_column_key``), so each spelling meets the same ones; none for a spelling the SQL
-    binds to no dimension (``dimensions_over_column``), since binding reads it without any
-    dimension's unknown values."""
+    column (``_column_key``). Metric constraints require a spelling that matches under
+    ``dimensions_over_column`` before allowing any of the dimensions."""
     if not dimensions_over_column(entity, column, config):
         return []
     key = _column_key(column, config)
@@ -1981,18 +2013,6 @@ def _dimensions_over(entity: str, column: str, config: PackageConfig) -> list[An
         for row in config.dimensions
         if row.entity == entity and _column_key(row.column, config) == key
     ]
-
-
-def _column_key(name: str, config: PackageConfig) -> str:
-    """A column name as the warehouse reads it: in ASCII lower case when the SQL leaves it
-    unquoted (every warehouse but ClickHouse folds it) or quotes it on a warehouse that folds
-    quoted names too, else as it is. Never a Unicode casefold."""
-    dialect = dialect_for_warehouse(config.package.warehouse)
-    if _quote_ident(name) != name:
-        sensitive = dialect.quoted_identifiers_case_sensitive
-    else:
-        sensitive = dialect.identifiers_case_sensitive
-    return name if sensitive else name.translate(_ASCII_LOWER)
 
 
 def _child_exprs(expr: Any) -> Iterator[Any]:

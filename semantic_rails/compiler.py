@@ -18,6 +18,7 @@ import time
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, replace
+from itertools import count
 from typing import Any
 
 from .ast import normalize_query
@@ -38,6 +39,7 @@ from .compiler_parts.dependencies import (
 )
 from .compiler_parts.empty_groups import recording_zero_outputs
 from .compiler_parts.lowering_common import _query_key_aliases
+from .compiler_parts.namespacing import reserve_name
 from .compiler_parts.paths import dimension_filter, inner_lookups
 from .compiler_parts.physical_plan import build_performance_plan, build_physical_plan
 from .compiler_parts.plan_checks import NonAdditiveRefusal as NonAdditiveRefusal
@@ -72,7 +74,7 @@ from .dialects import dialect_for_warehouse
 from .flat_copy import as_dict
 from .ir import ExplainArtifact
 from .registry import Registry
-from .relation_pipelines import attach_relation_ctes
+from .relation_pipelines import attach_and_name_relations
 from .renderer import collecting_slots, render_select_for_profile
 from .row_filters import RowFilter, verify_row_filters
 from .schema import PackageConfig
@@ -84,6 +86,7 @@ from .sql_ast import (
     SqlSelect,
     SqlTableRef,
     build_filter_condition,
+    sql_nodes,
 )
 from .sql_preparation import PreparedQuery, finalize_parameters
 from .temporal_support import validate_temporal_support
@@ -119,7 +122,9 @@ def _compile_query_sql_ast(
         ) as leaves,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
-        select = attach_relation_ctes(config, lower_to_sql(plan, config, default_order=False))
+        select = lower_to_sql(plan, config, default_order=False)
+        if config.relations:
+            select, _ = attach_and_name_relations(config, select)
         return limit_order(select, _query_key_aliases(plan))[0]
 
 
@@ -191,9 +196,13 @@ def value_page(
     """
     statement = compiled["sql_ast"]
     own = call_rows(statement)
-    name = "value_rows"
-    while name in {cte.name for cte in own.ctes}:
-        name = f"{name}_"
+    occupied = {
+        part.casefold()
+        for node in sql_nodes(statement)
+        if isinstance(node, (SqlCte, SqlTableRef))
+        for part in node.name.split(".")
+    }
+    name = reserve_name(("value_rows" + "_" * index for index in count()), occupied)
     key = SqlIdentifier(parts=[name, column])
     where = [build_filter_condition(key, "missing", False)]
     if search:
@@ -336,6 +345,7 @@ def compile_query(
         "coverage_now": bound.coverage_now,
         "balance_edges": list(bound.balance_edges),
         "balance_coverage": list(bound.balance_coverage),
+        "sql_names": bound.sql_names,
         "closing_reads": list(bound.closing_reads),
         # Every probe the runtime builds from this statement is held to it again.
         "row_filter_visibility": bound.visibility,

@@ -1408,6 +1408,52 @@ def test_filterable_false_reads_inline_columns_as_before(config, read, refused):
     ]
 
 
+@pytest.mark.parametrize("placement", ["condition", "value", "hidden", "raw"])
+def test_a_filter_word_in_another_case_cannot_read_an_unfilterable_dimension(quoted, placement):
+    package = replace(
+        quoted,
+        dimensions=[
+            replace(row, filterable=False) if row.id == CUSTOMER_REF else row
+            for row in quoted.dimensions
+        ],
+    )
+    _, expression = _spelled("customer ref")["count_condition"]
+    if placement == "hidden":
+        policy = SemanticPolicyConfig(
+            id="policy.test.hidden_ref",
+            kind="object_visibility",
+            action="hidden",
+            object_ids=[CUSTOMER_REF],
+            audiences=["restricted"],
+        )
+        package = replace(package, semantic_policies=[policy])
+    if placement in {"condition", "hidden"}:
+        expression["condition"].update(op="missing", right={"kind": "literal", "value": True})
+    elif placement == "value":
+        predicate = expression.pop("condition")
+        predicate["op"] = "contains"
+        expression["value"] = {
+            "kind": "nullif",
+            "value": predicate,
+            "null_value": {"kind": "literal", "value": False},
+        }
+    engine = Runtime.from_config(package, source_path=PACKAGE)
+    try:
+        result = engine.validate(_select(expression), context={"audience": "restricted"})
+    finally:
+        engine.close()
+    if placement == "raw":
+        assert result["ok"], result["errors"]
+        return
+    [error] = result["errors"]
+    assert error["code"] == "POLICY_DENIED"
+    if placement == "hidden":
+        assert "select a measure or metric" in error["message"]
+        assert CUSTOMER_REF not in repr(error)
+    else:
+        assert f"{CUSTOMER_REF} is not filterable" in error["message"]
+
+
 def test_every_dimension_over_one_column_meets_each_spelling(config, monkeypatch):
     """Two dimensions over the order's customer id spelled in two cases name one DuckDB column:
     either spelling meets both, so allowing one of them allows neither spelling."""
@@ -1624,7 +1670,9 @@ def test_revenue_with_no_quoted_reference_is_right_or_refused(tmp_path, monkeypa
 @pytest.mark.parametrize(
     ("warehouse", "authored", "written", "same"),
     [
-        *((name, "Customer Ref", "customer ref", True) for name in ("duckdb", "bigquery")),
+        ("duckdb", "Customer Ref", "customer ref", True),
+        ("bigquery", "Customer Ref", "customer ref", False),
+        ("bigquery", "Select", "select", True),
         *((name, "Customer Ref", "CUSTOMER REF", True) for name in ("databricks", "athena")),
         *((name, "Customer Ref", "customer ref", False) for name in ("postgres", "snowflake")),
         ("clickhouse", "Customer Ref", "customer ref", False),
@@ -2192,9 +2240,8 @@ def test_a_dimension_over_a_relation_spelled_in_another_case_allows_nothing(
 
 
 def test_a_text_word_on_a_quoted_column_reads_only_its_own_spelling(quoted):
-    """``contains`` on the customer reference in its dimension's spelling is a filter on that
-    dimension, allowed when it is listed; in another case it compares the column of no dimension
-    and is refused."""
+    """The alternate spelling binds as text and the constraint still requires the declaration's
+    spelling on its allow-list."""
 
     def revenue_containing(column):
         ref = {"kind": "column", "entity": ORDER, "column": column}
@@ -2216,11 +2263,51 @@ def test_a_text_word_on_a_quoted_column_reads_only_its_own_spelling(quoted):
         engine.close()
     assert own["ok"], own["errors"]
     error = other["errors"][0]
-    assert error["code"] == "INVALID_QUERY"
+    assert error["code"] == "POLICY_DENIED"
     assert (
-        f"'contains' compares a dimension's text; {ORDER}.CUSTOMER REF is the column of no"
-        in (error["message"])
+        f"For {ORDER}.CUSTOMER REF, write the column as its dimension declares it, Customer Ref"
+        in error["message"]
     )
+
+
+def test_a_constraint_does_not_suggest_a_spelling_that_it_still_refuses(quoted):
+    dimension = next(row for row in quoted.dimensions if row.id == CUSTOMER_REF)
+    other = replace(dimension, id=f"{CUSTOMER_REF}_upper", column="CUSTOMER REF")
+    package = _with_bare_measures(replace(quoted, dimensions=[*quoted.dimensions, other]))
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, TOTAL_CENTS)
+    try:
+        for column in ("Customer Ref", "customer ref"):
+            word = {
+                "kind": "comparison",
+                "op": "is",
+                "left": {"kind": "column", "entity": ORDER, "column": column},
+                "right": {"kind": "literal", "value": "C-"},
+            }
+            query = _select(_summed(TOTAL, word), group_by=[STORE_NAME])
+            [error] = engine.validate(query)["errors"]
+            assert error["code"] == "POLICY_DENIED"
+            assert "write the column as its dimension declares it" not in error["message"]
+    finally:
+        engine.close()
+
+
+def test_a_constraint_does_not_suggest_a_spelling_of_an_unfilterable_column(quoted):
+    package = replace(
+        quoted,
+        dimensions=[
+            replace(row, filterable=False) if row.id == CUSTOMER_REF else row
+            for row in quoted.dimensions
+        ],
+    )
+    engine = _constrained(package, {"allowed_where": [STORE_NAME, CUSTOMER_REF]}, ORDERS)
+    try:
+        for column in ("Customer Ref", "customer ref"):
+            _, expression = _spelled(column)["count_condition"]
+            [error] = engine.validate(_select(expression))["errors"]
+            assert error["code"] == "POLICY_DENIED"
+            assert "write the column as its dimension declares it" not in error["message"]
+    finally:
+        engine.close()
 
 
 # The allow-list. Under a constraint with allowed_where, a select item, having, entity filter or

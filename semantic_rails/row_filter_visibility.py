@@ -25,7 +25,6 @@ from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError
 from .fanout import package_route_result
 from .policy_rules import policy_matches
-from .relation_pipelines import pipeline_cte_names
 from .row_filters import (
     ParentHop,
     RowFilter,
@@ -213,7 +212,7 @@ def visibility_for(config: PackageConfig, filters: Sequence[RowFilter]) -> Visib
             for row in base.measures
             if row.zero_through is not None and row.zero_through.kind == "loaded"
         ),
-        pipelines=frozenset(relation_key(name) for name in pipeline_cte_names(base)),
+        pipelines=frozenset(relation_key(row.output_name) for row in base.relations),
         subquery_in_join_on=dialect_for_warehouse(base.package.warehouse).subquery_in_join_on,
     )
 

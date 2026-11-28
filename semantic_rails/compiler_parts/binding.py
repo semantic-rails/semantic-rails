@@ -34,6 +34,7 @@ from ..expressions import (
     ConversionExpr,
     MetricRecipeRefExpr,
     ScopedAggregateExpr,
+    collect_column_refs,
     expr_to_dict,
     parse_semantic_expression,
     validate_expression_shapes,
@@ -51,7 +52,7 @@ from ..ir import (
 )
 from ..query_call import engine_where, refusal
 from ..registry import Registry
-from ..relation_pipelines import attach_relation_ctes
+from ..relation_pipelines import attach_and_name_relations
 from ..row_filter_visibility import Visibility, hold_unowned_reads, visibility_for
 from ..row_filters import RowFilter, apply_row_filters
 from ..schema import (
@@ -68,6 +69,7 @@ from ..sql_ast import (
 )
 from .bind import (
     _expression_alias,
+    _resolve_expr_entity,
     _synthetic_conditional_measure,
     refusing_fallible_calls,
 )
@@ -76,6 +78,7 @@ from .dependencies import (
     binding_dependencies,
     capture_objects,
     plan_bindings,
+    record_bound_object,
     record_temporal_role,
 )
 from .empty_groups import (
@@ -95,9 +98,11 @@ from .indexes import (
 )
 from .listings import bind_listing
 from .lowering_common import recording_stock_key_gaps
+from .namespacing import avoid_name_collisions
 from .parent_values import bind_parent_values
 from .paths import (
     _leaf_time_role,
+    dimensions_sharing_column,
     display_key,
 )
 from .plan_checks import _object_default_query_temporal_role
@@ -193,6 +198,7 @@ class BoundQuery:
     # Every caller aggregate over columns the SQL reads, by synthetic measure id: the plan's own
     # and each nested compile's (an entity filter's input, at any depth).
     synthetic_measures: dict[str, Any] = field(default_factory=dict)
+    sql_names: dict[str, str] = field(default_factory=dict)
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """The cuts the caller added that count for ``object_id``: whole-query cuts plus the
@@ -219,7 +225,7 @@ class BoundQuery:
 
 
 def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> frozenset[str]:
-    """Resolve metadata ownership and a valid default invocation for recipes."""
+    """Resolve metadata ownership, including the dimensions an authored comparison reads."""
     references: set[str] = set()
     for object_id in object_ids:
         recipe = _recipe_index(config).get(object_id)
@@ -229,9 +235,14 @@ def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> f
                     _dimension_index,
                     _temporal_role_index,
                     _entity_index,
-                    _measure_index,
                 ):
                     index(config).get(object_id)
+                measure = _measure_index(config).get(object_id)
+                if measure is not None and not measure.lookup_from:
+                    for ref in collect_column_refs(measure.expr, filter_words_only=True):
+                        entity = _resolve_expr_entity(ref, measure, config)
+                        for dimension in dimensions_sharing_column(entity, ref.column, config):
+                            record_bound_object(dimension, config)
             references.update(dependencies.object_ids)
             continue
         query: dict[str, Any] = {"select": [{"expression": {"metric": object_id}, "as": "value"}]}
@@ -435,7 +446,7 @@ def _bind_with_row_filters(
         )
 
     def filtered(statement: Any) -> SqlSelect:
-        return apply_row_filters(statement, visibility)
+        return apply_row_filters(avoid_name_collisions(statement)[0], visibility)
 
     # A closing-day probe reads the stock's rows as its leaf does, under the same filters, and
     # so does a balance's coverage (its data_through); one that can't be filtered is refused.
@@ -741,7 +752,16 @@ def _bind_query(
         capping_at(parse_now((payload.get("policy_context") or {}).get("now"))) as clock,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
-        sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
+        sql_ast, sql_names = attach_and_name_relations(config, lower_to_sql(plan, config))
+    balance_coverage = tuple(balance_edges["ctes"].values())
+    if balance_coverage:
+        balance_select, balance_names = avoid_name_collisions(
+            SqlSelect(select=[], ctes=list(balance_coverage)),
+            [*(cte.name for cte in sql_ast.ctes), *(row.output_name for row in config.relations)],
+        )
+        balance_coverage = tuple(balance_select.ctes)
+        for output in balance_edges["outputs"]:
+            output["probes"] = sorted(balance_names.get(name, name) for name in output["probes"])
     cuts = dependencies.cuts
     # A leaf read by a whole-query cut (a metric filter) filters the whole query too.
     shared = set().union(*(cut.leaves for cut in cuts if cut.owners is None))
@@ -766,9 +786,10 @@ def _bind_query(
         route_choices=tuple(route_choices),
         coverage_now=clock.literal if clock.read else "",
         balance_edges=tuple(balance_edges["outputs"]),
-        balance_coverage=tuple(balance_edges["ctes"].values()),
+        balance_coverage=balance_coverage,
         closing_reads=closing_reads_by_output(closing_reads),
         authored_leaves=_authored_leaves(plan, config),
         inner_calls=tuple(dependencies.inner_calls),
         synthetic_measures=_caller_aggregates(plan, config, dependencies.synthetic_measures),
+        sql_names=sql_names,
     )

@@ -51,7 +51,7 @@ from ..expressions import (
 )
 from ..ir import BoundMeasure
 from ..query_call import predicate_input
-from ..schema import MeasureConfig, PackageConfig
+from ..schema import DimensionConfig, MeasureConfig, PackageConfig
 from ..sql_ast import (
     SqlBinary,
     SqlCall,
@@ -74,6 +74,7 @@ from .dependencies import (
     measure_cut_owners,
     measure_objects,
     once_per_binding,
+    record_bound_object,
 )
 from .indexes import (
     _dimension_index,
@@ -399,6 +400,23 @@ def measure_column_ref(
     return _column_ref(entity.table, ref.column)
 
 
+def _column_sql(
+    ref: ColumnRefExpr,
+    measure: MeasureConfig,
+    config: PackageConfig,
+    dimensions: list[DimensionConfig] | None = None,
+) -> SqlIdentifier:
+    if is_conditional_aggregate(measure):
+        entity = _resolve_expr_entity(ref, measure, config)
+        bind_conditional_aggregate_column(
+            measure, entity, ref.column, config, dimensions=dimensions
+        )
+    elif dimensions:
+        for dimension in dimensions:
+            record_bound_object(dimension, config)
+    return measure_column_ref(ref, measure, config)
+
+
 def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> Any:
     if measure.lookup_from:
         # Its expr is the key to its parent; only the parent_lookup leaf reads its value.
@@ -456,7 +474,7 @@ def _text_comparison(
         )
     entity = _resolve_expr_entity(column, measure, config)
     dim = text_dimension(entity, column.column, word, config, measure.id)
-    value = unknown_as_null(_config_expr_to_sql(column, measure, config), dim)
+    value = unknown_as_null(_column_sql(column, measure, config, [dim]), dim)
     as_text = operators.casts_to_text(dim.data_type)
     return build_filter_condition(value, word, text.value, as_text=as_text)
 
@@ -471,18 +489,35 @@ def _word_comparison(
     assert isinstance(expr.left, ColumnRefExpr) and isinstance(expr.right, LiteralExpr)
     column = expr.left
     entity = _resolve_expr_entity(column, measure, config)
-    dims = dimensions_over_column(entity, column.column, config)
+    dims = dimensions_sharing_column(entity, column.column, config)
     operators.check_column_word(
-        dimensions_sharing_column(entity, column.column, config),
+        dims,
         word,
         expr.right.value,
         f"{entity}.{column.column}",
         measure.id,
     )
-    value = _config_expr_to_sql(column, measure, config)
+    value = _column_sql(column, measure, config, dims)
     if dims:
         value = unknown_as_null(value, dims[0])
-    temporal = _temporal_result(column, measure, config)
+    exact = [dim for dim in dims if dim.column == column.column]
+    typed = exact or dims
+    temporal_types = {dim.data_type in {"date", "timestamp"} for dim in typed}
+    if exact:
+        # A date or timestamp declaration on the written spelling makes it temporal.
+        temporal_types = {True in temporal_types}
+    operands = (
+        operators.values_of(word, expr.right.value) if word in {"is", "not"} else [expr.right.value]
+    )
+    if len(temporal_types) > 1 and any(isinstance(item, str) for item in operands):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{measure.id}.left: '{word}' reads {entity}.{column.column}, whose dimensions "
+            "disagree on whether to compare text values as dates or timestamps. "
+            "Filter on the dimension you mean.",
+            details={"path": f"{measure.id}.left", "dimensions": sorted(dim.id for dim in typed)},
+        )
+    temporal = temporal_types == {True}
     return build_filter_condition(value, word, expr.right.value, path=measure.id, temporal=temporal)
 
 
@@ -490,10 +525,7 @@ def _config_expr_to_sql_inner(
     expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig
 ) -> Any:
     if isinstance(expr, ColumnRefExpr):
-        entity_id = _resolve_expr_entity(expr, measure, config)
-        if is_conditional_aggregate(measure):
-            bind_conditional_aggregate_column(measure, entity_id, expr.column, config)
-        return measure_column_ref(expr, measure, config)
+        return _column_sql(expr, measure, config)
     if isinstance(expr, LiteralExpr):
         return SqlLiteral(expr.value)
     if isinstance(expr, ArithmeticExpr):
@@ -1328,7 +1360,12 @@ _OBJECT_POLICY_KINDS = frozenset({"object_access", "object_visibility"})
 
 
 def bind_conditional_aggregate_column(
-    measure: MeasureConfig, entity_id: str, column: str, config: PackageConfig
+    measure: MeasureConfig,
+    entity_id: str,
+    column: str,
+    config: PackageConfig,
+    *,
+    dimensions: list[DimensionConfig] | None = None,
 ) -> None:
     """Bind a column an aggregate_if reads as a where filter binds its dimension.
 
@@ -1344,7 +1381,8 @@ def bind_conditional_aggregate_column(
         measure, config, lambda: frozenset(_measure_required_entities(measure, config))
     )
     joined = required - {measure.entity}
-    dimensions = [row.id for row in dimensions_over_column(entity_id, column, config)]
+    if dimensions is None:
+        dimensions = dimensions_over_column(entity_id, column, config)
     if (
         not dimensions
         and entity_id in joined
@@ -1368,8 +1406,8 @@ def bind_conditional_aggregate_column(
             },
         )
     index = _dimension_index(config)
-    for dimension_id in dimensions:
-        index.get(dimension_id)
+    for dimension in dimensions:
+        index.get(dimension.id)
 
 
 def _conditional_path_refusal(

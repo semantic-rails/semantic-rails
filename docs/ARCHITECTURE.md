@@ -498,6 +498,15 @@ The runtime compiles a request through these stages:
 6. Render SQL text from the SQL AST.
 7. Execute the prepared SQL against the configured warehouse.
 
+The compiler keeps generated CTE names and relation aliases distinct from package
+relation names, including schema and catalog components, using case-insensitive
+comparison. Coverage and observation probes keep their generated prefixes so
+answer disclosures can identify the probes each output reads. Probe queries
+reuse the bound query's CTE dependencies in render order. Pipeline source
+dependencies resolve against declared pipeline outputs. The compiler allocates
+intermediate pipeline names before attachment and gives a pipeline output a
+distinct SQL name when it would shadow a stored input.
+
 Important planner behaviors:
 
 - safe mixed-grain cases compile via leaf pre-aggregation rewrites
@@ -647,6 +656,7 @@ both coverage and rollup refusal, on DuckDB and Postgres only. On Snowflake, Big
 Databricks and Athena, a series' combined leaves read their own coverage and refuse rollups by
 one rule too (`_gates_by_own_range`). Populated values pass through; routed queries keep the
 window test and never scan a shadow raw leaf.
+Coverage CTE names skip relation and CTE names already in use, compared case-insensitively.
 A single-measure scalar under dataset observation with bounds on its own default DATE
 clock uses the window total's coverage bucket in the settlement guard. Its value scan
 uses the original filters.
