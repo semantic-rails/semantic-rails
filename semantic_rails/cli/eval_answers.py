@@ -27,19 +27,19 @@ from typing import Any
 
 import yaml
 
-from . import package_tools
-from .ast import PERIOD_PARTIAL
-from .clock import parse_now
-from .config import package_root_for_source
-from .config_validation import PackageReference, parse_config_report
-from .errors import SemanticLayerError
-from .request_context import TrustedAttributes, context_from_policy_context
-from .result_values import result_rows
-from .route_census import defer_census_questions
-from .runtime import Runtime, _time_zone
-from .runtime_parts.joined_call import joined_output_columns
-from .runtime_parts.responses import output_columns
-from .yaml_loader import Yaml12SafeLoader, safe_load
+from .. import package_tools
+from ..ast import PERIOD_PARTIAL
+from ..clock import parse_now
+from ..config import package_root_for_source
+from ..config_validation import PackageReference, parse_config_report
+from ..errors import SemanticLayerError
+from ..request_context import TrustedAttributes, context_from_policy_context
+from ..result_values import result_rows
+from ..route_census import defer_census_questions
+from ..runtime import Runtime, _time_zone
+from ..runtime_parts.joined_call import joined_output_columns
+from ..runtime_parts.responses import output_columns
+from ..yaml_loader import Yaml12SafeLoader, safe_load
 
 ANSWERS_FILE = Path("tests") / "answers.yml"
 # ``expect`` names what the call must do; ``kind`` is the package test that checks it.

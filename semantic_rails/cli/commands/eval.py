@@ -6,7 +6,8 @@ import argparse
 from typing import Any
 
 from ...config_validation import resolve_package_reference
-from ...eval_answers import (
+from ..common import _add_now_arg, _add_optional_reference_args, _print
+from ..eval_answers import (
     FAILED,
     KNOWN_WRONG,
     MISSED,
@@ -15,7 +16,6 @@ from ...eval_answers import (
     compact,
     run_answers_report,
 )
-from ..common import _add_now_arg, _add_optional_reference_args, _print
 
 LABELS = {PASSED: "PASS", FAILED: "FAIL", MISSED: "MISS", KNOWN_WRONG: "KNOWN", SKIPPED: "SKIP"}
 

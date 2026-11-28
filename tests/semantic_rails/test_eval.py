@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from semantic_rails import eval_answers
 from semantic_rails.cli import app as cli_app
+from semantic_rails.cli import eval_answers
+from semantic_rails.cli.eval_answers import FAILED, MISSED, PASSED, SKIPPED, row_differences
 from semantic_rails.config_validation import resolve_package_reference
-from semantic_rails.eval_answers import FAILED, MISSED, PASSED, SKIPPED, row_differences
 from tests.semantic_rails.conftest import copy_package_config
 
 REPO = Path(__file__).resolve().parents[2]
