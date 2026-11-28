@@ -39,7 +39,12 @@ from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
-from semantic_rails.schema import MetricConfig, RelationConfig, RelationPipelineStep
+from semantic_rails.schema import (
+    MetricConfig,
+    RelationConfig,
+    RelationPipelineStep,
+    SemanticPolicyConfig,
+)
 from semantic_rails.sql_ast import SqlCte, SqlTableFunction, SqlTableRef
 from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.conftest import copy_package_config, opened
@@ -1287,6 +1292,57 @@ def test_coverage_names_keep_loading_warnings_on_their_outputs(
     assert [item["details"]["outputs"] for item in _warnings(response, "NO_DATA_YET")] == [
         ["orders", "scans", "signups", "opened"]
     ]
+
+
+@pytest.mark.parametrize("hidden", [True, False], ids=["hidden_owner", "visible_owner"])
+def test_scalar_coverage_names_skip_row_filter_owners(tmp_path: Path, hidden: bool) -> None:
+    package = _shop_package(
+        tmp_path,
+        "CREATE TABLE coverage_1_2 AS SELECT * FROM stores",
+        "CREATE TABLE coverage_1 AS "
+        "(SELECT * REPLACE (DATE '2026-09-07' AS ordered_at, 7 AS amount) "
+        "FROM orders WHERE store_id = 'b' LIMIT 1) UNION ALL "
+        "(SELECT * REPLACE (DATE '2026-09-07' AS ordered_at, 70 AS amount) "
+        "FROM orders WHERE store_id = 'a' LIMIT 1)",
+    )
+    config = load_package_config(str(package))
+    renamed = {"orders": "coverage_1", "stores": "coverage_1_2"}
+    day = "dimension.shop_order_ordered_at"
+    config = replace(
+        config,
+        entities=[replace(row, table=renamed.get(row.table, row.table)) for row in config.entities],
+        dimensions=[
+            replace(row, data_type="date") if row.id == day else row for row in config.dimensions
+        ],
+    )
+    if hidden:
+        hide_owner = SemanticPolicyConfig(
+            id="policy.shop.hide_store",
+            kind="object_visibility",
+            config={},
+            object_ids=["entity.shop_store"],
+            roles=["regional"],
+            action="hidden",
+        )
+        config = replace(config, semantic_policies=[*config.semantic_policies, hide_owner])
+    context = RequestContext(roles=("regional",), attributes={"region": "East"})
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        answer = runtime.query(
+            {
+                "select": _select(value=SHOP_REVENUE),
+                "where": [
+                    {"field": day, "op": "gte", "value": "2026-09-07"},
+                    {"field": day, "op": "lt", "value": "2026-09-08"},
+                ],
+            },
+            now="2026-10-05T06:00:00Z",
+            context=context,
+        )
+    finally:
+        runtime.close()
+    assert answer["rows"] == [{"value": 7}]
+    assert answer.get("warnings", []) == []
 
 
 @pytest.mark.parametrize(

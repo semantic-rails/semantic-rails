@@ -22,6 +22,7 @@ import pytest
 from semantic_rails import runtime as runtime_module
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import empty_groups
+from semantic_rails.config import load_package_config
 from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
@@ -32,6 +33,7 @@ from semantic_rails.runtime_parts.answer_warnings import (
     closing_day_disclosures,
     granted_closing_day,
 )
+from semantic_rails.schema import RelationConfig, RelationPipelineStep, SemanticPolicyConfig
 from semantic_rails.sql_ast import SqlJoin, SqlTableRef
 from semantic_rails.sql_preparation import ParameterSlot, parameters_denied
 from tests.semantic_rails.conftest import opened
@@ -463,6 +465,53 @@ def test_the_closing_day_and_its_counts_are_read_under_the_callers_row_filter(
         assert _one(runtime.query(_call("inv_stagger", **YEAR)), "warnings", MISSING)
     finally:
         runtime.close()
+
+
+def test_closing_probe_skips_pipeline_names_when_renamed_for_a_row_filter(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "inv", ONE_BUILDING)
+    with duckdb.connect(str(root / "data" / "inv.duckdb")) as db:
+        db.execute("CREATE TABLE main.closing_rows AS SELECT * FROM inv_dense")
+    config = load_package_config(str(root))
+    hidden = "entity.inv_inv_dense"
+    (building_policy,) = config.semantic_policies
+    other_filter = SemanticPolicyConfig(
+        "policy.inv.other_building",
+        "row_filter",
+        {"dimension": "dimension.inv_inv_dense_building", "attribute": "building"},
+        audiences=building_policy.audiences,
+    )
+    hide_other = SemanticPolicyConfig(
+        "policy.inv.hide_other_building",
+        "object_visibility",
+        object_ids=[hidden],
+        audiences=building_policy.audiences,
+        action="hidden",
+    )
+    unused = RelationConfig(
+        id="relation.inv.unused",
+        output_name="closing_rows_2",
+        steps=[
+            RelationPipelineStep(
+                "source", {"relation": "inv_changes", "columns": ["building", "snap_date", "area"]}
+            )
+        ],
+    )
+    config = replace(
+        config,
+        entities=[
+            replace(row, table="main.closing_rows") if row.id == hidden else row
+            for row in config.entities
+        ],
+        relations=[unused],
+        semantic_policies=[*config.semantic_policies, other_filter, hide_other],
+    )
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        result = runtime.query(_call("inv_stagger", **YEAR), context=_building("X"))
+    finally:
+        runtime.close()
+    assert _values(result) == [100]
+    assert _one(result, "assumptions", CLOSING)["closing_day"] == "2020-12-05"
 
 
 ONE_DENSE_BUILDING = ONE_BUILDING.replace("inv_stagger", "inv_dense")

@@ -390,6 +390,9 @@ def _bind_with_row_filters(
         for row in row_filters
     ]
     try:
+        # The verifier checks the full package's restricted relations and pipeline names.
+        visibility = visibility_for(config, shown_filters)
+        reserved_names = visibility.restricted | visibility.pipelines
         # A rollup may not hold the filter column, so a row-filtered query reads its base relation.
         with (
             aggregate_routing(not row_filters),
@@ -398,13 +401,12 @@ def _bind_with_row_filters(
                 {pair: row.relationship_path for pair, (_, row) in decided.items()}
             ),
         ):
-            bound = _bind_query(config, registry, payload)
+            bound = _bind_query(config, registry, payload, reserved_names=reserved_names)
     except SemanticLayerError as exc:
         if row_filters and exc.code == "AMBIGUOUS_PATH":
             # Offered only if every option can be taken and answers under the caller's filters.
             pair = (exc.details["start"], exc.details["target"])
             _guard_route_row_filters(base_of(config), pair, row_filters, "", config)
-            visibility = visibility_for(config, shown_filters)
             for option in (exc.details.get("clarification") or {}).get("options") or []:
                 route = (*pair, option["relationship_path"])
                 hold_unowned_reads(config, visibility, roots=(), routes=[route])
@@ -434,7 +436,6 @@ def _bind_with_row_filters(
                 },
             )
     row_filters = shown_filters
-    visibility = visibility_for(config, row_filters)
     sql_ast = apply_row_filters(bound.sql_ast, visibility)
     if row_filters:
         # Holds only: a refusal here never authorizes anything the pass doesn't prove.
@@ -446,7 +447,7 @@ def _bind_with_row_filters(
         )
 
     def filtered(statement: Any) -> SqlSelect:
-        return apply_row_filters(avoid_name_collisions(statement)[0], visibility)
+        return apply_row_filters(avoid_name_collisions(statement, reserved_names)[0], visibility)
 
     # A closing-day probe reads the stock's rows as its leaf does, under the same filters, and
     # so does a balance's coverage (its data_through); one that can't be filtered is refused.
@@ -729,7 +730,11 @@ def _caller_aggregates(
 
 
 def _bind_query(
-    config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    *,
+    reserved_names: frozenset[str],
 ) -> BoundQuery:
     # policy_context carries caller metadata and is never read as expressions;
     # every other request key, including unrecognized ones, is shape-checked.
@@ -752,12 +757,18 @@ def _bind_query(
         capping_at(parse_now((payload.get("policy_context") or {}).get("now"))) as clock,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
-        sql_ast, sql_names = attach_and_name_relations(config, lower_to_sql(plan, config))
+        sql_ast, sql_names = attach_and_name_relations(
+            config, lower_to_sql(plan, config), reserved_names=reserved_names
+        )
     balance_coverage = tuple(balance_edges["ctes"].values())
     if balance_coverage:
         balance_select, balance_names = avoid_name_collisions(
             SqlSelect(select=[], ctes=list(balance_coverage)),
-            [*(cte.name for cte in sql_ast.ctes), *(row.output_name for row in config.relations)],
+            [
+                *reserved_names,
+                *(cte.name for cte in sql_ast.ctes),
+                *(row.output_name for row in config.relations),
+            ],
         )
         balance_coverage = tuple(balance_select.ctes)
         for output in balance_edges["outputs"]:

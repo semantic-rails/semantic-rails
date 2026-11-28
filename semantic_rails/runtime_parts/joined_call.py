@@ -325,7 +325,14 @@ def _compile(runtime: Any, payload: dict[str, Any]) -> _Joined:
         limit=payload.get("limit"),
     )
     visibility = _visibility(parts)
-    reserved = () if visibility is None else visibility.modeled | visibility.load_logs
+    reserved = (
+        ()
+        if visibility is None
+        else visibility.modeled
+        | visibility.load_logs
+        | visibility.restricted
+        | visibility.pipelines
+    )
     statement, _ = avoid_name_collisions(statement, reserved)
     # A requested order under a limit is broken by the keys, and a tie at the limit is stated,
     # as a call's is; the parts' order breaks what is left.

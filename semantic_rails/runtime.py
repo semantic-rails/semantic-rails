@@ -637,8 +637,9 @@ def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
     request's limits kept."""
     from .row_filters import apply_row_filters
 
-    probe, _ = attach_and_name_relations(runtime._config, probe)
     visibility = compiled.get("row_filter_visibility")
+    reserved_names = () if visibility is None else visibility.restricted | visibility.pipelines
+    probe, _ = attach_and_name_relations(runtime._config, probe, reserved_names=reserved_names)
     if visibility is not None:
         probe = apply_row_filters(probe, visibility)
     dialect = dialect_for_warehouse(runtime.warehouse)

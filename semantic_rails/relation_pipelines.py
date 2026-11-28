@@ -1363,9 +1363,10 @@ def attach_relation_ctes(query: SqlSelect, lowered: Mapping[str, _LoweredRelatio
 
 
 def attach_and_name_relations(
-    config: PackageConfig, select: SqlSelect
+    config: PackageConfig, select: SqlSelect, *, reserved_names: Iterable[str] = ()
 ) -> tuple[SqlSelect, dict[str, str]]:
     reserved = {
+        *reserved_names,
         *(entity.table for entity in config.entities),
         *(aggregate.relation for aggregate in config.aggregate_relations),
         *(measure.zero_through.relation for measure in config.measures if measure.zero_through),
