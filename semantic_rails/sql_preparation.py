@@ -470,6 +470,11 @@ def _safe_field_name(name: str) -> str:
     return f"{sanitized[:keep]}_{digest}"
 
 
+def bigquery_quoted_identifier(name: str) -> str:
+    """The field name a quoted identifier uses in prepared BigQuery SQL."""
+    return name if _LEGAL_FIELD_RE.match(name) else _safe_field_name(name)
+
+
 def bigquery_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
     """Backtick-requote identifiers and legalize illegal field names.
 
@@ -483,10 +488,9 @@ def bigquery_compat_sql(sql: str) -> tuple[str, dict[str, str]]:
     alias_map: dict[str, str] = {}
 
     def _requote(name: str) -> str:
-        if _LEGAL_FIELD_RE.match(name):
-            return "`" + name + "`"
-        safe = _safe_field_name(name)
-        alias_map[safe] = name
+        safe = bigquery_quoted_identifier(name)
+        if safe != name:
+            alias_map[safe] = name
         return "`" + safe + "`"
 
     return map_double_quoted_identifiers(sql, _requote, backslash=True), alias_map

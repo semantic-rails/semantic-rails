@@ -17,6 +17,7 @@ from ..compiler_parts.bind import (
     _bound_filter_clauses,
     _bound_metric_predicates,
     _measure_count_distinct_key_columns,
+    _resolve_expr_entity,
 )
 from ..compiler_parts.empty_groups import counts_rows, has_nested_case, reads_every_row
 from ..compiler_parts.indexes import (
@@ -29,10 +30,12 @@ from ..compiler_parts.paths import (
     _direct_dimension_source_expr,
     _entity_key_dimension_ids,
     _leaf_time_role,
+    dimensions_over_column,
+    dimensions_sharing_column,
 )
 from ..compiler_parts.temporal import _fractional_second, _is_grain_boundary, _parse_time_literal
 from ..errors import SemanticLayerError
-from ..expressions import MetricPredicateExpr
+from ..expressions import MetricPredicateExpr, collect_column_refs
 from ..fanout import analyze_fanout
 from ..ir import BoundMeasure, PathSelection
 from ..schema import AggregateRelationConfig, MeasureConfig, PackageConfig
@@ -340,8 +343,10 @@ def _select_aggregate_relation(
     ]
     dimensions = {str(item) for item in query.group_by} | {str(field) for field, _, _ in filters}
     dimensions.discard("")
-    if any(row.unknown_values for row in config.dimensions if row.id in dimensions):
-        # A rollup holds the raw spellings; the source read maps them to unknown.
+    if any(row.unknown_values for row in config.dimensions if row.id in dimensions) or (
+        _inherits_comparison_unknown_values(measure, config)
+    ):
+        # A rollup can hold the old result; the source read maps sentinel values to unknown.
         return "", {row.id: "unknown_values" for row in rows}
     key = _measure_count_distinct_key_columns(measure, config)
     leaf = _Leaf(
@@ -373,3 +378,14 @@ def _select_aggregate_relation(
         reverse=True,
     )
     return (candidates[0].id if candidates else ""), rejections
+
+
+def _inherits_comparison_unknown_values(measure: MeasureConfig, config: PackageConfig) -> bool:
+    """Could a stored calculation predate sentinel handling on this comparison spelling?"""
+    for ref in collect_column_refs(measure.expr, filter_words_only=True):
+        entity = _resolve_expr_entity(ref, measure, config)
+        if not dimensions_over_column(entity, ref.column, config) and any(
+            dim.unknown_values for dim in dimensions_sharing_column(entity, ref.column, config)
+        ):
+            return True
+    return False
