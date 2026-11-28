@@ -95,7 +95,7 @@ class _DuplicateKey(yaml.constructor.ConstructorError):
 
     def __init__(self, key: Any, mark: Any) -> None:
         super().__init__(None, None, f"duplicate key {key!r}", mark)
-        self.key = key
+        self.duplicate = key
 
 
 class _UniqueKeyLoader(Yaml12SafeLoader):
@@ -161,7 +161,9 @@ def load_answers(path: Path) -> list[tuple[str, Any]]:
         exact = yaml.load(text, Loader=_DecimalLoader)
     except _DuplicateKey as exc:
         line = exc.problem_mark.line + 1 if exc.problem_mark else 0
-        message = f"the answers file names {exc.key!r} twice (line {line}); keys must be unique"
+        message = (
+            f"the answers file names {exc.duplicate!r} twice (line {line}); keys must be unique"
+        )
         raise _file_error(path, message) from exc
     except yaml.YAMLError as exc:
         raise _file_error(path, "the answers file is not valid YAML") from exc
