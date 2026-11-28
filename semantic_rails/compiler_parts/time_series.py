@@ -47,6 +47,7 @@ from .lowering_common import (
     _emits_time_coverage,
     _gates_by_own_range,
     _whole_day_window,
+    scalar_date_window,
 )
 from .paths import (
     _column_ref,
@@ -58,7 +59,8 @@ def coverage_base_plan(
 ) -> LogicalPlan:
     """A plan that emits base coverage, or bounds each period by a measure's own loaded range,
     reads the base, with each leaf's pre-routing strategy."""
-    if not (_emits_time_coverage(plan, config) or _gates_by_own_range(plan, config)):
+    covered = scalar_date_window(plan, config) or plan
+    if not (_emits_time_coverage(covered, config) or _gates_by_own_range(covered, config)):
         return plan
     return replace(
         plan,

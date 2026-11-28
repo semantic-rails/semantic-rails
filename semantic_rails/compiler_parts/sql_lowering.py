@@ -68,6 +68,7 @@ from .empty_groups import (
     expr_resolves_to_zero,
     guard_empty_groups,
     observes_dataset,
+    observing,
     record_balance_output,
     record_zero_output,
     recording_leaf_scopes,
@@ -103,6 +104,7 @@ from .lowering_common import (
     _retained_filtered_series,
     _series_probe_reads_coverage,
     _time_alias_for_plan,
+    scalar_date_window,
 )
 from .lowering_common import _apply_role_timezone as _apply_role_timezone
 from .lowering_common import _filtered_series_candidate as _filtered_series_candidate
@@ -175,6 +177,7 @@ def lower_to_sql(
     guard_empty: bool = True,
     default_order: bool = True,
 ) -> SqlSelect:
+    scalar = scalar_date_window(plan, config) if guard_empty and settles_as_a_call() else None
     if plan.time:
         # Validation resolves the calendar; a plan that bypassed it refuses the same way.
         refuse_authored_calendar(
@@ -208,13 +211,17 @@ def lower_to_sql(
             "row-based fan-out and parent-lookup rewrites cannot preserve that reading.",
             details=details,
         )
-    if (_emits_time_coverage(plan, config) or _gates_by_own_range(plan, config)) and any(
+    if (scalar or _emits_time_coverage(plan, config) or _gates_by_own_range(plan, config)) and any(
         row.aggregate_relation_id for row in plan.measure_plans
     ):
         raise SemanticLayerError(
             "EMPTY_GROUPS_UNSETTLED", "A coverage-dependent plan must read the base relation."
         )
-    select = _lower_query_to_sql(plan, config, guard_empty)
+    if scalar:
+        with observing(scalar.query, config):
+            select = _lower_query_to_sql(plan, config, guard_empty, scalar_window=scalar)
+    else:
+        select = _lower_query_to_sql(plan, config, guard_empty)
     _refuse_per_period_total(plan)
     if plan.query.get("order_by") and not all(term.nulls_last for term in select.order_by):
         # Requested terms come only from _requested_order; a lowering that built its own
@@ -307,7 +314,13 @@ def _refuse_total_beside(what: str) -> SemanticLayerError:
     )
 
 
-def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: bool) -> SqlSelect:
+def _lower_query_to_sql(
+    plan: LogicalPlan,
+    config: PackageConfig,
+    guard_empty: bool,
+    *,
+    scalar_window: LogicalPlan | None = None,
+) -> SqlSelect:
     totals = selected_totals(plan.query.get("select") or [])
     anchored_select = _anchored_entity_set_select(plan, config)
     if anchored_select is not None:
@@ -359,7 +372,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 cte_name = measure_group[0].cte_name
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
-                    leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                    leaf_select = _measure_group_leaf_select(
+                        plan, measure_group, config, scalar_window=scalar_window
+                    )
                     # Beside a distribution, each output's branch is such a query of its own.
                     if guard_empty and not plan.time and not _query_metric_predicates(plan):
                         leaf_select, settled_now = settle_ungrouped_populations(
@@ -388,7 +403,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 if (
                     guard_empty
                     and settles_as_a_call()
-                    and _needs_time_scope(plan, config)
+                    and (scalar_window is not None or _needs_time_scope(plan, config))
                     and not leaf_select.ctes
                     and isinstance(leaf_select.from_table, SqlTableRef)
                     and not any(row.aggregate_relation_id for row in measure_group)
@@ -749,6 +764,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     if drops_rows_below_root(_measure_index(config)[row.bound_measure.measure_id])
                 },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
+                window_bucket=SqlLiteral(WINDOW_TOTAL_BUCKET) if scalar_window else None,
                 probe_key=time_alias if _series_probe_reads_coverage(plan, config) else "",
                 own_range=_gates_by_own_range(plan, config),
                 dialect=_dialect(config),

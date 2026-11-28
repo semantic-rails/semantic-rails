@@ -1023,7 +1023,11 @@ def _source_rollup_leaf_select(
 
 
 def _measure_leaf_select(
-    plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
+    plan: LogicalPlan,
+    measure_plan: MeasurePlan,
+    config: PackageConfig,
+    *,
+    scalar_window: LogicalPlan | None = None,
 ) -> SqlSelect:
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
@@ -1159,6 +1163,7 @@ def _measure_leaf_select(
     # The conditions a stock applies to the snapshot it chooses, not before choosing it: only
     # its own leaf below takes them out of `where_clauses`.
     snapshot_filters: list[Any] = []
+    scalar_scope_where: list[Any] = []
     stock_role = measure_plan.bound_measure.temporal_role
     for item in filters:
         target = (
@@ -1171,6 +1176,8 @@ def _measure_leaf_select(
                 measure.entity, item, config, measure_plan.path_selections
             )
         )
+        if scalar_window is not None and item in scalar_window.query["where"]:
+            scalar_scope_where.append(condition)
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
     # The authored filter's conditions, wherever they apply: a declared edge's probe leaves
@@ -1192,7 +1199,8 @@ def _measure_leaf_select(
         filter_conditions.append(condition)
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
-    where_clauses.extend(_edge_cap(measure, leaf_time_role, config))
+    edge_cap = _edge_cap(measure, leaf_time_role, config)
+    where_clauses.extend(edge_cap)
     untimed = [*where_clauses, *authored_conditions, *predicate_row_conditions]
     if plan.time:
         where_clauses.extend(
@@ -1221,7 +1229,20 @@ def _measure_leaf_select(
 
     def record_scope(leaf: SqlSelect) -> None:
         """The scope of the rows ``leaf`` reads, for the empty-group guard."""
-        if plan.time:
+        if scalar_window is not None:
+            role = temporal_roles[scalar_window.time["temporal_role"]]
+            scalar_clock, _ = leaf_dimension_expr(measure.entity, role.dimension, (), config)
+            _record_time_scope(
+                scalar_window,
+                config,
+                leaf,
+                [measure_plan],
+                [*scalar_scope_where, *edge_cap],
+                raw_time=scalar_clock,
+                bucket=None,
+                local=True,
+            )
+        elif plan.time:
             _record_time_scope(
                 plan,
                 config,
@@ -1587,10 +1608,14 @@ def _filters_pushable_to_entity_scan(
 
 
 def _measure_group_leaf_select(
-    plan: LogicalPlan, measure_plans: list[MeasurePlan], config: PackageConfig
+    plan: LogicalPlan,
+    measure_plans: list[MeasurePlan],
+    config: PackageConfig,
+    *,
+    scalar_window: LogicalPlan | None = None,
 ) -> SqlSelect:
     if len(measure_plans) == 1:
-        return _measure_leaf_select(plan, measure_plans[0], config)
+        return _measure_leaf_select(plan, measure_plans[0], config, scalar_window=scalar_window)
     selected_aggregate_ids = {
         str(getattr(measure_plan, "aggregate_relation_id", "") or "")
         for measure_plan in measure_plans

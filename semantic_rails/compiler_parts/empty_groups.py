@@ -360,6 +360,7 @@ def guard_empty_groups(
     rows: Mapping[str, str] | None = None,
     earlier: Collection[str] = (),
     time_key: str = "",
+    window_bucket: SqlLiteral | None = None,
     dialect: Any = None,
     observed: Mapping[str, LeafScope] | None = None,
     observed_buckets: Collection[str] = (),
@@ -375,7 +376,8 @@ def guard_empty_groups(
     ``rows`` names, for each sum, the source column counting the rows it read in the group:
     the sum reads 0 only where that count is NULL (the group has no row of the measure) or
     0, never where its rows' values are all NULL. A sum without one is refused, as are
-    scopes and ``time_key`` without a dialect with time coverage. Inside
+    scopes and ``time_key`` without a dialect with time coverage. A scalar range has a
+    constant ``window_bucket``. Inside
     ``earlier_settlement`` a NULL sum reads 0 wherever its measure has data in scope. Aliases
     in ``earlier`` use that same rule individually, for measures with a CASE below the root
     that can drop rows (``drops_rows_below_root``).
@@ -408,7 +410,9 @@ def guard_empty_groups(
     ``own_range`` (another leaf's rows can show a period, ``_combines_leaves``), every scope
     is: a period outside its own loaded range never reads 0.
     """
-    if (scopes or time_key or probe_key) and not (dialect is not None and dialect.reads_coverage):
+    if (scopes or time_key or probe_key or window_bucket is not None) and not (
+        dialect is not None and dialect.reads_coverage
+    ):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     rows = rows or {}
     measures = list(measures)
@@ -467,7 +471,11 @@ def guard_empty_groups(
                 SqlLiteral(0),
             )
             scope = (scopes or {}).get(alias)
-            gated = bool(time_key) and scope is not None and scope.bucket is not None
+            gated = (
+                (bool(time_key) or window_bucket is not None)
+                and scope is not None
+                and scope.bucket is not None
+            )
             # Source rows settle a never-matched condition only where the loaded-bucket check
             # below gates the output's bucket, or where the output has no time bucket.
             source_rows = gated or not bucketed
@@ -525,7 +533,10 @@ def guard_empty_groups(
                     # through plain CTEs instead.
                     found = outside if dialect.exists_in_select else probed(outside.query)
                     if bounded_probe:
-                        found = SqlBinary(found, "AND", _loaded_bucket(probe_key, covered(scope)))
+                        probe_bucket = SqlIdentifier(parts=["base", probe_key])
+                        found = SqlBinary(
+                            found, "AND", _loaded_bucket(probe_bucket, covered(scope))
+                        )
                     seen = SqlBinary(seen, "OR", found)
                 # Ungated, a declared edge still bounds the series, and so does the scope's own
                 # loaded range under ``own_range``: neither the table's last row nor a value
@@ -536,7 +547,7 @@ def guard_empty_groups(
                     or (own_range and scope.bucket is not None and known_zone(scope.storage_zone))
                 ):
                     name = covered(scope)
-                    key = time_key or probe_key
+                    key = window_bucket or SqlIdentifier(parts=["base", time_key or probe_key])
                     if scope.edge is None:
                         seen = SqlBinary(seen, "AND", _loaded_bucket(key, name))
                     else:
@@ -637,8 +648,7 @@ def _dataset_probe_ctes(name: str, probe: SqlSelect) -> list[SqlCte]:
     ]
 
 
-def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
-    bucket = SqlIdentifier(parts=["base", time_key])
+def _loaded_bucket(bucket: SqlIdentifier | SqlLiteral, coverage: str) -> SqlBinary:
     return SqlBinary(
         SqlBinary(bucket, ">=", SqlIdentifier(parts=[coverage, "loaded_from"])),
         "AND",
@@ -646,10 +656,9 @@ def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
     )
 
 
-def _certified_bucket(time_key: str, coverage: str, edge: str) -> SqlBinary:
+def _certified_bucket(bucket: SqlIdentifier | SqlLiteral, coverage: str, edge: str) -> SqlBinary:
     """From the base's first loaded bucket up to (not including) the edge's first uncertified
     one. A NULL mark certifies nothing."""
-    bucket = SqlIdentifier(parts=["base", time_key])
     return SqlBinary(
         SqlBinary(bucket, ">=", SqlIdentifier(parts=[coverage, "loaded_from"])),
         "AND",

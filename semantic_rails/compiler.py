@@ -202,6 +202,13 @@ def value_page(
         if isinstance(node, (SqlCte, SqlTableRef))
         for part in node.name.split(".")
     }
+    visibility = compiled["row_filter_visibility"]
+    if visibility is not None:
+        occupied.update(
+            part
+            for name in visibility.restricted | visibility.pipelines
+            for part in name.split(".")
+        )
     name = reserve_name(("value_rows" + "_" * index for index in count()), occupied)
     key = SqlIdentifier(parts=[name, column])
     where = [build_filter_condition(key, "missing", False)]
@@ -219,7 +226,7 @@ def value_page(
     sql_ast = with_call_rows(statement, paged)
 
     def prepare(select: SqlSelect) -> PreparedQuery:
-        return _prepare(select, config, compiled["sql_profile"], compiled["row_filter_visibility"])
+        return _prepare(select, config, compiled["sql_profile"], visibility)
 
     prepared = prepare(sql_ast)
     probe = compiled["limit_probe"]

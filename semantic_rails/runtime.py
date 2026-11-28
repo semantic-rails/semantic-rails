@@ -637,8 +637,9 @@ def _probe_row(runtime, compiled, payload, probe) -> dict[str, Any]:
     request's limits kept."""
     from .row_filters import apply_row_filters
 
-    probe, _ = attach_and_name_relations(runtime._config, probe)
     visibility = compiled.get("row_filter_visibility")
+    reserved_names = () if visibility is None else visibility.restricted | visibility.pipelines
+    probe, _ = attach_and_name_relations(runtime._config, probe, reserved_names=reserved_names)
     if visibility is not None:
         probe = apply_row_filters(probe, visibility)
     dialect = dialect_for_warehouse(runtime.warehouse)
@@ -2224,6 +2225,7 @@ class Runtime:
         """The answer to a call whose statement ran (``rows``, ``hidden``), before ``finish``
         and verbosity: its rows, warnings and every field it states. ``call_warnings`` follow
         the call's own (how the statement ran)."""
+        from .compiler_parts.lowering_common import scalar_date_window
         from .runtime_parts.answer_warnings import (
             _compiled_warnings,
             _no_data_yet_warnings,
@@ -2247,9 +2249,18 @@ class Runtime:
             if compiled["logical_plan"].query.get("totals") is not None
             else rows
         )
-        coverage = _coverage_read(self, compiled, payload) if compiled["logical_plan"].time else {}
+        scalar = scalar_date_window(compiled["logical_plan"], self._config)
+        covered = {**compiled, "logical_plan": scalar} if scalar else compiled
+        coverage_payload = {**payload, "time": scalar.time} if scalar else payload
+        coverage_zone = (_time_zone(self._config, covered) if scalar else zone) or "UTC"
+        coverage = _coverage_read(self, covered, payload) if covered["logical_plan"].time else {}
         coverage_warnings = _no_data_yet_warnings(
-            compiled, own_rows, payload, coverage, zone=zone or "UTC", excluded_outputs=withheld
+            covered,
+            own_rows,
+            coverage_payload,
+            coverage,
+            zone=coverage_zone,
+            excluded_outputs=withheld,
         )
         coverage_outputs = [
             name for warning in coverage_warnings for name in warning["details"]["outputs"]
@@ -2278,13 +2289,13 @@ class Runtime:
                 *coverage_warnings,
                 *_partial_data_warnings(compiled, own_rows, coverage, now=now, zone=zone or "UTC"),
                 *_zero_after_last_row_notes(
-                    compiled, coverage, now=now, zone=zone or "UTC", excluded_outputs=withheld
+                    covered, coverage, now=now, zone=coverage_zone, excluded_outputs=withheld
                 ),
                 *_no_data_in_scope_warnings(
                     compiled,
                     own_rows,
                     excluded_outputs=[*withheld, *coverage_outputs],
-                    dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
+                    dataset=observed_outside_filters(covered["logical_plan"].query, self._config),
                     runtime=self,
                     payload=payload,
                 ),
@@ -2336,7 +2347,7 @@ class Runtime:
         # no signal to distinguish that from a silent row-drop. Surface
         # the applied time bounds and point at inspect for freshness.
         if not own_rows and not coverage_warnings:
-            time_block = dict(payload.get("time", {}) or {})
+            time_block = dict(coverage_payload.get("time", {}) or {})
             has_time_filter = (
                 time_block.get("start") or time_block.get("end") or time_block.get("temporal_role")
             )
@@ -2380,7 +2391,7 @@ class Runtime:
                     )
                 # The resolved bounds show where the filter landed: a relative window
                 # resolves against now, which can fall far outside historical data.
-                requested_window = _requested_window(compiled, payload)
+                requested_window = _requested_window(compiled, coverage_payload)
                 out["data_diagnostics"] = {
                     "rows_returned": 0,
                     "applied_time_filter": applied,
