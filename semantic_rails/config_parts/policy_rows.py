@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import re
+from collections import defaultdict
 from datetime import date
+from itertools import pairwise
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..errors import SemanticLayerError
 from ..policy_rules import policy_action
@@ -64,6 +68,40 @@ def _parse_caveat_time(value: Any, *, path: str) -> dict[str, str]:
     return out
 
 
+def _caveat_history_fields(row: dict[str, Any], path: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for key in ("recorded_at", "valid_from", "valid_to"):
+        if key not in row:
+            continue
+        value = str(row[key])
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            raise SemanticLayerError("INVALID_CONFIG", f"{path}.{key} must be a YYYY-MM-DD date")
+        fields[key] = _require_iso_date(value, path=f"{path}.{key}")
+    if (
+        "valid_from" in fields
+        and "valid_to" in fields
+        and fields["valid_to"] <= fields["valid_from"]
+    ):
+        raise SemanticLayerError("INVALID_CONFIG", f"{path}.valid_to must be later than valid_from")
+    for key in ("source_pr", "supersedes"):
+        if key not in row:
+            continue
+        value = row[key]
+        if not isinstance(value, str) or not value.strip():
+            raise SemanticLayerError("INVALID_CONFIG", f"{path}.{key} must be a non-empty string")
+        fields[key] = value.strip()
+    if (source := fields.get("source_pr")) and not re.fullmatch(r"#[1-9][0-9]*", source):
+        try:
+            url = urlsplit(source)
+            if url.scheme not in {"http", "https"} or not url.hostname or re.search(r"\s", source):
+                raise ValueError
+        except ValueError as exc:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", f"{path}.source_pr must be an HTTP(S) URL or a #N reference"
+            ) from exc
+    return fields
+
+
 def _parse_caveats(rows: Any, *, path: str) -> list[SemanticCaveatConfig]:
     caveats: list[SemanticCaveatConfig] = []
     for index, row in enumerate(list(rows or [])):
@@ -105,6 +143,7 @@ def _parse_caveats(rows: Any, *, path: str) -> list[SemanticCaveatConfig]:
                 owner=str(row_dict.get("owner", "") or ""),
                 references=_ensure_dict_list(row_dict.get("references")),
                 so_what=_caveat_text(row_dict.get("so_what"), path=f"{caveat_path} so_what"),
+                **_caveat_history_fields(row_dict, caveat_path),
             )
         )
     return caveats
@@ -251,4 +290,48 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"{path}: caveat {caveat.id} entity_values[{index}] must declare value or values",
+                )
+    _validate_caveat_history(config, path)
+
+
+def _validate_caveat_history(config: PackageConfig, path: str) -> None:
+    caveats = {row.id: row for row in config.semantic_caveats}
+    links = {row.id: row.supersedes for row in caveats.values() if row.supersedes}
+    metric_ids = {row.id for row in config.metric_recipes}
+    subjects = {row.id: metric_ids.intersection(row.object_ids) for row in caveats.values()}
+    for successor, predecessor in links.items():
+        if not subjects[successor] or subjects[successor] != subjects.get(predecessor):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: caveat {successor} supersedes must name an existing caveat "
+                "with the same metric subjects",
+            )
+
+    checked: set[str] = set()
+    for start in links:
+        chain: set[str] = set()
+        current = start
+        while current in links and current not in checked:
+            if current in chain:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", f"{path}: caveat {current} is in a supersedes cycle"
+                )
+            chain.add(current)
+            current = links[current]
+        checked.update(chain)
+
+    predecessors = set(links.values())
+    by_metric: dict[str, list[SemanticCaveatConfig]] = defaultdict(list)
+    for row in caveats.values():
+        if row.valid_from or row.valid_to or row.id in links or row.id in predecessors:
+            for metric_id in sorted(subjects[row.id]):
+                by_metric[metric_id].append(row)
+    for metric_id, rows in by_metric.items():
+        rows.sort(key=lambda row: row.valid_from)
+        for earlier, later in pairwise(rows):
+            if not earlier.valid_to or earlier.valid_to > later.valid_from:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: caveats {earlier.id} and {later.id} have overlapping "
+                    f"validity windows for {metric_id}",
                 )

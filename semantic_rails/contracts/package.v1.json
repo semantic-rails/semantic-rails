@@ -121,6 +121,31 @@
           },
           "owner": {
             "description": "Who to ask about the caveat."
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date",
+            "description": "The date the caveat was recorded."
+          },
+          "source_pr": {
+            "type": "string",
+            "pattern": "^(?:#[1-9][0-9]*|[Hh][Tt][Tt][Pp][Ss]?://[^\\s]+)$",
+            "description": "The pull request URL or #N reference that records the caveat."
+          },
+          "supersedes": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The id of the previous caveat for the same metric subjects."
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date",
+            "description": "The first day the caveat applies, inclusive."
+          },
+          "valid_to": {
+            "type": "string",
+            "format": "date",
+            "description": "The first day the caveat no longer applies, exclusive."
           }
         }
       }

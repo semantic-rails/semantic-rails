@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import SemanticLayerError
-from .schema import PackageConfig, require_boolean_mnpi_package
+from .schema import CAVEAT_HISTORY_FIELDS, PackageConfig, require_boolean_mnpi_package
 
 _SOURCE_SUFFIXES = (".yml", ".yaml", ".json", ".toml")
 _SOURCE_EXCLUDED_DIRS = {".git", ".pytest_cache", ".uv-cache", "__pycache__", ".compiled"}
@@ -141,7 +141,14 @@ def capture_package_source(path: str | Path) -> CapturedSource:
 
 def canonicalize_semantics(value: Any, *, sort_objects: bool = True) -> Any:
     """Canonical parsed values; only object collections are reordered by ID."""
-    if is_dataclass(value) and not isinstance(value, type):
+    if isinstance(value, PackageConfig):
+        value = asdict(value)
+        # Keep both parsed fingerprints stable for packages without caveat history.
+        for caveat in value["semantic_caveats"]:
+            for key in CAVEAT_HISTORY_FIELDS:
+                if not caveat[key]:
+                    del caveat[key]
+    elif is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
     if isinstance(value, Mapping):
         return {

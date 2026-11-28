@@ -399,6 +399,9 @@ class SemanticPolicyConfig:
     rationale: str = ""
 
 
+CAVEAT_HISTORY_FIELDS = ("recorded_at", "source_pr", "supersedes", "valid_from", "valid_to")
+
+
 @dataclass(frozen=True)
 class SemanticCaveatConfig:
     id: str
@@ -414,6 +417,11 @@ class SemanticCaveatConfig:
     references: list[dict[str, Any]] = field(default_factory=list)
     # What the reader should do about the fact the message states; "" when not authored.
     so_what: str = ""
+    recorded_at: str = ""
+    source_pr: str = ""
+    supersedes: str = ""
+    valid_from: str = ""
+    valid_to: str = ""
 
 
 @dataclass(frozen=True)

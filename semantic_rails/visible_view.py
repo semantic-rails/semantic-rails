@@ -188,7 +188,7 @@ ROW_FIELDS: dict[type, dict[str, str]] = {
     ),
     SemanticCaveatConfig: _classes(
         "kind object_ids audiences environments severity",
-        text="message owner so_what",
+        text="message owner so_what recorded_at source_pr supersedes valid_from valid_to",
         texts="entity_values references",
         identity="id",
         typed="time",

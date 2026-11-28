@@ -277,6 +277,11 @@ _CAVEAT_KEYS: frozenset[str] = frozenset(
         "owner",
         "references",
         "so_what",
+        "recorded_at",
+        "source_pr",
+        "supersedes",
+        "valid_from",
+        "valid_to",
     }
 )
 _CAVEAT_TIME_KEYS: frozenset[str] = frozenset({"at", "from", "to"})

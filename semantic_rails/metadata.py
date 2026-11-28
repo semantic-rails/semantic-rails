@@ -20,6 +20,7 @@ from dataclasses import asdict
 from functools import lru_cache
 from typing import Any
 
+from .answer import _answer_now
 from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query, time_output_alias
 from .catalog_format import format_catalog_payload
 from .catalog_search import (
@@ -28,6 +29,8 @@ from .catalog_search import (
     normalize_search_value,
     tokenize_search_value,
 )
+from .caveats import caveat_history, caveats_in_force, scoped_caveats
+from .clock import known_zone, local_now
 from .compiler import (
     _conversion_supported,
     _predicate_context_entity_candidates,
@@ -2759,6 +2762,26 @@ def inspect_payload(
         )
     if payload["card"]["kind"] == "measure":
         payload["card"].update(_lookalike_notice(runtime._config, payload["card"], partial_query))
+    config = runtime._config
+    caveats = scoped_caveats(config, _policy_context(partial_query))
+    subjects = [row for row in caveats if object_id in row.object_ids]
+    if subjects:
+        role_id = payload["card"].get("default_temporal_role")
+        zone = next((row.timezone for row in config.temporal_roles if row.id == role_id), "UTC")
+        today = local_now(_answer_now(partial_query), zone if known_zone(zone) else "UTC").date()
+        visible_ids = {row.id for row in caveats}
+        active = [
+            {
+                "id": row.id,
+                "message": row.message,
+                **({"owner": row.owner} if row.owner else {}),
+                **history,
+            }
+            for row in caveats_in_force(subjects, (None, None), today=today)
+            if (history := caveat_history(row, visible_ids))
+        ]
+        if active:
+            payload["card"]["caveats"] = active
     if verbosity == "minimal":
         payload["card"] = _slim_inspect_card(payload["card"])
         if not payload["query_state"]:

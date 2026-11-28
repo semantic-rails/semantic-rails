@@ -7,8 +7,9 @@ which caveats are relevant enough to surface as structured warnings.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from . import operators
@@ -18,7 +19,7 @@ from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
 from .policy_rules import check_request_environment
-from .schema import PackageConfig, SemanticCaveatConfig
+from .schema import CAVEAT_HISTORY_FIELDS, PackageConfig, SemanticCaveatConfig
 from .temporal_support import _date_key, _range_intersects
 
 
@@ -53,19 +54,66 @@ class _Match:
 
 _SEVERITY_RANK = {"warning": 2, "info": 1}
 _VALID_GRAINS = {"day", "week", "month", "quarter", "year"}
+CaveatPeriod = tuple[datetime | None, datetime | None]
+
+
+def caveats_in_force(
+    caveats: Iterable[SemanticCaveatConfig], period: CaveatPeriod, *, today: date
+) -> list[SemanticCaveatConfig]:
+    """Select by half-open wall-time bounds in the answer's clock, or by today's date."""
+    start, end = period
+    active = []
+    for row in caveats:
+        lower = datetime.fromisoformat(row.valid_from) if row.valid_from else None
+        upper = datetime.fromisoformat(row.valid_to) if row.valid_to else None
+        if lower is None and upper is None:
+            active.append(row)
+        elif start is None and end is None:
+            if (lower is None or lower.date() <= today) and (upper is None or today < upper.date()):
+                active.append(row)
+        elif (
+            (start is None or end is None or start < end)
+            and (upper is None or start is None or start < upper)
+            and (lower is None or end is None or lower < end)
+        ):
+            active.append(row)
+    return active
+
+
+def scoped_caveats(config: PackageConfig, context: dict[str, Any]) -> list[SemanticCaveatConfig]:
+    """Caveats in the caller's object view and authored audience and environment."""
+    audience = str(context.get("audience", "") or "")
+    environment = str(context.get("environment", "") or "").strip()
+    return [
+        row
+        for row in config.semantic_caveats
+        if context_scope_matches(row.audiences, audience)
+        and context_scope_matches(row.environments, environment)
+    ]
+
+
+def caveat_history(caveat: SemanticCaveatConfig, visible_ids: set[str]) -> dict[str, str]:
+    return {
+        key: value
+        for key in CAVEAT_HISTORY_FIELDS
+        if (value := getattr(caveat, key)) and (key != "supersedes" or value in visible_ids)
+    }
 
 
 def caveat_warnings(
     config: PackageConfig,
     compiled: dict[str, Any],
     payload: dict[str, Any] | None = None,
+    *,
+    period: CaveatPeriod = (None, None),
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     """Return structured warnings for caveats relevant to a compiled query."""
     payload = dict(payload or {})
     policy_context = dict(payload.get("policy_context", {}) or {})
     policy_context["environment"] = str(policy_context.get("environment", "") or "").strip()
     check_request_environment(config, policy_context["environment"])
-    caveats = list(getattr(config, "semantic_caveats", []) or [])
+    caveats = scoped_caveats(config, policy_context)
     if not caveats:
         return []
     verbosity = str(payload.get("verbosity", "") or "compact").strip().lower()
@@ -73,8 +121,8 @@ def caveat_warnings(
         verbosity = "compact"
     signals = _signals_for_query(config, compiled, payload)
     matches: list[_Match] = []
-    for caveat in caveats:
-        match = _match_caveat(caveat, config, signals, policy_context)
+    for caveat in caveats_in_force(caveats, period, today=today or date.today()):
+        match = _match_caveat(caveat, config, signals)
         if match is not None:
             matches.append(match)
     if not matches:
@@ -88,16 +136,20 @@ def caveat_warnings(
         )
     )
     # Every matching caveat is stated; verbosity trims only each one's details.
-    return [_warning_for_match(match, verbosity=verbosity) for match in matches]
+    visible_ids = {row.id for row in caveats}
+    return [
+        _warning_for_match(match, verbosity=verbosity, visible_ids=visible_ids) for match in matches
+    ]
 
 
-def _warning_for_match(match: _Match, *, verbosity: str) -> dict[str, Any]:
+def _warning_for_match(match: _Match, *, verbosity: str, visible_ids: set[str]) -> dict[str, Any]:
     caveat = match.caveat
     details: dict[str, Any] = {
         "kind": caveat.kind,
         "caveat_id": caveat.id,
         "match_reasons": list(match.reasons),
         "agent_action": "mention_when_interpreting_results",
+        **caveat_history(caveat, visible_ids),
     }
     # What to do about the caveat, when the package says so: at every verbosity, since most
     # agents read the smallest answer.
@@ -349,15 +401,7 @@ def _match_caveat(
     caveat: SemanticCaveatConfig,
     config: PackageConfig,
     signals: _Signals,
-    policy_context: dict[str, Any],
 ) -> _Match | None:
-    if not context_scope_matches(caveat.audiences, str(policy_context.get("audience", "") or "")):
-        return None
-    if not context_scope_matches(
-        caveat.environments, str(policy_context.get("environment", "") or "")
-    ):
-        return None
-
     entity_ids = {row.id for row in config.entities}
     reasons: list[str] = []
     score = 0

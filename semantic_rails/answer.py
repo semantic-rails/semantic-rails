@@ -16,6 +16,7 @@ import hashlib
 import os
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from . import visible_view
 from .ast import PERIOD_PARTIAL, TIME_AXIS, every_filter, normalize_query
 from .caveats import _expr_children
 from .clock import (
+    Window,
     describe_window,
     engine_window,
     format_now,
@@ -114,12 +116,8 @@ def answer_fields(
     if time.get("window_total"):
         assumptions.append({"code": "WINDOW_TOTAL", "message": WINDOW_TOTAL_MESSAGE})
     assumptions.extend(_entity_filter_over(plan.query))
-    if time.get("grain") or time.get("start") is not None or time.get("end") is not None:
-        window = engine_window(time, now=now, timezone=zone)
-        # A ``this`` window, or one with only a start, ends at now: state that instant with its
-        # offset, as ``now`` is.
-        end = _instant(now, zone) if "this" in window.spec or time.get("to_now") else window.end
-        shown = {"start": window.start, "end": end, "now": format_now(now)}
+    if window := _answer_window(time, now=now, zone=zone):
+        shown = {"start": window.start, "end": window.end, "now": format_now(now)}
         out["window"] = {key: value for key, value in shown.items() if value is not None}
         if window.start is not None or window.end is not None:
             out["window"]["partial"] = window.partial
@@ -169,6 +167,16 @@ def answer_fields(
     out["routes"] = routes_taken(routed, compiled)
     out["assumptions"] = assumptions
     return out
+
+
+def _answer_window(time: Mapping[str, Any], *, now: datetime, zone: str) -> Window | None:
+    if not (time.get("grain") or time.get("start") is not None or time.get("end") is not None):
+        return None
+    window = engine_window(time, now=now, timezone=zone)
+    # A ``this`` window or a window with only a start ends at now's exact instant.
+    if "this" in window.spec or time.get("to_now"):
+        return replace(window, end=_instant(now, zone))
+    return window
 
 
 def data_through(coverage: Mapping[str, Any] | None, zone: str) -> tuple[str | None, str]:

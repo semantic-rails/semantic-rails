@@ -4,9 +4,11 @@ that a package test (``caveat_applies``) pins whether a call states a caveat."""
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import resolve_package_reference
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.metadata import inspect_payload
 from semantic_rails.package_snapshot import semantic_payload
 from semantic_rails.package_tools import (
     diff_package_report,
@@ -509,3 +512,160 @@ def test_a_so_what_naming_a_hidden_object_hides_its_caveat(so_what_package: Path
     # The same caveat is shown while nothing it says is hidden.
     shown = build_view(config, frozenset({hidden}))
     assert {row.id for row in shown.semantic_caveats} == {SAID, UNSAID}
+
+
+HISTORY_METRIC = "metric.sales.aov_usd"
+PAST = "caveat.test.aov_2023"
+CURRENT = "caveat.test.aov_2024"
+AFTER_2023 = "2024-01-01"
+HISTORY = [
+    {
+        "id": PAST,
+        "kind": "definition_change",
+        "message": "The 2023 AOV included tax.",
+        "object_ids": [HISTORY_METRIC],
+        "owner": "sales_analytics",
+        "recorded_at": date(2023, 1, 3),
+        "source_pr": "#41",
+        "valid_from": "2023-01-01",
+        "valid_to": AFTER_2023,
+    },
+    {
+        "id": CURRENT,
+        "kind": "definition_change",
+        "message": "The 2024 AOV excludes tax.",
+        "object_ids": [HISTORY_METRIC],
+        "recorded_at": "2024-01-02",
+        "source_pr": "https://github.com/example/sales-model/pull/82",
+        "supersedes": PAST,
+        "valid_from": AFTER_2023,
+    },
+]
+HISTORY_NOW = "2024-06-10T12:00:00Z"
+
+
+@pytest.fixture(scope="module")
+def history_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    package = copy_package_config(
+        tmp_path_factory.mktemp("history"), "jaffle_shop", preseed_db=True
+    )
+    _write_caveats(package, HISTORY)
+    policy_path = package / "policies.yml"
+    policies = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    policies["semantic_policies"].append(
+        {
+            "id": "policy.test.hide_aov",
+            "kind": "object_visibility",
+            "action": "hidden",
+            "object_ids": [HISTORY_METRIC],
+            "audiences": ["reader"],
+        }
+    )
+    policy_path.write_text(yaml.safe_dump(policies, sort_keys=False), encoding="utf-8")
+    rt = Runtime.from_path(str(package))
+    try:
+        yield opened(rt)
+    finally:
+        rt.close()
+
+
+def _aov(**time: object) -> dict:
+    return {
+        "select": [HISTORY_METRIC],
+        **({"time": {"temporal_role": ORDER_TIME, **time}} if time else {}),
+    }
+
+
+@pytest.mark.parametrize(
+    ("time", "expected"),
+    [
+        ({"start": "2023-01-01", "end": AFTER_2023}, [PAST]),
+        ({"last": {"unit": "year", "value": 1}}, [PAST]),
+        ({}, [CURRENT]),
+        ({"this": "year"}, [CURRENT]),
+        ({"start": AFTER_2023, "end": "2024-02-01"}, [CURRENT]),
+        ({"start": "2023-12-01", "end": "2024-02-01"}, [PAST, CURRENT]),
+        ({"start": "2023-12-01"}, [PAST, CURRENT]),
+        ({"start": "2022-01-01", "end": "2023-01-01"}, []),
+    ],
+)
+def test_answer_cites_caveats_in_the_receipt_window(
+    history_runtime: Runtime, time: dict, expected: list[str]
+) -> None:
+    answer = history_runtime.query(_aov(**time), now=HISTORY_NOW, verbosity="minimal")
+    assert answer["ok"], answer
+    applied = _applied(answer)
+    assert [row["details"]["caveat_id"] for row in applied] == expected
+    for warning in applied:
+        details = warning["details"]
+        authored = next(row for row in HISTORY if row["id"] == details["caveat_id"])
+        assert warning["message"] == authored["message"]
+        assert details["recorded_at"] == str(authored["recorded_at"])
+        assert details["source_pr"] == authored["source_pr"]
+        for key in ("valid_from", "valid_to", "supersedes"):
+            assert details.get(key) == authored.get(key)
+
+
+@pytest.mark.parametrize(("now", "expected"), [("2023-06-10", PAST), (HISTORY_NOW, CURRENT)])
+def test_inspect_shows_the_active_caveat(history_runtime: Runtime, now: str, expected: str) -> None:
+    inspected = inspect_payload(
+        history_runtime,
+        object_id=HISTORY_METRIC,
+        partial_query={"policy_context": {"now": now}},
+        verbosity="minimal",
+    )
+    [active] = inspected["card"]["caveats"]
+    authored = next(row for row in HISTORY if row["id"] == expected)
+    assert active == {
+        key: str(value) for key, value in authored.items() if key not in {"kind", "object_ids"}
+    }
+
+
+def test_hidden_metric_history_never_leaks(history_runtime: Runtime) -> None:
+    context = {"audience": "reader"}
+    time = {"start": "2023-01-01", "end": AFTER_2023}
+    visible = history_runtime.query(
+        {"select": [REVENUE], "time": {"temporal_role": ORDER_TIME, **time}},
+        context=context,
+        now=HISTORY_NOW,
+    )
+    assert visible["ok"] and not _applied(visible)
+    card = inspect_payload(
+        history_runtime, object_id=REVENUE, partial_query={"policy_context": context}
+    )
+    assert "caveats" not in card["card"]
+    error = history_runtime.validate(_aov(**time), context=context, now=HISTORY_NOW)
+    assert error["ok"] is False
+    assert error["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+    with pytest.raises(SemanticLayerError) as refusal:
+        inspect_payload(
+            history_runtime, object_id=HISTORY_METRIC, partial_query={"policy_context": context}
+        )
+    assert refusal.value.code == "OBJECT_NOT_FOUND"
+    channels = json.dumps([visible, card, error, str(refusal.value), refusal.value.details])
+    for row in HISTORY:
+        for key in ("id", "message", "source_pr"):
+            assert row[key] not in channels
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"valid_from": "2023-12-31"}, "overlapping validity windows"),
+        ({"valid_from": "2025-01-01", "valid_to": "2024-01-01"}, "valid_to must be later"),
+        ({"valid_to": AFTER_2023}, "valid_to must be later"),
+        ({"supersedes": "caveat.missing"}, "supersedes must name an existing caveat"),
+        ({"object_ids": ["metric.sales.food_revenue_share"]}, "with the same metric subjects"),
+        ({"supersedes": CURRENT}, "supersedes cycle"),
+        ({"recorded_at": "2024-01-02T00:00:00Z"}, "must be a YYYY-MM-DD date"),
+        ({"recorded_at": "2024-02-30"}, "must be an ISO date"),
+        ({"source_pr": "PR 82"}, "must be an HTTP\\(S\\) URL or a #N reference"),
+        ({"valid_until": "2025-01-01"}, "valid_until"),
+    ],
+)
+def test_invalid_caveat_history_is_refused(tmp_path: Path, change: dict, message: str) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    _write_caveats(package, [HISTORY[0], {**HISTORY[1], **change}])
+    with pytest.raises(SemanticLayerError, match=message) as exc:
+        load_package_config(str(package))
+    assert exc.value.code == "INVALID_CONFIG"
