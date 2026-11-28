@@ -9,7 +9,7 @@ of those exact released bytes, not an independently edited registry.
 
 | Artifact | Owner | Stability |
 |---|---|---|
-| `architect_mcp.v2.json` | Engine | Stable Architect tools, schemas, annotations, and transaction semantics (v1 was retired when `upgrade_project` was removed) |
+| `architect_mcp.v2.json` | Engine | Stable Architect tools, schemas, annotations, and transaction semantics (the current major; v1 was retired) |
 | `package.v1.json` | Engine | Stable project/package major |
 | `query.v2.json` | Engine | The query call, generated from the parser's own tables (see [QUERY_CALL.md](QUERY_CALL.md)); it replaces `query_ir.v1.json` |
 | `metric_portability.v1.json` | Engine | Stable read-only metric catalog for BI bindings |
