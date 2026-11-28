@@ -39,7 +39,7 @@ REQUIRED_WHEEL_SUFFIXES = {
     # a clean git checkout where the file is gitignored.
     "share/semantic-rails/data/jaffle_csv/raw_orders.csv",
     "share/semantic-rails/data/seed_jaffle.sql",
-    "semantic_rails/contracts/architect_mcp.v1.json",
+    "semantic_rails/contracts/architect_mcp.v2.json",
     "semantic_rails/contracts/http_api.v1.openapi.json",
     "semantic_rails/contracts/package.v1.json",
     "semantic_rails/contracts/query.v2.json",

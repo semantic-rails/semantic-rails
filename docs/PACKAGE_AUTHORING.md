@@ -213,7 +213,7 @@ input when it is or sits under `models/`, `relations/`, `metrics/`, `segments/`,
 symlink or a directory it can't read. Copy the directory or link its files instead: a file
 symlink is read like any other file. A link to a folder of data files only, such as
 `data -> ../shared/data` holding the warehouse file or seeds, loads, and Architect writes
-and `semantic-rails project upgrade` leave it in place.
+leave it in place.
 
 Each block and each object is read from one place. Loading refuses a block declared
 both in `package.yml` and in its own file (a `defaults:` block beside `defaults.yml`),
@@ -730,13 +730,11 @@ and `action`, even when empty. Each kind also accepts only:
 | `row_filter` | `dimension`, `attribute`, `type`, `unless_roles`, `shared` |
 
 Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
-are refused with `INVALID_CONFIG`, including policies built in Python. Use
-`semantic-rails project upgrade` to rewrite them: the `policy-flat` alias rewrite and
-the `policy-redact-deny` action rewrite are `translated` rules for forms this engine
-refuses, so `--write` applies them with the package's other legacy forms. Nested scope or
-identity fields, disagreeing alias values, and action rewrites that would change release
-labels are stops with no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
-kind names must match exactly.
+are refused with `INVALID_CONFIG`, including policies built in Python. Write each
+policy flat: the kind's own fields, plus `action` and `rationale`, in place of nested `config:`
+and the `visibility`, `rule` and `description` aliases, and `deny` in place of the retired
+`redact` action. Nested row filters need a flat row authored by hand. Action text is trimmed and
+lowercased; kind names must match exactly.
 
 - **`package_release`** — labels the package's release status. `label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
@@ -1504,8 +1502,7 @@ declared relative to that pair (`many_to_one` = first is many, second is one).
 when traversing from the second entity to the first. Measures aggregate at their
 own model's row grain; parent-rollup declarations are not supported.
 To migrate existing packages, delete `subject_entity` and `aggregation_entity`
-lines from `defaults.measure` and individual measures, or let
-[`semantic-rails project upgrade`](#upgrading-a-package) delete them. Defaults are checked once
+lines from `defaults.measure` and individual measures. Defaults are checked once
 per package, with an `INVALID_CONFIG` unknown-key error naming `defaults.measure`
 and the refused key.
 In `graph.relationships`, `rollup_safe` must be a mapping containing only `reverse`;
@@ -1888,7 +1885,7 @@ is auto-created from `column:`. Mark at most one role per model with `default: t
 the loader refuses multiple defaults with `INVALID_CONFIG`. This role supplies the model's
 default clock and has `default_query_time_axis: true` in catalog output. Separate models
 may have defaults on the same entity. `default_time` and `default_query_axis` are refused
-with `INVALID_CONFIG`; the `time-default-axis` upgrade rule deletes the old axis hints.
+with `INVALID_CONFIG`; delete the old axis hints.
 `defaults.time.default` is also refused: declare the default on the model's role itself.
 
 ```yaml
@@ -2539,8 +2536,7 @@ rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 
 Model `relation`, dimension `kind`, time `class`, metric `temporal_role`, segment
 `basis_metric`, and nested `accumulation.snapshot` are the canonical spellings.
-`project upgrade` rewrites their aliases with the `authoring-aliases` rule;
-conflicting spellings require an author decision. Alternate spellings are unknown
+Alternate spellings are unknown
 keys in both layouts, with `INVALID_CONFIG`. Retired `primitive`, parent-rollup,
 relationship-weight, and `null_behavior` keys use the generic unknown-key errors
 (`INVALID_EXPRESSION_KEY` for keys inside expressions).
@@ -2550,36 +2546,35 @@ relationship-weight, and `null_behavior` keys use the generic unknown-key errors
 Every package is checked with one set of authoring rules when it loads, in every layout, so
 `validate-config`, `serve` and the MCP server refuse the same package. Earlier releases
 accepted the forms below; each is refused with `INVALID_CONFIG` and one hint naming the current
-form. Where a rule is named, `semantic-rails project upgrade` rewrites the form
-([Upgrading a package](#upgrading-a-package)).
+form.
 
-| Refused | Current form | Upgrade rule |
-|---|---|---|
-| `package.schema_strict` (either value) | Delete it: one set of rules applies to every package | `package-schema-strict` |
-| A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures). A measure with no `publish:` key or with `publish: true` no longer publishes its metric either, and the upgrade can't detect it: [author those metrics by hand](#metrics-a-measure-published-implicitly) | `measure-auto-publish` |
-| `id:` on a graph entity or relationship, dimension, time, measure, metric or segment | The key derives the id; `as:` only to keep a public id | `object-as` |
-| A measure's `time:` | `times: [<role>]` | `measure-times` |
-| A measure's `aggregation:` (never read) | `default_agg:` | |
-| A dimension's `valid_values:` | `domain:` | |
-| `freshness_source`, `freshness_sla_seconds` or `freshness_as_of` on a graph entity | The same keys on the entity's model | |
-| `from_` or `label` in a measure's `validity_windows` or `external_discontinuities` row | `from`; `semantics` (validity window) or `what` (discontinuity) | |
-| A model `grain:` | The bound entity's key keys the model's rows; rows finer than an entity are an [entity of their own](#graphyml) | `model-grain` |
-| A model's singular `entity:` or `keys:` | Bind the model with `graph.entities.<x>.model` and list its entities under `entities:` | `model-primary-key` |
-| A model `joins:` block | One `graph.relationships` row per join | `model-joins` |
-| A model `id:` that differs from its key in a `models:` map | Delete it: the key is the model's id | |
-| `topics:` on any object (model, graph entity, dimension, time, measure, metric or segment); `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) | |
-| A measure without `kind:` | `kind: aggregate`, `entity_count` or `lookup` | |
-| A metric with an absent, null or blank `value_type:` | Declare it; `number` is valid when intentional | |
-| `relations:` in a directory package's `package.yml` | `relations.yml` or `relations/` | |
-| A file under `models/` holding a `models:` map or a bare model; a file under `relations/`, `metrics/` or `segments/` holding a `relation:`, `metric:` or `segment:` wrapper or a bare spec | One model per file under `model:`; a `relations:`, `metrics:` or `segments:` map in the other three | |
-| Expression `kind: binary` or `kind: measure_ref`; conversion `matching:`; `in`/`not_in` `left:` (in metrics, segments, measure `expr:`, relation steps and queries; relation steps refuse when the relation compiles) | `kind: arithmetic`, `kind: measure`, `matching_mode:`, `expr:` | `expression-arithmetic` |
-| `relations:` as a list; relation-level `source:` or `date_spine:`; `cte:`; `output_columns:`; a step written as `{kind: ..., config: ...}` or as a bare string; an `unnest` step | A `relations:` map; each relation's `steps:` as one-key steps (`{source: <relation>}` first, `{date_spine: {...}}`); `output_name:`; `columns:`; `explode` | |
-| A second spelling of a key a relation step reads: `table:`, `name:` or `value:` for `relation:` (`source`, joins, `union_all` branches, which also refuse `source:`); `value:` for `columns:` (`select`), `predicates:` (`where`) or `branches:` (`union_all`); `where:` in a `where` step; `group_by:` and `measures:` (`group_by`, `pre_aggregate` sides); an aggregate's `agg:` or `expression:`; `require_preaggregated:`; `date_lag` `value:`; `window` `columns:`; a window's `kind:` or `expression:`; `order_by` `column:`; `alias:`; `date_spine` `date_column:`; `state_as_of` `date_spine:`; `base_relation:`, `attributed_relation:`; an `attribution_join` key's `left:` or `right:`; `lookback` `max:`; a `union_all` branch's `select:` | The key the step reads, which the error names: `relation:`, `columns:`, `predicates:`, `branches:`, `dimensions:`, `aggregates:`, `function:`, `expr:`, `require_pre_aggregate:`, `max:`, `windows:`, `as:`, `column:`, `spine:`, `base:`, `attributed:`, `value:`. The short forms `{source: <relation>}`, `{where: [...]}` and `{union_all: [...]}` stay | |
-| A graph relationship `cardinality:` written `N:1`, `1:N`, `1:1`, `M:N` or any other spelling | `many_to_one`, `one_to_many`, `one_to_one` or `many_to_many` | |
-| Top-level `path_policy:` or `path_preferences:` | `graph.path_policy:` and `graph.path_preferences:` | |
-| Sibling `snapshot_policy:` | Nested `accumulation: { kind: stock, snapshot: end_of_period }` | `authoring-aliases` |
-| An `accumulation:` kind outside `{flow, stock, event, population}`, on a measure or under `defaults.measure` | One of those kinds | |
-| A dimension or measure named in an entity's `disallowed_names:` | The canonical column, or an `expr:` rename | |
+| Refused | Current form |
+|---|---|
+| `package.schema_strict` (either value) | Delete it: one set of rules applies to every package |
+| A measure `publish:` mapping (`publish: {id: ..., label: ...}`) | Author the metric under `metrics:`; a measure never publishes one of its own name. `publish: false` still marks an [unoffered measure](#building-block-measures). A measure with no `publish:` key or with `publish: true` no longer publishes its metric either, and nothing detects it: [author those metrics by hand](#metrics-a-measure-published-implicitly) |
+| `id:` on a graph entity or relationship, dimension, time, measure, metric or segment | The key derives the id; `as:` only to keep a public id |
+| A measure's `time:` | `times: [<role>]` |
+| A measure's `aggregation:` (never read) | `default_agg:` |
+| A dimension's `valid_values:` | `domain:` |
+| `freshness_source`, `freshness_sla_seconds` or `freshness_as_of` on a graph entity | The same keys on the entity's model |
+| `from_` or `label` in a measure's `validity_windows` or `external_discontinuities` row | `from`; `semantics` (validity window) or `what` (discontinuity) |
+| A model `grain:` | The bound entity's key keys the model's rows; rows finer than an entity are an [entity of their own](#graphyml) |
+| A model's singular `entity:` or `keys:` | Bind the model with `graph.entities.<x>.model` and list its entities under `entities:` |
+| A model `joins:` block | One `graph.relationships` row per join |
+| A model `id:` that differs from its key in a `models:` map | Delete it: the key is the model's id |
+| `topics:` on any object (model, graph entity, dimension, time, measure, metric or segment); `preferred_companion_metrics` on a measure | Delete them (`preferred_companion_metrics` stays on metrics) |
+| A measure without `kind:` | `kind: aggregate`, `entity_count` or `lookup` |
+| A metric with an absent, null or blank `value_type:` | Declare it; `number` is valid when intentional |
+| `relations:` in a directory package's `package.yml` | `relations.yml` or `relations/` |
+| A file under `models/` holding a `models:` map or a bare model; a file under `relations/`, `metrics/` or `segments/` holding a `relation:`, `metric:` or `segment:` wrapper or a bare spec | One model per file under `model:`; a `relations:`, `metrics:` or `segments:` map in the other three |
+| Expression `kind: binary` or `kind: measure_ref`; conversion `matching:`; `in`/`not_in` `left:` (in metrics, segments, measure `expr:`, relation steps and queries; relation steps refuse when the relation compiles) | `kind: arithmetic`, `kind: measure`, `matching_mode:`, `expr:` |
+| `relations:` as a list; relation-level `source:` or `date_spine:`; `cte:`; `output_columns:`; a step written as `{kind: ..., config: ...}` or as a bare string; an `unnest` step | A `relations:` map; each relation's `steps:` as one-key steps (`{source: <relation>}` first, `{date_spine: {...}}`); `output_name:`; `columns:`; `explode` |
+| A second spelling of a key a relation step reads: `table:`, `name:` or `value:` for `relation:` (`source`, joins, `union_all` branches, which also refuse `source:`); `value:` for `columns:` (`select`), `predicates:` (`where`) or `branches:` (`union_all`); `where:` in a `where` step; `group_by:` and `measures:` (`group_by`, `pre_aggregate` sides); an aggregate's `agg:` or `expression:`; `require_preaggregated:`; `date_lag` `value:`; `window` `columns:`; a window's `kind:` or `expression:`; `order_by` `column:`; `alias:`; `date_spine` `date_column:`; `state_as_of` `date_spine:`; `base_relation:`, `attributed_relation:`; an `attribution_join` key's `left:` or `right:`; `lookback` `max:`; a `union_all` branch's `select:` | The key the step reads, which the error names: `relation:`, `columns:`, `predicates:`, `branches:`, `dimensions:`, `aggregates:`, `function:`, `expr:`, `require_pre_aggregate:`, `max:`, `windows:`, `as:`, `column:`, `spine:`, `base:`, `attributed:`, `value:`. The short forms `{source: <relation>}`, `{where: [...]}` and `{union_all: [...]}` stay |
+| A graph relationship `cardinality:` written `N:1`, `1:N`, `1:1`, `M:N` or any other spelling | `many_to_one`, `one_to_many`, `one_to_one` or `many_to_many` |
+| Top-level `path_policy:` or `path_preferences:` | `graph.path_policy:` and `graph.path_preferences:` |
+| Sibling `snapshot_policy:` | Nested `accumulation: { kind: stock, snapshot: end_of_period }` |
+| An `accumulation:` kind outside `{flow, stock, event, population}`, on a measure or under `defaults.measure` | One of those kinds |
+| A dimension or measure named in an entity's `disallowed_names:` | The canonical column, or an `expr:` rename |
 
 Warnings (advisory only):
 
@@ -2597,7 +2592,7 @@ Warnings (advisory only):
 In a package that did not set `schema_strict: true`, a measure with no `publish:` key or with
 `publish: true` used to publish `metric.<namespace>.<measure>`. It no longer does: callers,
 saved queries and metric references that name such an id fail with an unknown-object error.
-`project upgrade` can't tell such a package from a current one and may report `up_to_date`, so
+Nothing marks such a package, so
 author a metric under `metrics:` for each such id still in use. For a `revenue` measure in the
 `shop` namespace, this keeps `metric.shop.revenue`:
 
@@ -2939,8 +2934,7 @@ without asking.
 
 A relationship's `path_preference` weight no longer exists: a package that
 still sets one fails to load with `INVALID_CONFIG`, naming the relationship.
-Record the route as a `graph.path_preferences` row instead;
-[`semantic-rails project upgrade`](#upgrading-a-package) deletes the weights.
+Record the route as a `graph.path_preferences` row instead.
 
 ### `graph.path_preferences:` — recording a route
 
@@ -3864,101 +3858,6 @@ group where no model answers every question the others do, label each count for 
 counts instead ("Buildings with a floor"), which takes it out of the group, or set
 `publish: false` on those no question needs. `project_status` adds a next action that counts the
 groups no model is declared canonical of.
-
-## Upgrading a package
-
-A package written for an earlier release can hold forms this engine refuses. One command rewrites
-them to the current forms in one change:
-
-```bash
-uv run semantic-rails project upgrade --path ./my_pkg           # preview: rules, proof and diff
-uv run semantic-rails project upgrade --path ./my_pkg --write   # write the change
-```
-
-- The preview lists each matching rule with the file, line and path of every hit, a proof line,
-  and the unified diff. It writes nothing. `--json` prints the full report.
-- `--write` writes every file in one transaction: the whole package must parse afterwards, or every
-  file is restored. Edits keep comments and the lines they don't touch.
-- Run it again and it reports `up_to_date` only if the unchanged package loads successfully.
-  A malformed package with no matching rules is refused with its load error; nothing is written.
-- Exit codes: 0 when the package is current, previewed or upgraded; 1 when the upgrade is refused or
-  the result is invalid; 2 when choices are pending.
-- It upgrades a package directory with `package.yml` or a single-file package.
-  Single-file revisions and staged parsing include only the selected file and its sibling
-  `examples/` and `tests/` folders. Unrelated siblings do not affect the upgrade; symlinks
-  inside the package's source set are still refused.
-- The transaction's receipt and lock live under `.semantic-rails/` in the current directory when it
-  contains the package, otherwise in the package's parent directory; never in loader-read source folders.
-- The Architect tool [`upgrade_project`](ARCHITECT_MCP.md#upgrading-a-package) runs the same
-  upgrade.
-
-The report gives each rule a tier describing what was actually checked:
-
-- `proven`: the package loads on this engine before the rewrite, and the rewrite leaves its semantic
-  fingerprint and the SQL of every example and test query the baseline compiles unchanged. A
-  non-retired rule touching a baseline-refused query must make it compile on its own above all
-  retired rewrites and the translated baseline, or be `unverified`. Queries are compiled, never run.
-- `translated`: a query-call spelling rewrite, or a rule rewriting a form the engine refuses
-  before it can compare equivalence. Query-call rewrites are spelling-only translations:
-  review the diff. The upgrade loads the staged package and compiles rewritten calls with the
-  entry's `now` and `context` (a fixed clock of `2026-01-01T00:00:00Z` when no clock is given).
-  It never executes data or compares legacy answers, and does not certify these translations.
-  Contextual predicates (whose grouping context and inherited filters would be lost), start-only
-  windows (which would gain an upper bound at `now`), windows with a grain that set `fill: false`
-  or carry a `limit` (a named window answers every period, and a period with no data answers 0,
-  which a limit can pick), and case-changing `LIKE` translations require hand edits with suggested calls and reasons; nothing is written until resolved.
-  Other rules for refused forms are also `translated`: a rule with effect `retired` follows a
-  release that removed the meaning and claims no equivalence. When the package does not load
-  as authored, the baseline is the shortest prefix, in registry order, of applicable retired
-  rules and rules explicitly marked `refused` at load that makes it load. Those prefix rules
-  are `translated`; rules after that baseline still pass the fingerprint and SQL checks.
-  A `same_meaning` rule can be marked `refused` without changing its effect.
-- A rule that changes the fingerprint or an example's or test's SQL is refused with
-  `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"`, `details.rule` and the
-  first difference. Nothing is written.
-- A preview reports `unverified` when no baseline loads, or a non-retired rule cannot make its
-  affected baseline-refused queries compile on its own above all retired rewrites and the translated
-  baseline. A write refuses
-  any `unverified` rule with
-  `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
-  is written. When no baseline loads, the refusal and `next_actions` give the load error in
-  `details.difference.load_error`, and `details.rule` names the first other rule whose rewrite
-  would make the package load (it rewrites a refused form without a permitted baseline; report it), or is
-  `null` when no rule covers the error.
-- The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as
-  `graph.path_preferences` rows; examples that don't compile appear there with their codes.
-
-Some rules ask instead of rewriting. The preview lists each pending choice with its key, file,
-line, question and options, and `--write` stops with exit code 2 until each is answered with
-`--choose KEY=OPTION` (the preview prints the exact flag). The proof covers only the rewrites no
-one chose; an option that changes answers is reported as "changes answers by your choice".
-An unresolved finding with no edits or options is a stop: its rule is `unverified`, with a
-`reason` naming the finding, and the preview returns `status: "unverified"` and `ok: false`.
-Stops are excluded from `choices_pending`; real choices in the same run remain there with
-tier `choice`. A stop refuses `--write` with `CONFIG_CONFLICT` and exit code 1; fix the
-named definition by hand before upgrading.
-
-| Rule | Since | Legacy form | Current form |
-|---|---|---|---|
-| `authoring-aliases` | 0.3.2 | Model `relation_ref`, dimension `type`, time `temporal_class`, metric `time`, segment `metric`, measure `snapshot_policy`; dimension/time aliases also under `defaults` | `relation`, `kind`, `class`, `temporal_role`, `basis_metric`, nested `accumulation.snapshot`; equal spellings delete the alias. Disagreements, member aliases with canonical dimension/time defaults, member snapshots with accumulation/snapshot defaults, and every `defaults.measure.snapshot_policy` stop without edits: rewrite by hand |
-| `null-behavior` | 0.3.2rc3 | `null_behavior` on metrics, in expressions, and in example, test and segment membership queries | Deleted: aggregation and `observation_scope` decide empty groups |
-| `measure-parent-rollup` | 0.3.2rc3 | `subject_entity` and `aggregation_entity` on measures and under `defaults.measure` | Deleted: measures aggregate at their own model's grain |
-| `forward-rollup-hints` | 0.3.2rc3 | `rollup_safe_aggregations` and `rollup_safe` in `defaults.relationship` and on model joins; `rollup_safe.forward`, or a `rollup_safe` list, in `graph.relationships` | Deleted; `rollup_safe.reverse` in `graph.relationships` stays |
-| `relationship-path-preference` | 0.3.2rc3 | `path_preference` on relationships and model joins | Deleted; record a route as a `graph.path_preferences` row |
-| `query-path-policy` | 0.3.2rc3 | The query key `path_policy` in example, test and segment membership queries | Deleted; `graph.path_policy` is unchanged |
-| `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
-| `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
-| `expression-arithmetic` | 0.3.2 | Expression `kind: binary` and `kind: measure_ref`, conversion `matching:` and `in`/`not_in` `left:`, in metrics, segments, measure `expr:`, relation steps and example, test and segment membership queries | `kind: arithmetic`, `kind: measure`, `matching_mode:` and `expr:`, which parse to the same nodes; when both keys appear, the retired one (which was ignored) is deleted |
-| `query-call-v2` | 0.3.2 | Example and test queries in the previous call shape: `query`, and both `metric_query` and `expected_query` of comparison tests; reference objects, select dimensions, `metric_filters`, child groups, predicate scopes, `route_decisions` and route options, `policy_context`, `time.range`, SQL ops, `div`/`sub`/`mul`, `operands`/`terms`, tool arguments inside the query, and the retired spellings above inside it | The current call: id strings, `group_by`, `having` and entity filters, `routes`, `time.last`, equivalent filter words, `now:` and `context:` on the entry, and `period` for the time column in `columns`, `expected_shape.columns` and `expected_rows` keys. Refusal tests (`validate_fails_with_code`) require a hand edit with a suggested call and the expected code to verify. Moving a comparison's clock or context to its shared entry requires a hand edit too. Contextual predicates and start-only windows also require hand edits. Answer-changing translations (`not` keeps unknown rows; text words replacing `LIKE` ignore case) and sites with no current form (a pattern with `_`, a route option id, `max_rows`, a fiscal `calendar_id`, ...) stop at their file, line and path; nothing is written |
-| `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
-| `ignored-key` | 0.3.2 | Keys the loader never read: `observation_scope` in the `package:` block, and a dimension's `expr:` | Deleted when the loader already reads the same value (`defaults.observation_scope`; the dimension's `column:`, or its key). Otherwise a choice: delete it and keep today's answers, or move the value to the key the loader reads, which may change answers |
-| `package-schema-strict` | 0.3.2 | `package.schema_strict` | Deleted (a drop: only that field of the fingerprint changes) |
-| `measure-auto-publish` | 0.3.2 | A measure's `publish:` mapping | In a package without `schema_strict: true`, the metric it published, authored under `metrics:` with the mapping's overrides, and `publish: false` on the measure; in a strict package, where the mapping was never read, deleted. A mapping with `topics`, or a metric key or id already taken, stops. A measure with no `publish:` key or with `publish: true` is left unchanged, and the upgrade may report `up_to_date`: [author its metric by hand](#metrics-a-measure-published-implicitly) |
-| `model-grain` | 0.3.2 | A model `grain:` beside `entities:` | Deleted when it equals the entity's key, binding that entity's `model:` when the grain chose it. A grain finer than the key stops: model those rows as their own entity |
-| `model-primary-key` | 0.3.2 | `keys:` and a singular `entity:` (and a block-less model's `grain:`) | An `entities:` block that states the same keys (`bridge: false` when the legacy keys inferred no relationship). A key with a role, keys that disagree with the block, or a model with no row key stop |
-| `model-joins` | 0.3.2 | A model `joins:` block | `graph.relationships` rows with the same ids (`traversal` becomes `allowed_directions`). A join that never read its cardinality as one, names no columns under a different key, or isn't on its entity's home model stops |
-| `object-as` | 0.3.2 | `id:` on graph entities and relationships, dimensions, times, measures, metrics and segments | Renamed to `as:`, or deleted when the key derives the same id. A metric or segment alone in its file and without `name:` takes its key from that `id:`, so it stops: author it under the file's `metrics:` or `segments:` map |
-| `measure-times` | 0.3.2 | A measure's `time:` (also under `defaults.measure`) | `times: [<role>]` naming the clock the loader read; deleted beside a non-empty `times:` (the measure's, or `defaults.measure.times` when the measure has no `times:` key), which the loader read instead. When the rewrite would move any measure's clock (a measure's empty `time:` or `times:` under a `defaults.measure.time:`), that measure and `defaults.measure` stop: rewrite them by hand |
 
 ## Reference
 

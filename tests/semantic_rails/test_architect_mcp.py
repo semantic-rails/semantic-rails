@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
 
 from semantic_rails.architect_mcp import (
     ARCHITECT_INTERFACE_VERSION,
@@ -69,7 +70,7 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
     }.issubset(tool_names)
     assert {"write_project_file", "archive_project_file"}.isdisjoint(tool_names)
     assert "write_project_files" in tool_names
-    assert ARCHITECT_INTERFACE_VERSION == "v1"
+    assert ARCHITECT_INTERFACE_VERSION == "v2"
 
     mutation_names = {
         "create_project",
@@ -103,6 +104,23 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
         assert tool.annotations.destructiveHint is True
         assert tool.annotations.idempotentHint is True
         assert tool.annotations.openWorldHint is False
+
+
+def test_the_removed_upgrade_tool_is_an_unknown_tool(tmp_path: Path) -> None:
+    # A client still built from the v1 manifest gets the MCP tool error, not a crash.
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    async def call() -> tuple[set[str], object]:
+        async with create_connected_server_and_client_session(server) as session:
+            names = {tool.name for tool in (await session.list_tools()).tools}
+            return names, await session.call_tool("upgrade_project", {"project_path": "."})
+
+    names, result = asyncio.run(call())
+
+    assert "upgrade_project" not in names
+    assert result.isError is True
+    assert result.structuredContent is None
+    assert [block.text for block in result.content] == ["Unknown tool: upgrade_project"]
 
 
 def _titles(schema) -> list[str]:

@@ -507,7 +507,7 @@ def _unsupported_expression_kind(kind: Any, path: str) -> SemanticLayerError:
         "INVALID_EXPRESSION_AST",
         f"Unsupported expression kind {kind!r} at {path}. "
         + (
-            f"Write kind {current!r} (`semantic-rails project upgrade` rewrites it)."
+            f"Write kind {current!r}."
             if current
             else "Select a measure or metric by its id string, e.g. 'metric.<id>'; "
             "put dimension ids in group_by."

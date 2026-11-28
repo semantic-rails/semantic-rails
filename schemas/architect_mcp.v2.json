@@ -1,7 +1,7 @@
 {
-  "$id": "https://semantic-rails.com/schemas/architect_mcp.v1.json",
+  "$id": "https://semantic-rails.com/schemas/architect_mcp.v2.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "interface_version": "v1",
+  "interface_version": "v2",
   "manifest_version": 1,
   "mcp_protocol": {
     "default": "2025-11-25",
@@ -813,58 +813,6 @@
           "changed_files",
           "changes"
         ],
-        "type": "object"
-      }
-    },
-    {
-      "annotations": {
-        "destructiveHint": true,
-        "idempotentHint": true,
-        "openWorldHint": false,
-        "readOnlyHint": false,
-        "title": "Upgrade project"
-      },
-      "description": "Rewrite a package's legacy forms to the current ones in one transaction, refusing any rewrite that changes an answer; dry_run (the default) previews the rules, proof and diff, and choices ({key: option}) answers pending choices.",
-      "inputSchema": {
-        "properties": {
-          "choices": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "dry_run": {
-            "default": true,
-            "type": "boolean"
-          },
-          "expected_revision": {
-            "default": "",
-            "type": "string"
-          },
-          "idempotency_key": {
-            "default": "",
-            "type": "string"
-          },
-          "project_path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_path"
-        ],
-        "type": "object"
-      },
-      "name": "upgrade_project",
-      "outputSchema": {
-        "additionalProperties": true,
         "type": "object"
       }
     },

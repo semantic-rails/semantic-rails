@@ -82,12 +82,8 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "tests",
     }
 )
-_UPGRADE = "(`semantic-rails project upgrade` rewrites it)"
-_AS = f"the key derives the id; write `as:` only to keep a public id {_UPGRADE}"
-_BIND = (
-    "bind the model with `graph.entities.<x>.model` and list its entities under `entities:` "
-    + _UPGRADE
-)
+_AS = "the key derives the id; write `as:` only to keep a public id"
+_BIND = "bind the model with `graph.entities.<x>.model` and list its entities under `entities:`"
 _ON_MODEL = "declare it on the entity's model"
 _ONE_KIND = "write each step as one key naming its kind, such as `{where: [...]}`"
 # Each key a relation step's lowering reads has one spelling: a retired one, by block (a step
@@ -119,7 +115,7 @@ _RELATION_RENAMED_KEYS: dict[str, dict[str, str]] = {
 # the unknown-key error adds, by (block, key).
 _REPLACED_KEYS: dict[tuple[str, str], str] = {
     ("document", "aggregate_relations"): "declare rollups under the model's `variants:`",
-    ("package", "schema_strict"): f"strict is the only profile; delete this line {_UPGRADE}",
+    ("package", "schema_strict"): "strict is the only profile; delete this line",
     ("entity", "id"): _AS,
     ("relationship", "id"): _AS,
     ("dimension", "id"): _AS,
@@ -132,7 +128,7 @@ _REPLACED_KEYS: dict[tuple[str, str], str] = {
     ("entity", "freshness_source"): _ON_MODEL,
     ("entity", "freshness_sla_seconds"): _ON_MODEL,
     ("entity", "freshness_as_of"): _ON_MODEL,
-    ("measure", "time"): f"name the measure's clocks with `times: [<role>]` {_UPGRADE}",
+    ("measure", "time"): "name the measure's clocks with `times: [<role>]`",
     ("measure", "aggregation"): "the loader never read it; write the default as `default_agg:`",
     ("dimension", "valid_values"): "list the values under `domain:`",
     ("validity_window", "from_"): "write `from:`",
@@ -140,8 +136,8 @@ _REPLACED_KEYS: dict[tuple[str, str], str] = {
     ("discontinuity", "from_"): "write `from:`",
     ("discontinuity", "label"): "write `what:`",
     ("model", "grain"): "the entity's key keys the model's rows; key finer rows as their "
-    f"own entity, related to it {_UPGRADE}",
-    ("model", "joins"): f"write each join as a `graph.relationships` row {_UPGRADE}",
+    "own entity, related to it",
+    ("model", "joins"): "write each join as a `graph.relationships` row",
     ("document", "path_policy"): "write it under `graph:`",
     ("document", "path_preferences"): "write it under `graph:`",
     ("relation", "source"): "write it as the first step: `steps: [{source: <relation>}, ...]`",
@@ -983,7 +979,7 @@ def _check_publish(spec: dict[str, Any], *, label: str, errors: list[str]) -> No
     if "publish" in spec and not isinstance(spec["publish"], bool):
         add_error(
             errors,
-            f"{label} publish must be true or false; author the metric under metrics: {_UPGRADE}",
+            f"{label} publish must be true or false; author the metric under `metrics:`",
         )
 
 

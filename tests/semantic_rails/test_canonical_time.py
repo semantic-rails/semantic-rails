@@ -11,7 +11,27 @@ from semantic_rails.metadata import catalog_payload, inspect_payload
 from semantic_rails.runtime import Runtime
 from semantic_rails.yaml_loader import safe_load
 from tests.semantic_rails.conftest import copy_package_config, write_single_file_package
-from tests.semantic_rails.test_upgrade_rules_authoring import _write_defaults
+
+
+def _write_defaults(source, doc, defaults, layout):
+    if layout == "single-file":
+        doc["defaults"] = defaults
+    else:
+        doc = deepcopy(doc)
+        doc.pop("defaults", None)
+        (source.parent / "defaults.yml").write_text(yaml.safe_dump({"defaults": defaults}))
+        graph = doc.pop("graph")
+        models = source.parent / "models"
+        models.mkdir(exist_ok=True)
+        for name, row in doc.pop("models").items():
+            row["id"] = name
+            (models / f"{name}.yml").write_text(yaml.safe_dump({"model": row}))
+        for entity in graph["entities"].values():
+            entity["key"] = [entity["key"]]
+        (source.parent / "graph.yml").write_text(yaml.safe_dump({"graph": graph}))
+    source.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return source if layout == "single-file" else source.parent
+
 
 FORMS = [
     (("models", "orders"), "default_time", "ordered_at"),

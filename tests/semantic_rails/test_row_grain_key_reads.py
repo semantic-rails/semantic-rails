@@ -13,8 +13,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2] / "semantic_rails"
-# Their `.key` reads are not on an entity: authored YAML, dbt manifests, upgrade rules.
-EXCLUDED = ("architect_", "dbt_artifacts.py", "upgrade/", "repl/", "yaml_edits.py")
+# Their `.key` reads are not on an entity: authored YAML, dbt manifests.
+EXCLUDED = ("architect_", "dbt_artifacts.py", "repl/", "yaml_edits.py")
 
 # Reads where an empty key is a legitimate "no": they read `key_columns` or `is_row_grain`.
 SWITCHED = {

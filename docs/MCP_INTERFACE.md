@@ -1562,7 +1562,7 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_EXPRESSION_AST` | Expression AST is malformed; check the position-specific shape. An unsupported `call` name lists the warehouse's accepted names in `details.allowed`. An invalid filter `op` is `INVALID_QUERY`, with the [filter word](QUERY_CALL.md#filter-words) to write. |
 | `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist for the caller; see `details.closest_matches`. An object hidden from the caller gets exactly the response of one the package doesn't have, and is never suggested. An existing measure with the exact namespace and name of a missing metric (or the reverse) is the first suggestion; unrelated typos keep same-kind matching. When what the caller may see can't be resolved, no suggestion is made. |
 | `INVALID_QUERY` | The call fails its structural checks: an unknown or retired key, a wrong shape or value. `details.path` names where, and one recovery hint gives the shape to send ([Refusals](QUERY_CALL.md#refusals)). |
-| `INVALID_CONFIG` | Package config is malformed, or the removed MCP interface v1 was requested. |
+| `INVALID_CONFIG` | Package config is malformed. |
 | `INVALID_METRIC_FILTER` | The engine's internal form of an entity filter's `having` is malformed. A call can't cause it; file a bug. |
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |

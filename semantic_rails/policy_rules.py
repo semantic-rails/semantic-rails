@@ -44,7 +44,6 @@ _COMMON_KEYS = {
     "action",
     "rationale",
 }
-_UPGRADE_HINT = "(semantic-rails project upgrade rewrites it)"
 
 
 def policy_action(policy: SemanticPolicyConfig) -> str:
@@ -66,14 +65,14 @@ def policy_action(policy: SemanticPolicyConfig) -> str:
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"policy '{policy.id}' (kind {policy.kind}) has unknown key {unknown[0]!r}; "
-            f"allowed: {', '.join(sorted(keys))}. {_UPGRADE_HINT}",
+            f"allowed: {', '.join(sorted(keys))}.",
         )
     action = str(policy.action).strip().lower()
     if action not in allowed:
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"policy '{policy.id}' of kind {policy.kind!r} has unsupported action {action!r}. "
-            f"Allowed actions: {', '.join(repr(value) for value in allowed)}. {_UPGRADE_HINT}",
+            f"Allowed actions: {', '.join(repr(value) for value in allowed)}.",
         )
     if allowed[action] == "withhold_values":
         withheld_max_rank(policy)
