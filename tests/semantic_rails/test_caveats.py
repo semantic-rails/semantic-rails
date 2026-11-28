@@ -595,9 +595,9 @@ def _aov(**time: object) -> dict:
         ({}, [PAST, CURRENT]),
         ({"grain": "month"}, [PAST, CURRENT]),
         ({"start": AFTER_2023, "end": "2024-02-01"}, [CURRENT]),
-        ({"end": "2025-01-01"}, [PAST, CURRENT]),
+        ({"end": AFTER_2023}, [PAST]),
         ({"start": "2023-12-01", "end": "2024-02-01"}, [PAST, CURRENT]),
-        ({"start": "2023-12-01"}, [PAST, CURRENT]),
+        ({"start": AFTER_2023}, [CURRENT]),
         ({"start": "2022-01-01", "end": "2023-01-01"}, []),
     ],
 )
@@ -621,8 +621,13 @@ def test_answer_cites_caveats_in_the_receipt_window(
 def test_this_year_cites_a_change_before_today(history_runtime: Runtime) -> None:
     config = history_runtime.package_config
     cutover = "2024-03-01"
+    next_cutover = "2024-10-01"
     past, current, *_ = config.semantic_caveats
-    rows = [replace(past, valid_to=cutover), replace(current, valid_from=cutover)]
+    rows = [
+        replace(past, valid_to=cutover),
+        replace(current, valid_from=cutover, valid_to=next_cutover),
+        replace(current, id="caveat.test.aov_october", valid_from=next_cutover, supersedes=CURRENT),
+    ]
     runtime = Runtime.from_config(
         replace(config, semantic_caveats=rows), source_path=history_runtime.source_path
     )
@@ -832,3 +837,17 @@ def test_replacement_for_another_audience_can_overlap_and_omits_pointer(tmp_path
             assert "supersedes" not in active
     finally:
         runtime.close()
+
+
+def test_replacement_with_a_shared_explicit_audience_cannot_overlap(tmp_path: Path) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    _write_caveats(
+        package,
+        [
+            {**HISTORY[0], "audiences": ["internal", "public"], "valid_to": "2025-01-01"},
+            {**HISTORY[1], "audiences": ["public", "finance"]},
+        ],
+    )
+    with pytest.raises(SemanticLayerError, match="overlapping validity windows") as refusal:
+        load_package_config(str(package))
+    assert refusal.value.code == "INVALID_CONFIG"
