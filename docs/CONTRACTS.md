@@ -199,12 +199,18 @@ python scripts/check_contract_compatibility.py \
 
 The compatibility checker is deliberately conservative. Contract owners review
 any flagged change and either preserve compatibility or introduce a new major.
-A new major is a new file name: when the baseline's `name.vN.json` is gone and
-the current bundle has `name.vM.json` with a higher `M`, the checker lists the
-pair under `major_changes` and does not fail. It does not compare the two
-majors. Loading a retired major with `load_contract` or `contract_path` raises
-`INVALID_CONTRACT` with `details.reason: "unsupported_version"` and the current
-major's name.
+Removing a contract artifact fails, with one declared exception: the Architect
+MCP move from `architect_mcp.v1.json` to `architect_mcp.v2.json`. The checker
+accepts it only when the baseline ships v1 and not v2, the current bundle ships
+v2 and not v1, `ARCHITECT_INTERFACE_VERSION` and the v2 manifest's
+`interface_version` and `$id` all say v2, and a `**Breaking:**` changelog entry
+(a `changelog.d/` fragment, or the released `CHANGELOG.md` section) names both
+files. It then compares the v1 tools against v2: a removed tool that entry names
+is listed under `major_changes`, and every other break still fails. Every MCP
+manifest major both bundles ship (Query v1 and v2, Architect v1 and v2) is
+compared tool by tool. Loading a retired major with `load_contract` or
+`contract_path` raises `INVALID_CONTRACT` with
+`details.reason: "unsupported_version"` and the current major's name.
 
 ## Warehouse wait compatibility
 

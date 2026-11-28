@@ -32,28 +32,56 @@ _RETIRED_CONTRACT_NAMES = (
     "query_ir.v1.json",
 )
 
-# ``<name>.v<major>.json``: a contract's name and its major.
-_MAJOR_NAME = re.compile(r"^(?P<stem>.+)\.v(?P<major>\d+)\.json$")
+# Every MCP manifest major the loader recognizes. Whatever both bundles ship is compared.
+_MCP_ARTIFACTS = (
+    "architect_mcp.v1.json",
+    "architect_mcp.v2.json",
+    "query_mcp.v1.json",
+    "query_mcp.v2.json",
+)
+
+# The one declared major transition: Architect MCP v1 to v2, which removed tools.
+_TRANSITION_FROM, _TRANSITION_TO, _TRANSITION_MAJOR = (
+    "architect_mcp.v1.json",
+    "architect_mcp.v2.json",
+    "v2",
+)
 
 
-def _successor_major(name: str, current: Mapping[str, Any]) -> str | None:
-    """The artifact in ``current`` that declares a new major of ``name``, if there is one.
+def _transition_gaps(
+    baseline: Mapping[str, Any],
+    current: Mapping[str, Any],
+    *,
+    architect_interface_version: str | None,
+    notes: list[str],
+) -> list[str]:
+    """Why the Architect v1 to v2 transition is not declared; empty when it is."""
 
-    A removed ``architect_mcp.v1.json`` beside a new ``architect_mcp.v2.json`` is a
-    declared major bump: the change the compatibility rules require for a removal.
-    """
-    removed = _MAJOR_NAME.match(name)
-    if removed is None:
-        return None
-    for candidate in sorted(current):
-        added = _MAJOR_NAME.match(candidate)
-        if (
-            added is not None
-            and added["stem"] == removed["stem"]
-            and int(added["major"]) > int(removed["major"])
-        ):
-            return candidate
-    return None
+    if _TRANSITION_TO in baseline or _TRANSITION_TO not in current:
+        return [f"the current bundle does not add {_TRANSITION_TO!r}"]
+    manifest = current[_TRANSITION_TO]
+    gaps: list[str] = []
+    if architect_interface_version != _TRANSITION_MAJOR:
+        gaps.append(f"ARCHITECT_INTERFACE_VERSION is {architect_interface_version!r}")
+    if manifest.get("interface_version") != _TRANSITION_MAJOR:
+        gaps.append(f"its interface_version is {manifest.get('interface_version')!r}")
+    if not str(manifest.get("$id", "")).endswith(f"/{_TRANSITION_TO}"):
+        gaps.append(f"its $id is {manifest.get('$id')!r}")
+    if not notes:
+        gaps.append("no **Breaking:** changelog entry names both artifacts")
+    return gaps
+
+
+def _breaking_notes(release_notes: str) -> list[str]:
+    """The ``- **Breaking:**`` changelog entries that name both transition artifacts."""
+
+    return [
+        entry
+        for entry in re.split(r"(?m)^- ", release_notes)
+        if entry.startswith("**Breaking:**")
+        and f"`{_TRANSITION_FROM}`" in entry
+        and f"`{_TRANSITION_TO}`" in entry
+    ]
 
 
 def load_contract_directory(path: str | Path) -> dict[str, dict[str, Any]]:
@@ -246,24 +274,35 @@ def _mcp_changes(
 def compare_contract_bundles(
     baseline: Mapping[str, Mapping[str, Any]],
     current: Mapping[str, Mapping[str, Any]],
+    *,
+    architect_interface_version: str | None = None,
+    release_notes: str = "",
 ) -> dict[str, Any]:
-    """Compare two bundles and classify conservative breaking/additive drift."""
+    """Compare two bundles and classify conservative breaking/additive drift.
+
+    Removing a contract is breaking, with one exception: the declared Architect MCP v1 to
+    v2 transition. It needs ``architect_interface_version`` (the producer constant) and the
+    v2 manifest stamped v2, plus a ``**Breaking:**`` entry in ``release_notes`` naming both
+    artifacts. Its removed tools then move to ``major_changes`` when that entry names them.
+    """
 
     breaking: list[dict[str, str]] = []
     additive: list[dict[str, str]] = []
     majors: list[dict[str, str]] = []
+    notes = _breaking_notes(release_notes)
+    gaps = _transition_gaps(
+        baseline, current, architect_interface_version=architect_interface_version, notes=notes
+    )
+    declared = _TRANSITION_FROM in baseline.keys() - current.keys() and not gaps
     for name in sorted(set(baseline) - set(current)):
-        successor = _successor_major(name, current)
-        if successor is not None:
-            _change(
-                majors,
-                name,
-                "/",
-                "major_bumped",
-                f"Contract artifact {name!r} was replaced by the new major {successor!r}.",
-            )
+        if name == _TRANSITION_FROM and declared:
+            message = f"Contract artifact {name!r} was replaced by the declared {_TRANSITION_TO!r}."
+            _change(majors, name, "/", "major_bumped", message)
             continue
-        _change(breaking, name, "/", "artifact_removed", f"Contract artifact {name!r} was removed.")
+        message = f"Contract artifact {name!r} was removed."
+        if name == _TRANSITION_FROM:
+            message += f" {_TRANSITION_TO!r} is not a declared major: {'; '.join(gaps)}."
+        _change(breaking, name, "/", "artifact_removed", message)
     for name in sorted(set(current) - set(baseline)):
         _change(additive, name, "/", "artifact_added", f"Contract artifact {name!r} was added.")
     for name in sorted(_JSON_SCHEMA_ARTIFACTS & baseline.keys() & current.keys()):
@@ -282,7 +321,7 @@ def compare_contract_bundles(
             breaking=breaking,
             additive=additive,
         )
-    for artifact in ("architect_mcp.v2.json", "query_mcp.v2.json"):
+    for artifact in _MCP_ARTIFACTS:
         if artifact in baseline and artifact in current:
             _mcp_changes(
                 baseline[artifact],
@@ -291,6 +330,20 @@ def compare_contract_bundles(
                 breaking=breaking,
                 additive=additive,
             )
+    if declared:
+        # The v1 tools against v2: a removal the breaking entry names is the declared change.
+        transition: list[dict[str, str]] = []
+        _mcp_changes(
+            baseline[_TRANSITION_FROM],
+            current[_TRANSITION_TO],
+            artifact=_TRANSITION_TO,
+            breaking=transition,
+            additive=additive,
+        )
+        for row in transition:
+            tool = row["path"].removeprefix("/tools/")
+            named = row["kind"] == "tool_removed" and any(f"`{tool}`" in n for n in notes)
+            (majors if named else breaking).append(row)
     return {
         "ok": not breaking,
         "breaking_changes": breaking,

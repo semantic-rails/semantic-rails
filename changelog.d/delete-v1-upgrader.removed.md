@@ -11,8 +11,11 @@
   schema or annotation changed. A client that reads `architect_mcp.v1.json` must read
   `architect_mcp.v2.json` instead: `load_contract("architect_mcp.v1.json")` now raises
   `INVALID_CONTRACT` naming v2. A client that still calls `upgrade_project` gets the MCP
-  `Unknown tool: upgrade_project` error. `check_contract_compatibility.py` reports a
-  contract replaced by a higher major under `major_changes` instead of failing.
+  `Unknown tool: upgrade_project` error. `check_contract_compatibility.py` accepts
+  this one declared move and lists it under `major_changes`; any other removed contract, and
+  any other change to a kept tool, still fails.
+- `check_contract_compatibility.py` now compares every MCP manifest major that both bundles
+  ship, including Query MCP v1 and Architect MCP v1, so a tool removed inside one major fails.
 - `SemanticLayerMCPAdapter` no longer refuses an `interface` value other than `v2`. The
   argument is still accepted and ignored, because `v2` is the only interface; the
   `api_version` of `v2` in the published schemas is unchanged.
