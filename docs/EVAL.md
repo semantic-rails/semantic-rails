@@ -57,10 +57,12 @@ tests:
 | `why`, `cites`, `tags` | Notes for reviewers. `eval` doesn't check them. |
 
 Numbers in `expected_rows` load as exact decimals, never as binary floats. Every key in a
-mapping must be unique: a file that names two entries alike, or one cell twice, fails to
-load, so a copied entry can't silently replace the one before it. Each entry runs
-through the same package test runner as `semantic-rails test-package`, so both commands
-agree on whether an entry passes. Files under `tests/` other than `answers.yml` are
+mapping must be unique, in a `<<` merge source too: a file that names two entries alike,
+or one cell twice, fails to load, so a copied entry can't silently replace the one before
+it. A key that overrides one a merge brings in is fine. Each entry runs once, through the
+same package test runner as `semantic-rails test-package`, so both commands agree on
+whether an entry passes; `eval` then checks that runner's own rows again, keeping
+`true` and `false` apart from `1` and `0`, inside objects and arrays too. Files under `tests/` other than `answers.yml` are
 `test-package`'s, and `eval` doesn't read them.
 
 The file uses the engine's own correctness answer format

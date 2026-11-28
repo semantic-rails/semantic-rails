@@ -313,6 +313,139 @@ def test_a_repeated_key_inside_an_entry_fails_to_load(tmp_path):
         eval_answers.load_answers(path)
 
 
+def flow(spec: dict) -> str:
+    """An entry as one line of YAML flow style."""
+    return json.dumps(spec)
+
+
+WRONG_REPEAT_ORDERS = {**REPEAT_ORDERS, "expected_rows": REPEAT_ORDERS["expected_rows"][:1]}
+
+
+@pytest.mark.parametrize(
+    "merge",
+    [
+        "<<: {{{name}: {wrong}, {name}: {right}}}",
+        "<<: &copied {{{name}: {wrong}, {name}: {right}}}",
+        "<<: [{{{name}: {wrong}, {name}: {right}}}]",
+    ],
+    ids=["inline", "anchored", "listed"],
+)
+def test_a_repeated_name_inside_a_merge_source_fails_to_load(monkeypatch, capsys, package, merge):
+    """Merging flattens its source; a name repeated there must not hide the first check."""
+    line = merge.format(
+        name='"jaffle/repeat-orders"', wrong=flow(WRONG_REPEAT_ORDERS), right=flow(REPEAT_ORDERS)
+    )
+    path = package / "tests" / "answers.yml"
+    path.write_text(f"tests:\n  {line}\n", encoding="utf-8")
+
+    code, out = run_eval(monkeypatch, capsys, package)
+    assert code == 1, out
+    assert "names 'jaffle/repeat-orders' twice" in out
+
+
+def test_a_key_that_overrides_a_merged_one_still_loads(package):
+    """Overriding a merged key is what a merge is for, at any depth and through aliases."""
+    path = package / "tests" / "answers.yml"
+    rows = flow(RANKED_STORES["expected_rows"])
+    path.write_text(
+        "tests:\n"
+        f'  <<: {{"jaffle/repeat-orders": {flow(WRONG_REPEAT_ORDERS)}}}\n'
+        f'  "jaffle/repeat-orders": {flow(REPEAT_ORDERS)}\n'
+        f'  "jaffle/ranked": &ranked {flow(RANKED_STORES)}\n'
+        '  "jaffle/ranked-again": &again\n'
+        "    <<: *ranked\n"
+        "    why: The same call under a second name.\n"
+        f"    expected_rows: {rows}\n"
+        '  "jaffle/ranked-third":\n'
+        "    <<: [*again, *ranked]\n"
+        "    why: Merged from a merge.\n",
+        encoding="utf-8",
+    )
+    result = report(package)
+    assert result["errors"] == []
+    assert outcomes(result) == {
+        "jaffle/repeat-orders": PASSED,
+        "jaffle/ranked": PASSED,
+        "jaffle/ranked-again": PASSED,
+        "jaffle/ranked-third": PASSED,
+    }
+    assert result["exit_code"] == 0
+
+
+def answer_in_turn(monkeypatch, *changes) -> list:
+    """The warehouse's response to each call changed by the next change, then left alone.
+
+    Returns the calls made, so a test can see each entry ran once.
+    """
+    calls: list = []
+    query = eval_answers.Runtime.query
+
+    def changing(self, *args, **kwargs):
+        response = query(self, *args, **kwargs)
+        change = changes[len(calls)] if len(calls) < len(changes) else None
+        calls.append(args)
+        return change(response) if change else response
+
+    monkeypatch.setattr(eval_answers.Runtime, "query", changing)
+    return calls
+
+
+def change_rows(**cells):
+    """A response change setting each cell on every row, a callable value applied to it."""
+
+    def change(response):
+        rows = [
+            {**row, **{k: v(row[k]) if callable(v) else v for k, v in cells.items()}}
+            for row in response["rows"]
+        ]
+        return {**response, "rows": rows}
+
+    return change
+
+
+@pytest.mark.parametrize("ordered", [False, True], ids=["unordered", "ordered"])
+def test_eval_judges_the_one_response_the_runner_was_given(monkeypatch, package, ordered):
+    """A second run can answer differently; eval scores only the run the runner judged."""
+    large = [{LARGE: True, "orders": 4910}]
+    write_answers(package, {"jaffle/large": boolean_answer(LARGE, True, large, ordered=ordered)})
+    calls = answer_in_turn(monkeypatch, change_rows(**{LARGE: 1}))
+    [row] = report(package)["answers"]
+    assert len(calls) == 1
+    assert (row["outcome"], row["reason"]) == (FAILED, "wrong rows")
+    [change] = row["details"]["changed_rows"]
+    assert change["cells"] == [{"field": LARGE, "expected": True, "actual": 1}]
+
+    entry, field = (RANKED_STORES, "orders") if ordered else (REPEAT_ORDERS, "repeat_orders")
+    write_answers(package, {"jaffle/wrong-first": entry})
+    calls = answer_in_turn(monkeypatch, change_rows(**{field: lambda value: value + 1}))
+    [row] = report(package)["answers"]
+    assert len(calls) == 1
+    assert (row["outcome"], row["reason"]) == (FAILED, "wrong rows")
+    cells = [cell for change in row["details"]["changed_rows"] for cell in change["cells"]]
+    assert cells and all(cell["actual"] == cell["expected"] + 1 for cell in cells)
+
+
+@pytest.mark.parametrize(
+    "returned,expected,outcome",
+    [
+        ({"active": 1}, {"active": True}, FAILED),
+        ([0], [False], FAILED),
+        ({"active": [False, {"open": 0}]}, {"active": [False, {"open": False}]}, FAILED),
+        ({"active": True, "flags": [False]}, {"active": True, "flags": [False]}, PASSED),
+    ],
+    ids=["object", "array", "nested", "booleans-match"],
+)
+def test_a_boolean_inside_a_structured_cell_matches_only_a_boolean(
+    monkeypatch, package, returned, expected, outcome
+):
+    rows = [{**row, "detail": expected} for row in RANKED_STORES["expected_rows"]]
+    write_answers(package, {"jaffle/detail": {**RANKED_STORES, "expected_rows": rows}})
+    calls = answer_in_turn(monkeypatch, change_rows(detail=returned))
+    [row] = report(package)["answers"]
+    assert len(calls) == 1
+    assert row["outcome"] == outcome, row
+
+
 @pytest.mark.parametrize("flags", [(), ("--json",), ("--strict",), ("--json", "--strict")])
 def test_known_wrong_never_excuses_a_call_that_failed_to_run(monkeypatch, capsys, package, flags):
     def warehouse_down(self, *args, **kwargs):
@@ -473,6 +606,25 @@ def test_eval_reads_every_ledger_key():
             [],
         ),
         ([{"v": False}], [{"v": False}], True, [], [], []),
+        (
+            [{"g": "a", "v": {"on": True, "at": [False]}}],
+            [{"g": "a", "v": {"on": 1, "at": [0]}}],
+            False,
+            [
+                {
+                    "row": {"g": "a"},
+                    "cells": [
+                        {
+                            "field": "v",
+                            "expected": {"on": True, "at": [False]},
+                            "actual": {"on": 1, "at": [0]},
+                        }
+                    ],
+                }
+            ],
+            [],
+            [],
+        ),
         (
             [{"g": "a"}, {"g": "b"}],
             [{"g": "b"}],

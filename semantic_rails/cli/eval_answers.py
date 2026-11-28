@@ -25,7 +25,7 @@ import json
 from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -99,23 +99,46 @@ class _DuplicateKey(yaml.constructor.ConstructorError):
 
 
 class _UniqueKeyLoader(Yaml12SafeLoader):
-    """The package YAML loader, refusing a mapping that repeats a key."""
+    """The package YAML loader, refusing a mapping that repeats a key.
+
+    A ``<<`` merge source is checked too, before the base loader flattens it into the
+    mapping that merges it; a key that overrides a merged one is the merge's purpose.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        super().__init__(stream)
+        self._checked: set[int] = set()
 
     def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        self._check_unique(node)
+        return super().construct_mapping(node, deep=deep)
+
+    def _check_unique(self, node: Any) -> None:
+        # Flattening rewrites a node in place, merged keys first, so each original node is
+        # checked once, before that happens. An anchored source can be merged many times.
+        if not isinstance(node, yaml.MappingNode) or id(node) in self._checked:
+            return
+        self._checked.add(id(node))
         seen: set[tuple[str, Any]] = set()
-        for key_node, _ in node.value:
+        for key_node, value_node in node.value:
             if key_node.tag == "tag:yaml.org,2002:merge":
-                continue  # ``<<`` keys may be overridden; that's what they're for.
-            key = self.construct_object(key_node, deep=True)
-            marker = (type(key).__name__, key)
-            try:
-                hash(marker)
-            except TypeError:
-                continue  # The base loader refuses an unhashable key itself.
+                marker: tuple[str, Any] = ("<<", "<<")
+                key: Any = "<<"
+                sources = (
+                    value_node.value if isinstance(value_node, yaml.SequenceNode) else [value_node]
+                )
+                for source in sources:
+                    self._check_unique(source)
+            else:
+                key = self.construct_object(key_node, deep=True)
+                marker = (type(key).__name__, key)
+                try:
+                    hash(marker)
+                except TypeError:
+                    continue  # The base loader refuses an unhashable key itself.
             if marker in seen:
                 raise _DuplicateKey(key, key_node.start_mark)
             seen.add(marker)
-        return super().construct_mapping(node, deep=deep)
 
 
 class _DecimalLoader(_UniqueKeyLoader):
@@ -364,8 +387,9 @@ def _score_answer(
 ) -> dict[str, Any]:
     spec = _for_backend(spec, runtime.warehouse)
     query = spec["query"]
+    recorded = _Recorded(runtime)
     try:
-        report = package_tools._run_test(runtime, entry_id, {**spec, **call})
+        report = package_tools._run_test(cast(Runtime, recorded), entry_id, {**spec, **call})
     except SemanticLayerError as exc:
         if exc.code in RUN_ERRORS:
             return _run_failure(entry_id, spec, exc.code, _issue(exc))
@@ -374,26 +398,44 @@ def _score_answer(
     if not report["ok"] and report["error"]["code"] != "SNAPSHOT_MISMATCH":
         error = report["error"]
         return _result(entry_id, spec, FAILED, error["message"], error["details"])
+    if len(recorded.responses) != 1:
+        reason = f"the call ran {len(recorded.responses)} times where it runs once"
+        return _result(entry_id, spec, FAILED, reason)
     # The runner compares rows as a multiset with Python equality, where true equals 1, so
-    # rows it passes are compared again keeping true/false apart from numbers. An order_by
-    # also fixes their order.
+    # the rows it was given are compared again keeping true/false apart from numbers. An
+    # order_by also fixes their order. The call is not run again: a second run could answer
+    # differently from the one the runner judged.
     ordered = bool(query.get("order_by"))
     try:
         expected = _expected_rows(runtime, query, call, spec["expected_rows"])
-        if report["ok"] or ordered:
-            actual = _answer_rows(runtime, query, call, spec["expected_rows"])
-        else:
-            actual = report["error"]["details"]["actual_rows"]
     except SemanticLayerError as exc:
         return _run_failure(entry_id, spec, exc.code, _issue(exc))
+    actual = _answer_rows(recorded.responses[0], spec["expected_rows"])
     if not ordered:
         expected = package_tools._normalize_rows(expected)
+        actual = package_tools._normalize_rows(actual)
     differences = row_differences(expected, actual, ordered=ordered)
     if report["ok"] and not any(differences.values()):
         return _result(entry_id, spec, PASSED)
     in_order = ordered and not any(row_differences(expected, actual).values())
     reason = "the rows are in a different order" if in_order else "wrong rows"
     return _result(entry_id, spec, FAILED, reason, differences)
+
+
+class _Recorded:
+    """A runtime that keeps each response its ``query`` returns, for the runner to use."""
+
+    def __init__(self, runtime: Runtime) -> None:
+        self._runtime = runtime
+        self.responses: list[dict[str, Any]] = []
+
+    def query(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        response = self._runtime.query(*args, **kwargs)
+        self.responses.append(response)
+        return response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime, name)
 
 
 def _score_refusal(
@@ -479,11 +521,8 @@ def _expected_rows(
     return _each_typed(result_rows(rows, output_columns=columns, zone=zone))
 
 
-def _answer_rows(
-    runtime: Runtime, query: dict[str, Any], call: dict[str, Any], expected: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """The call's rows in its order, without a series flag the frozen rows leave out."""
-    result = runtime.query(query, **call)
+def _answer_rows(result: dict[str, Any], expected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The response's rows in its order, without a series flag the frozen rows leave out."""
     if not any(PERIOD_PARTIAL in row for row in expected):
         rows = [{k: v for k, v in row.items() if k != PERIOD_PARTIAL} for row in result["rows"]]
         result = {**result, "rows": rows}
@@ -569,7 +608,13 @@ def _shared(row: dict[str, Any], other: dict[str, Any]) -> int:
 
 
 def _same(value: Any, other: Any) -> bool:
-    """Equal, with true and false kept apart from 1 and 0."""
+    """Equal, with true and false kept apart from 1 and 0, inside objects and arrays too."""
+    if isinstance(value, dict) and isinstance(other, dict):
+        return value.keys() == other.keys() and all(
+            _same(item, other[key]) for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)) and isinstance(other, (list, tuple)):
+        return len(value) == len(other) and all(map(_same, value, other))
     return isinstance(value, bool) == isinstance(other, bool) and bool(value == other)
 
 
