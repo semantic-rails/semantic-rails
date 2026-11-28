@@ -139,7 +139,8 @@ def test_policy_keys_are_closed_at_load(tmp_path, starter, scoped, kind, action,
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
     assert key in str(exc.value)
-    assert "semantic-rails project upgrade" in str(exc.value)
+    assert "allowed: " in str(exc.value)
+    assert "project upgrade" not in str(exc.value)
 
 
 @pytest.mark.parametrize(("kind", "action", "fields", "key"), CLOSED_POLICY_KEYS)
@@ -199,12 +200,14 @@ def test_flat_release_label_and_rank_limit(tmp_path, starter):
     assert withheld_max_rank(load_package_config(str(path)).semantic_policies[0]) == 3
 
 
-def test_redact_is_refused_with_upgrade_hint(tmp_path, starter):
+def test_redact_is_refused_with_the_allowed_actions(tmp_path, starter):
     path = write_policy_package(tmp_path, starter, "object_access", "redact")
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "semantic-rails project upgrade" in str(exc.value)
+    assert "unsupported action 'redact'" in str(exc.value)
+    assert "Allowed actions: " in str(exc.value)
+    assert "project upgrade" not in str(exc.value)
 
 
 def test_bundled_access_policy_refuses_external_and_allows_internal():

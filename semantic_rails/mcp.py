@@ -1600,15 +1600,11 @@ class SemanticLayerMCPAdapter:
     def __init__(
         self, runtime: Runtime, *, interface: str | None = None, hide_plan: bool | None = None
     ):
-        """``hide_plan`` serves the tools without ``plan``; ``None`` reads ``HIDE_PLAN_ENV``."""
-        raw = interface or ""
-        if str(raw).strip().lower() not in {"", _INTERFACE}:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                "The v1 MCP interface was removed; v2 is the only interface. "
-                "Set interface='v2' or omit interface.",
-                details={"interface": str(raw), "valid_values": [_INTERFACE]},
-            )
+        """``hide_plan`` serves the tools without ``plan``; ``None`` reads ``HIDE_PLAN_ENV``.
+
+        ``interface`` is accepted and ignored: there is one interface, ``v2``, which older
+        embedders still name.
+        """
         self.interface = _INTERFACE
         self.hide_plan = _hide_plan_setting(hide_plan)
         self.runtime = runtime

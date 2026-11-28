@@ -122,18 +122,3 @@ def test_project_validate_names_each_refused_entry(
     code, out = _cli(monkeypatch, capsys, package, "project", "validate", "--mode", mode)
     assert code == 1
     assert [line for line in lines if line not in out] == []
-
-
-def test_project_upgrade_names_each_refused_example(monkeypatch, capsys, package):
-    code, out = _cli(monkeypatch, capsys, package, "project", "upgrade")
-    # The start-only window can't be rewritten without bounding it at now, so the
-    # upgrade stops at that example and writes nothing.
-    assert code == 1
-    assert "Status: unverified" in out
-    assert (
-        "examples/old.yml:11 examples.old_order_axis.query.time.start: "
-        "query.time.start: a start-only window would acquire an upper bound at now"
-    ) in out
-    assert "tests/old.yml:6 tests.old_range.query" in out
-    assert "tests/old.yml:18 tests.old_result_filter.query" in out
-    assert "examples.orders" not in out
