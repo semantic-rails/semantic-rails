@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import operators
 from .ast import child_groups, every_filter
@@ -54,18 +55,30 @@ class _Match:
 
 _SEVERITY_RANK = {"warning": 2, "info": 1}
 _VALID_GRAINS = {"day", "week", "month", "quarter", "year"}
-CaveatPeriod = tuple[datetime | None, datetime | None]
+CaveatPeriod = tuple[str | None, str | None]
+
+
+def _bound(value: str | None, zone: ZoneInfo) -> datetime | None:
+    if not value:
+        return None
+    instant = datetime.fromisoformat(value)
+    return instant if instant.tzinfo is not None else instant.replace(tzinfo=zone)
 
 
 def caveats_in_force(
-    caveats: Iterable[SemanticCaveatConfig], period: CaveatPeriod, *, today: date
+    caveats: Iterable[SemanticCaveatConfig],
+    period: CaveatPeriod,
+    *,
+    today: date,
+    timezone: str = "UTC",
 ) -> list[SemanticCaveatConfig]:
-    """Select by half-open wall-time bounds in the answer's clock, or by today's date."""
-    start, end = period
+    """Select by half-open bounds in the answer's clock, or by today's date."""
+    zone = ZoneInfo(timezone)
+    start, end = (_bound(value, zone) for value in period)
     active = []
     for row in caveats:
-        lower = datetime.fromisoformat(row.valid_from) if row.valid_from else None
-        upper = datetime.fromisoformat(row.valid_to) if row.valid_to else None
+        lower = _bound(row.valid_from, zone)
+        upper = _bound(row.valid_to, zone)
         if lower is None and upper is None:
             active.append(row)
         elif start is None and end is None:
@@ -107,6 +120,7 @@ def caveat_warnings(
     *,
     period: CaveatPeriod = (None, None),
     today: date | None = None,
+    timezone: str = "UTC",
 ) -> list[dict[str, Any]]:
     """Return structured warnings for caveats relevant to a compiled query."""
     payload = dict(payload or {})
@@ -121,7 +135,7 @@ def caveat_warnings(
         verbosity = "compact"
     signals = _signals_for_query(config, compiled, payload)
     matches: list[_Match] = []
-    for caveat in caveats_in_force(caveats, period, today=today or date.today()):
+    for caveat in caveats_in_force(caveats, period, today=today or date.today(), timezone=timezone):
         match = _match_caveat(caveat, config, signals)
         if match is not None:
             matches.append(match)

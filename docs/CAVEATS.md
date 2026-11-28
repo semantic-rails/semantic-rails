@@ -27,7 +27,7 @@ semantic_caveats:
 
 Dates use `YYYY-MM-DD`. Quote a `#N` reference in YAML. Validity uses
 the query's clock and [half-open time windows](QUERY_CALL.md#time-windows-in-depth).
-`valid_from` includes the first day and `valid_to` excludes the last bound.
+`valid_from` includes its date and `valid_to` excludes its date.
 Omitting a bound leaves that side open. Each metric's dated and linked
 caveats must have disjoint windows. A replacement must name an existing
 caveat with the same metric subjects and must keep the chain acyclic. Give the
@@ -37,7 +37,8 @@ An answer cites relevant caveats in `SEMANTIC_CAVEAT_APPLIED` warnings. A
 window spanning a change can cite both caveats, each with its own validity
 dates. For a call with no time bounds, the engine uses today's date in the
 answer's clock. A dated caveat can also carry the existing `time` relevance
-criteria, which still apply. Inspect cards list active, annotated caveats under
-`card.caveats`. Both surfaces respect object visibility, audience and environment.
+criteria, which still apply. For a metric with caveat history, inspect lists
+all active caveats under `card.caveats`. Both surfaces respect object visibility,
+audience and environment.
 
 All five history fields are optional additions to package contract v1.

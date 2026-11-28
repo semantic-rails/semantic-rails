@@ -26,6 +26,7 @@ from semantic_rails.package_tools import (
     run_package_tests_report,
 )
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import SemanticCaveatConfig
 from semantic_rails.visible_view import build_view
 from tests.semantic_rails.conftest import copy_package_config, opened
 
@@ -621,6 +622,58 @@ def test_inspect_shows_the_active_caveat(history_runtime: Runtime, now: str, exp
     }
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        ("2024-11-03T05:45:00Z", "2024-11-03T06:15:00Z", CURRENT),
+        ("2024-01-01T04:30:00Z", "2024-01-01T05:00:00Z", PAST),
+        ("2024-01-01T05:00:00Z", "2024-01-01T05:15:00Z", CURRENT),
+    ],
+)
+def test_answer_uses_instants_and_the_clock_date(
+    history_runtime: Runtime, start: str, end: str, expected: str
+) -> None:
+    config = history_runtime.package_config
+    roles = [
+        replace(role, timezone="America/New_York") if role.id == ORDER_TIME else role
+        for role in config.temporal_roles
+    ]
+    runtime = Runtime.from_config(
+        replace(config, temporal_roles=roles), source_path=history_runtime.source_path
+    )
+    try:
+        answer = runtime.compile(_aov(start=start, end=end), now=HISTORY_NOW)
+        [warning] = _applied(answer)
+        assert warning["details"]["caveat_id"] == expected
+    finally:
+        runtime.close()
+
+
+def test_inspect_includes_active_undated_caveats_alongside_history(
+    history_runtime: Runtime,
+) -> None:
+    config = history_runtime.package_config
+    legacy = SemanticCaveatConfig(
+        "caveat.test.aov_undated",
+        "data_quality",
+        "AOV applies to completed orders.",
+        [HISTORY_METRIC],
+    )
+    runtime = Runtime.from_config(
+        replace(config, semantic_caveats=[*config.semantic_caveats, legacy]),
+        source_path=history_runtime.source_path,
+    )
+    try:
+        inspected = inspect_payload(
+            runtime,
+            object_id=HISTORY_METRIC,
+            partial_query={"policy_context": {"now": HISTORY_NOW}},
+        )
+        assert [row["id"] for row in inspected["card"]["caveats"]] == [CURRENT, legacy.id]
+    finally:
+        runtime.close()
+
+
 def test_hidden_metric_history_never_leaks(history_runtime: Runtime) -> None:
     context = {"audience": "reader"}
     time = {"start": "2023-01-01", "end": AFTER_2023}
@@ -660,6 +713,7 @@ def test_hidden_metric_history_never_leaks(history_runtime: Runtime) -> None:
         ({"recorded_at": "2024-01-02T00:00:00Z"}, "must be a YYYY-MM-DD date"),
         ({"recorded_at": "2024-02-30"}, "must be an ISO date"),
         ({"source_pr": "PR 82"}, "must be an HTTP\\(S\\) URL or a #N reference"),
+        ({"source_pr": "https://github.com:65536/example"}, "must be an HTTP\\(S\\) URL"),
         ({"valid_until": "2025-01-01"}, "valid_until"),
     ],
 )

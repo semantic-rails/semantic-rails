@@ -2765,20 +2765,20 @@ def inspect_payload(
     config = runtime._config
     caveats = scoped_caveats(config, _policy_context(partial_query))
     subjects = [row for row in caveats if object_id in row.object_ids]
-    if subjects:
+    visible_ids = {row.id for row in caveats}
+    history = {row.id: caveat_history(row, visible_ids) for row in subjects}
+    if any(history.values()):
         role_id = payload["card"].get("default_temporal_role")
         zone = next((row.timezone for row in config.temporal_roles if row.id == role_id), "UTC")
         today = local_now(_answer_now(partial_query), zone if known_zone(zone) else "UTC").date()
-        visible_ids = {row.id for row in caveats}
         active = [
             {
                 "id": row.id,
                 "message": row.message,
                 **({"owner": row.owner} if row.owner else {}),
-                **history,
+                **history[row.id],
             }
             for row in caveats_in_force(subjects, (None, None), today=today)
-            if (history := caveat_history(row, visible_ids))
         ]
         if active:
             payload["card"]["caveats"] = active

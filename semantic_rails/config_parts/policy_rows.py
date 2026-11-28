@@ -93,7 +93,8 @@ def _caveat_history_fields(row: dict[str, Any], path: str) -> dict[str, str]:
     if (source := fields.get("source_pr")) and not re.fullmatch(r"#[1-9][0-9]*", source):
         try:
             url = urlsplit(source)
-            if url.scheme not in {"http", "https"} or not url.hostname or re.search(r"\s", source):
+            scheme, host, _port = url.scheme, url.hostname, url.port
+            if scheme not in {"http", "https"} or not host or re.search(r"\s", source):
                 raise ValueError
         except ValueError as exc:
             raise SemanticLayerError(
