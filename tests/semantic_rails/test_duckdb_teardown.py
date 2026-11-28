@@ -142,11 +142,14 @@ def test_connections_a_test_leaves_open_are_closed_and_reported(
     )
     output = result.stdout.str() + result.stderr.str()
 
-    assert result.ret == 0, output
+    # The session fails on a leak: test_leaks, and `kept`, which nothing closes.
+    assert result.ret == 1, output
     result.assert_outcomes(passed=5, xfailed=1)
     summary = "DuckDB connections left open by 1 tests (closed at teardown)"
     assert result.stdout.lines.count(summary) == 1, output
     assert "  1 suite/test_leaky.py::test_leaks" in result.stdout.lines, output
+    assert "DuckDB connections still open after fixture teardown: 1" in result.stdout.lines, output
+    assert "  test_leaky.kept" in result.stdout.lines, output
     assert f"[gw0] {summary}" in result.stderr.str(), output
     assert not any(
         "suite/test_runtime.py::" in line for line in result.stdout.lines if line.startswith("  ")

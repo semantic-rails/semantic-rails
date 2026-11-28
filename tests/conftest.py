@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import uuid
@@ -19,8 +20,12 @@ pytest_plugins = ["scripts.test_quarantine", "scripts.test_sharding"]
 
 _call_connections = pytest.StashKey["weakref.WeakSet[duckdb.DuckDBPyConnection]"]()
 _fixture_connections: weakref.WeakSet[duckdb.DuckDBPyConnection] = weakref.WeakSet()
+# The connections each fixture's setup opened, checked when that fixture is finalized.
+_opened_by: dict[pytest.FixtureDef, weakref.WeakSet[duckdb.DuckDBPyConnection]] = {}
 # Per process: {node ID: connections its call phase opened and left open}.
 _duckdb_leaks: dict[str, int] = {}
+# Per process: connections still open after every fixture has been torn down.
+_duckdb_open_at_end: list[str] = []
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -57,14 +62,31 @@ class _FixtureConnections:
     """A fixture may keep a connection across tests, even one a test body requested."""
 
     @pytest.hookimpl(wrapper=True)
-    def pytest_fixture_setup(self) -> Generator[None, object, object]:
+    def pytest_fixture_setup(
+        self, fixturedef: pytest.FixtureDef
+    ) -> Generator[None, object, object]:
         from tests.semantic_rails.duckdb_limits import open_connections
 
         before = weakref.WeakSet(open_connections)
         try:
             return (yield)
         finally:
-            _fixture_connections.update(c for c in open_connections if c not in before)
+            opened = _opened_by.setdefault(fixturedef, weakref.WeakSet())
+            for connection in [c for c in open_connections if c not in before]:
+                _fixture_connections.add(connection)
+                opened.add(connection)
+
+    def pytest_fixture_post_finalizer(self, fixturedef: pytest.FixtureDef) -> None:
+        # The fixture's own teardown has run; its cached value is still held here, so a
+        # connection it never closed is still open instead of finalized by GC.
+        for connection in _opened_by.pop(fixturedef, ()):
+            if _is_open(connection):
+                _duckdb_open_at_end.append(_fixture_name(fixturedef))
+                connection.close()
+
+
+def _fixture_name(fixturedef: pytest.FixtureDef) -> str:
+    return f"{fixturedef.func.__module__}.{fixturedef.argname}"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -86,6 +108,16 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
         )
 
 
+def _is_open(connection: duckdb.DuckDBPyConnection) -> bool:
+    try:
+        connection.execute("SELECT 1")
+    except duckdb.ConnectionException:
+        return False  # Already closed.
+    except duckdb.Error:
+        pass
+    return True
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
     # Close after the test's own fixtures so GC never finalizes a leaked
@@ -95,39 +127,63 @@ def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
     finally:
         left_open = 0
         for connection in list(item.stash.get(_call_connections, ())):
-            try:
-                connection.execute("SELECT 1")
-            except duckdb.ConnectionException:
-                continue  # Already closed.
-            except duckdb.Error:
-                pass
-            left_open += 1
-            connection.close()
+            if _is_open(connection):
+                left_open += 1
+                connection.close()
         if left_open:
             _duckdb_leaks[item.nodeid] = left_open
 
 
 def _duckdb_leak_report() -> list[str]:
-    worst = sorted(_duckdb_leaks.items(), key=lambda leak: (-leak[1], leak[0]))[:20]
-    return [
-        f"DuckDB connections left open by {len(_duckdb_leaks)} tests (closed at teardown)",
-        *(f"  {count} {nodeid}" for nodeid, count in worst),
-    ]
+    lines = []
+    if _duckdb_leaks:
+        lines.append(
+            f"DuckDB connections left open by {len(_duckdb_leaks)} tests (closed at teardown)"
+        )
+        lines += [
+            f"  {count} {nodeid}"
+            for nodeid, count in sorted(_duckdb_leaks.items(), key=lambda i: (-i[1], i[0]))
+        ]
+    if _duckdb_open_at_end:
+        lines.append(
+            f"DuckDB connections still open after fixture teardown: {len(_duckdb_open_at_end)}"
+        )
+        lines += [f"  {where}" for where in sorted(_duckdb_open_at_end)]
+    if lines:
+        lines.append("Close every connection a test or fixture opens; see DEVELOPMENT.md.")
+    return lines
 
 
-def pytest_sessionfinish(session: pytest.Session) -> None:
+# Innermost wrapper, so this runs right after the session's fixtures are torn down and
+# before the terminal summary reports it.
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_sessionfinish(session: pytest.Session) -> Generator[None, None, None]:
+    result = yield  # The session's own fixtures are torn down by now.
+    from tests.semantic_rails.duckdb_limits import open_connections
+
+    gc.collect()
+    for connection in list(open_connections):
+        if _is_open(connection):
+            _duckdb_open_at_end.append("opened outside a fixture and a test body")
+            connection.close()
     workeroutput = getattr(session.config, "workeroutput", None)
     if workeroutput is not None:  # xdist worker: hand the counts to the controller.
         workeroutput["duckdb_leaks"] = dict(_duckdb_leaks)
+        workeroutput["duckdb_open_at_end"] = list(_duckdb_open_at_end)
         worker = os.environ.get("PYTEST_XDIST_WORKER", "worker")
         sys.stderr.write("".join(f"[{worker}] {line}\n" for line in _duckdb_leak_report()))
+    elif (_duckdb_leaks or _duckdb_open_at_end) and session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED  # The guard: no leaked handles.
+    return result
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node, error) -> None:
-    _duckdb_leaks.update(getattr(node, "workeroutput", {}).get("duckdb_leaks", {}))
+    output = getattr(node, "workeroutput", {})
+    _duckdb_leaks.update(output.get("duckdb_leaks", {}))
+    _duckdb_open_at_end.extend(output.get("duckdb_open_at_end", []))
 
 
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     for line in _duckdb_leak_report():
-        terminalreporter.write_line(line)
+        terminalreporter.write_line(line, red=True)
