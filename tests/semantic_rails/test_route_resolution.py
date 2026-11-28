@@ -30,6 +30,7 @@ import os
 import random
 import textwrap
 import weakref
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -313,8 +314,8 @@ def _route_notes(out: dict[str, Any]) -> dict[tuple[str, str], tuple[str, list[s
 
 
 def _refusal(pkg: Path, query: dict[str, Any]) -> SemanticLayerError:
-    with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(str(pkg)).query(query)
+    with pytest.raises(SemanticLayerError) as exc_info, closing(Runtime.from_path(str(pkg))) as rt:
+        rt.query(query)
     assert exc_info.value.code == "AMBIGUOUS_PATH", exc_info.value
     return exc_info.value
 
@@ -354,13 +355,13 @@ INVOICE_HOME = [*INVOICE_ACCOUNT, *HOME]
 INVOICE_BRANCH = [*INVOICE_ACCOUNT, *BRANCH]
 
 
-def test_the_direct_key_and_a_recorded_route_each_answer_naming_the_route(tmp_path):
+def test_the_direct_key_and_a_recorded_route_each_answer_naming_the_route(tmp_path, owned_runtime):
     """Account to region: the account's own branch key, or its owner's home region. The direct
     key answers; with the owner route recorded, the owner's answer comes back. Either way the
     answer's routes names the chosen route and how it was chosen, and nothing more."""
     query = _query(BALANCE, group_by=[REGION_NAME])
     direct = _write_package(tmp_path / "direct")
-    out = Runtime.from_path(str(direct)).query(query)
+    out = owned_runtime(direct).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
     assert _route_notes(out) == {(ACCOUNT, REGION): ("own_key", BRANCH)}
     assert "warnings" not in out
@@ -378,7 +379,7 @@ def test_the_direct_key_and_a_recorded_route_each_answer_naming_the_route(tmp_pa
     assert _pin(ACCOUNT, REGION, HOME) in out["routes"][0]["alternatives"]
 
     pinned = _write_package(tmp_path / "home", pins=[_pin("account", "region", HOME)])
-    out = Runtime.from_path(str(pinned)).query(query)
+    out = owned_runtime(pinned).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_HOME)
     assert out["routes"] == [{"from": ACCOUNT, "to": REGION, "via": HOME, "basis": "recorded"}]
     assert _gold(BY_BRANCH) != _gold(BY_HOME)
@@ -393,13 +394,13 @@ def test_the_direct_key_and_a_recorded_route_each_answer_naming_the_route(tmp_pa
     ],
 )  # fmt: skip
 def test_no_route_where_nothing_was_chosen_and_the_minimal_response_names_only_the_route(
-    tmp_path, relationships, pins, verbosity, routes
+    tmp_path, relationships, pins, verbosity, routes, owned_runtime
 ):
     """A pair with one route had nothing to choose, recorded or not; the minimal response (the
     MCP default) names a chosen route as {from, to, via} alone."""
     pkg = _write_package(tmp_path, relationships=relationships, pins=pins)
     query = _query(BALANCE, group_by=[REGION_NAME])
-    out = Runtime.from_path(str(pkg)).query(query, verbosity=verbosity)
+    out = owned_runtime(pkg).query(query, verbosity=verbosity)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
     assert out.get("routes") == routes
 
@@ -638,7 +639,7 @@ def test_route_search_expands_only_prefixes_that_can_still_reach_the_target():
     ],
 )
 def test_routes_without_one_direct_key_are_refused_and_each_pin_answers_its_gold(
-    tmp_path, relationships, query, columns, start, target, golds
+    tmp_path, relationships, query, columns, start, target, golds, owned_runtime
 ):
     pkg = _write_package(tmp_path / "refused", relationships=relationships)
     err = _refusal(pkg, query)
@@ -655,18 +656,18 @@ def test_routes_without_one_direct_key_are_refused_and_each_pin_answers_its_gold
         if tuple(path) not in golds:
             continue
         pinned = _write_package(tmp_path / f"pin{index}", relationships=relationships, pins=[pin])
-        out = Runtime.from_path(str(pinned)).query(query)
+        out = owned_runtime(pinned).query(query)
         assert _rows(out, columns) == _gold(golds[tuple(path)])
         assert _route_notes(out)[(start, target)] == ("recorded", path)
     assert len({tuple(_gold(sql)) for sql in golds.values()}) == len(golds)
 
 
-def test_a_grouping_by_an_accounts_kind_reads_each_accounts_own_region(tmp_path):
+def test_a_grouping_by_an_accounts_kind_reads_each_accounts_own_region(tmp_path, owned_runtime):
     """Regions by account kind groups the accounts' rows: each account's own branch region key
     reads its region (a parent's value on its children's rows), so nothing asks which route
     from a region. A row recording a region's accounts as its owners' accounts stands."""
     query = _query(REGION_COUNT, group_by=[ACCOUNT_KIND])
-    out = Runtime.from_path(str(_write_package(tmp_path / "rows"))).query(query)
+    out = owned_runtime(_write_package(tmp_path / "rows")).query(query)
     assert _rows(out, [ACCOUNT_KIND, "v"]) == _gold(
         "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM accounts a "
         "JOIN regions r ON r.region_id = a.branch_region_id GROUP BY 1"
@@ -674,7 +675,7 @@ def test_a_grouping_by_an_accounts_kind_reads_each_accounts_own_region(tmp_path)
     (note,) = [row for row in out["warnings"] if row["code"] == "REWRITE_APPLIED"]
     assert (note["details"]["rewrite_kind"], note["details"]["path"]) == ("parent_value", BRANCH)
     pinned = _write_package(tmp_path / "pinned", pins=[_pin(REGION, ACCOUNT, [*reversed(HOME)])])
-    out = Runtime.from_path(str(pinned)).query(query)
+    out = owned_runtime(pinned).query(query)
     assert _rows(out, [ACCOUNT_KIND, "v"]) == _gold(
         "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
         "JOIN owners o ON o.home_region_id = r.region_id "
@@ -744,15 +745,13 @@ def test_the_refusal_reads_the_routes_by_their_labels(tmp_path):
     ],
 )
 def test_adding_a_route_never_changes_an_answer_silently(
-    tmp_path, before, added, query, columns, note
+    tmp_path, before, added, query, columns, note, owned_runtime
 ):
     """A pair with one route answers by it. Give it another route: a pair with no one own key
     along its routes is refused from then on (the account now has two keys to the region); a
     pair whose old route follows the entities' own keys keeps its answer and now notes it,
     as the start's own key (``own_key``) or a waypoint's (a lookup ``default``)."""
-    out = Runtime.from_path(str(_write_package(tmp_path / "before", relationships=before))).query(
-        query
-    )
+    out = owned_runtime(_write_package(tmp_path / "before", relationships=before)).query(query)
     assert _route_notes(out) == {}
     gold = AMOUNT_BY_BRANCH if note is None or note[0][0] == INVOICE else BY_BRANCH
     assert _rows(out, columns) == _gold(gold)
@@ -760,7 +759,7 @@ def test_adding_a_route_never_changes_an_answer_silently(
     if note is None:
         _refusal(after, query)
         return
-    out = Runtime.from_path(str(after)).query(query)
+    out = owned_runtime(after).query(query)
     assert _rows(out, columns) == _gold(gold)
     assert _route_notes(out) == dict([note])
 

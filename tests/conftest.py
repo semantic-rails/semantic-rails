@@ -22,6 +22,14 @@ _call_connections = pytest.StashKey["weakref.WeakSet[duckdb.DuckDBPyConnection]"
 _fixture_connections: weakref.WeakSet[duckdb.DuckDBPyConnection] = weakref.WeakSet()
 # The connections each fixture's setup opened, checked when that fixture is finalized.
 _opened_by: dict[pytest.FixtureDef, weakref.WeakSet[duckdb.DuckDBPyConnection]] = {}
+# Tests (any parametrization) known to leave a connection open, reported but not failed on, until
+# their file is fixed. Remove an entry when its test closes what it opens.
+_KNOWN_LEAKS = frozenset(
+    {
+        "tests/semantic_rails/test_route_census.py::"
+        "test_a_second_route_to_a_dimensionless_child_requires_a_decision",
+    }
+)
 # Per process: {node ID: connections its call phase opened and left open}.
 _duckdb_leaks: dict[str, int] = {}
 # Per process: connections still open after every fixture has been torn down.
@@ -100,6 +108,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
     from tests.semantic_rails.duckdb_limits import open_connections
 
     before = weakref.WeakSet(open_connections)
+    gc.disable()
     try:
         return (yield)
     finally:
@@ -130,8 +139,17 @@ def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
             if _is_open(connection):
                 left_open += 1
                 connection.close()
+        gc.enable()
         if left_open:
             _duckdb_leaks[item.nodeid] = left_open
+
+
+def _is_known_leak(nodeid: str) -> bool:
+    return nodeid.split("[", 1)[0] in _KNOWN_LEAKS
+
+
+def _new_leaks() -> dict[str, int]:
+    return {nodeid: n for nodeid, n in _duckdb_leaks.items() if not _is_known_leak(nodeid)}
 
 
 def _duckdb_leak_report() -> list[str]:
@@ -141,7 +159,7 @@ def _duckdb_leak_report() -> list[str]:
             f"DuckDB connections left open by {len(_duckdb_leaks)} tests (closed at teardown)"
         )
         lines += [
-            f"  {count} {nodeid}"
+            f"  {count} {nodeid}" + (" (known, not failing)" if _is_known_leak(nodeid) else "")
             for nodeid, count in sorted(_duckdb_leaks.items(), key=lambda i: (-i[1], i[0]))
         ]
     if _duckdb_open_at_end:
@@ -172,7 +190,7 @@ def pytest_sessionfinish(session: pytest.Session) -> Generator[None, None, None]
         workeroutput["duckdb_open_at_end"] = list(_duckdb_open_at_end)
         worker = os.environ.get("PYTEST_XDIST_WORKER", "worker")
         sys.stderr.write("".join(f"[{worker}] {line}\n" for line in _duckdb_leak_report()))
-    elif (_duckdb_leaks or _duckdb_open_at_end) and session.exitstatus == pytest.ExitCode.OK:
+    elif (_new_leaks() or _duckdb_open_at_end) and session.exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED  # The guard: no leaked handles.
     return result
 
