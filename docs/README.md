@@ -6,6 +6,7 @@ Start with these canonical docs:
   statuses, and supported-vs-experimental guidance for agent clients.
 - [Deployment](DEPLOYMENT.md) for Docker, ASGI, health/readiness, request context, and API-key shim setup.
 - [Package authoring](PACKAGE_AUTHORING.md) for the schema.
+- [Caveat history](CAVEATS.md) for dated caveats, replacements, and how answers cite them.
 - [Architect MCP](ARCHITECT_MCP.md) for revision-safe concurrent package mutations.
 - [The query call](QUERY_CALL.md) for the call's ten fields, filter words, time windows, the answer and refusals.
 - [Query API](QUERY_API.md) for agent discovery, planning, validation, compile-only SQL, and execution surfaces.

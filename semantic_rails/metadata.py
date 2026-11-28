@@ -2778,7 +2778,7 @@ def inspect_payload(
                 **({"owner": row.owner} if row.owner else {}),
                 **history[row.id],
             }
-            for row in caveats_in_force(subjects, (None, None), today=today)
+            for row in caveats_in_force(subjects, today)
         ]
         if active:
             payload["card"]["caveats"] = active

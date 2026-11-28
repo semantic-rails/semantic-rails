@@ -288,17 +288,13 @@ def _compiled_warnings(
         canonical, notes = payload, list(payload.get("_call_notes") or [])
         period: CaveatPeriod = (None, None)
         zone = "UTC"
-        today = None
         if any(row.valid_from or row.valid_to for row in config.semantic_caveats):
             zone = _time_zone(config, compiled) or "UTC"
             now = _answer_now(canonical)
             window = _answer_window(compiled["logical_plan"].time or {}, now=now, zone=zone)
             if window:
                 period = window.start, window.end
-            today = local_now(now, zone).date()
-        warnings.extend(
-            caveat_warnings(config, compiled, canonical, period=period, today=today, timezone=zone)
-        )
+        warnings.extend(caveat_warnings(config, compiled, canonical, period=period, timezone=zone))
         warnings.extend(_expression_normalized_away_warnings(canonical, compiled))
         warnings.extend(_shorthand_normalized_warnings(notes))
     return warnings

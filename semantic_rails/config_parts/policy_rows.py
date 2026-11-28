@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 from datetime import date
-from itertools import pairwise
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -300,11 +298,11 @@ def _validate_caveat_history(config: PackageConfig, path: str) -> None:
     links = {row.id: row.supersedes for row in caveats.values() if row.supersedes}
     metric_ids = {row.id for row in config.metric_recipes}
     subjects = {row.id: metric_ids.intersection(row.object_ids) for row in caveats.values()}
-    for successor, predecessor in links.items():
-        if not subjects[successor] or subjects[successor] != subjects.get(predecessor):
+    for successor_id, predecessor_id in links.items():
+        if not subjects[successor_id] or subjects[successor_id] != subjects.get(predecessor_id):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{path}: caveat {successor} supersedes must name an existing caveat "
+                f"{path}: caveat {successor_id} supersedes must name an existing caveat "
                 "with the same metric subjects",
             )
 
@@ -321,18 +319,22 @@ def _validate_caveat_history(config: PackageConfig, path: str) -> None:
             current = links[current]
         checked.update(chain)
 
-    predecessors = set(links.values())
-    by_metric: dict[str, list[SemanticCaveatConfig]] = defaultdict(list)
-    for row in caveats.values():
-        if row.valid_from or row.valid_to or row.id in links or row.id in predecessors:
-            for metric_id in sorted(subjects[row.id]):
-                by_metric[metric_id].append(row)
-    for metric_id, rows in by_metric.items():
-        rows.sort(key=lambda row: row.valid_from)
-        for earlier, later in pairwise(rows):
-            if not earlier.valid_to or earlier.valid_to > later.valid_from:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: caveats {earlier.id} and {later.id} have overlapping "
-                    f"validity windows for {metric_id}",
-                )
+    for successor_id, predecessor_id in links.items():
+        successor, predecessor = caveats[successor_id], caveats[predecessor_id]
+        if successor.valid_from < predecessor.valid_from:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: caveat {successor_id} valid_from precedes {predecessor_id} valid_from",
+            )
+        shared_audience = (
+            not successor.audiences
+            or not predecessor.audiences
+            or bool(set(successor.audiences).intersection(predecessor.audiences))
+        )
+        if shared_audience and (
+            not predecessor.valid_to or predecessor.valid_to > successor.valid_from
+        ):
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: caveats {predecessor_id} and {successor_id} have overlapping validity windows",
+            )

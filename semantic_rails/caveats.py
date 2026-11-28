@@ -15,8 +15,9 @@ from zoneinfo import ZoneInfo
 
 from . import operators
 from .ast import child_groups, every_filter
-from .clock import current_time, local_now, shift_period
+from .clock import shift_period
 from .diagnostics import semantic_issue
+from .errors import SemanticLayerError
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
 from .policy_rules import check_request_environment
@@ -65,16 +66,29 @@ def _bound(value: str | None, zone: ZoneInfo) -> datetime | None:
     return instant if instant.tzinfo is not None else instant.replace(tzinfo=zone)
 
 
+def _query_bound(value: str | None, zone: ZoneInfo, path: str) -> datetime | None:
+    try:
+        return _bound(value, zone)
+    except ValueError as exc:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path} must be an ISO date or date-time",
+            details={"path": path, "received_value": value},
+        ) from exc
+
+
 def caveats_in_force(
     caveats: Iterable[SemanticCaveatConfig],
-    period: CaveatPeriod,
+    period: CaveatPeriod | date,
     *,
-    today: date,
     timezone: str = "UTC",
 ) -> list[SemanticCaveatConfig]:
-    """Select by half-open bounds in the answer's clock, or by today's date."""
+    """Select for an as-of date or for a half-open query window with optional bounds."""
     zone = ZoneInfo(timezone)
-    start, end = (_bound(value, zone) for value in period)
+    start = end = None
+    if isinstance(period, tuple):
+        start = _query_bound(period[0], zone, "time.start")
+        end = _query_bound(period[1], zone, "time.end")
     active = []
     for row in caveats:
         try:
@@ -86,8 +100,10 @@ def caveats_in_force(
             continue
         if lower is None and upper is None:
             active.append(row)
-        elif start is None and end is None:
-            if (lower is None or lower.date() <= today) and (upper is None or today < upper.date()):
+        elif isinstance(period, date):
+            if (lower is None or lower.date() <= period) and (
+                upper is None or period < upper.date()
+            ):
                 active.append(row)
         elif (
             (start is None or end is None or start < end)
@@ -124,7 +140,6 @@ def caveat_warnings(
     payload: dict[str, Any] | None = None,
     *,
     period: CaveatPeriod = (None, None),
-    today: date | None = None,
     timezone: str = "UTC",
 ) -> list[dict[str, Any]]:
     """Return structured warnings for caveats relevant to a compiled query."""
@@ -140,8 +155,7 @@ def caveat_warnings(
         verbosity = "compact"
     signals = _signals_for_query(config, compiled, payload)
     matches: list[_Match] = []
-    today = today or local_now(current_time(), timezone).date()
-    for caveat in caveats_in_force(caveats, period, today=today, timezone=timezone):
+    for caveat in caveats_in_force(caveats, period, timezone=timezone):
         match = _match_caveat(caveat, config, signals)
         if match is not None:
             matches.append(match)

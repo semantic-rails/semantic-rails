@@ -543,6 +543,16 @@ HISTORY = [
     },
 ]
 HISTORY_NOW = "2024-06-10T12:00:00Z"
+VISIBLE_MEASURE_CAVEAT = {
+    "id": "caveat.test.revenue_with_aov_history",
+    "kind": "data_quality",
+    "message": f"The 2023 data for {HISTORY_METRIC} was reconciled separately.",
+    "object_ids": [REVENUE],
+    "audiences": ["reader", "auditor"],
+    "valid_from": "2023-01-01",
+    "valid_to": AFTER_2023,
+    "source_pr": "#249",
+}
 
 
 @pytest.fixture(scope="module")
@@ -550,7 +560,7 @@ def history_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtim
     package = copy_package_config(
         tmp_path_factory.mktemp("history"), "jaffle_shop", preseed_db=True
     )
-    _write_caveats(package, HISTORY)
+    _write_caveats(package, [*HISTORY, VISIBLE_MEASURE_CAVEAT])
     policy_path = package / "policies.yml"
     policies = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
     policies["semantic_policies"].append(
@@ -582,9 +592,10 @@ def _aov(**time: object) -> dict:
     [
         ({"start": "2023-01-01", "end": AFTER_2023}, [PAST]),
         ({"last": {"unit": "year", "value": 1}}, [PAST]),
-        ({}, [CURRENT]),
-        ({"this": "year"}, [CURRENT]),
+        ({}, [PAST, CURRENT]),
+        ({"grain": "month"}, [PAST, CURRENT]),
         ({"start": AFTER_2023, "end": "2024-02-01"}, [CURRENT]),
+        ({"end": "2025-01-01"}, [PAST, CURRENT]),
         ({"start": "2023-12-01", "end": "2024-02-01"}, [PAST, CURRENT]),
         ({"start": "2023-12-01"}, [PAST, CURRENT]),
         ({"start": "2022-01-01", "end": "2023-01-01"}, []),
@@ -605,6 +616,40 @@ def test_answer_cites_caveats_in_the_receipt_window(
         assert details["source_pr"] == authored["source_pr"]
         for key in ("valid_from", "valid_to", "supersedes"):
             assert details.get(key) == authored.get(key)
+
+
+def test_this_year_cites_a_change_before_today(history_runtime: Runtime) -> None:
+    config = history_runtime.package_config
+    cutover = "2024-03-01"
+    past, current, *_ = config.semantic_caveats
+    rows = [replace(past, valid_to=cutover), replace(current, valid_from=cutover)]
+    runtime = Runtime.from_config(
+        replace(config, semantic_caveats=rows), source_path=history_runtime.source_path
+    )
+    try:
+        answer = runtime.compile(_aov(this="year"), now=HISTORY_NOW)
+        assert [row["details"]["caveat_id"] for row in _applied(answer)] == [PAST, CURRENT]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("bound", ["start", "end"])
+@pytest.mark.parametrize("operation", ["compile", "validate"])
+def test_invalid_query_bound_is_a_typed_refusal(
+    history_runtime: Runtime, bound: str, operation: str
+) -> None:
+    # Even a metric with no applicable dated caveats must get a typed refusal.
+    query = _revenue_query(time={"temporal_role": ORDER_TIME, bound: "2017/01/01"})
+    if operation == "compile":
+        with pytest.raises(SemanticLayerError) as refusal:
+            history_runtime.compile(query, now=HISTORY_NOW)
+        assert refusal.value.code == "INVALID_QUERY"
+        assert refusal.value.details["path"] == f"time.{bound}"
+    else:
+        validated = history_runtime.validate(query, now=HISTORY_NOW)
+        assert not validated["ok"]
+        assert validated["errors"][0]["code"] == "INVALID_QUERY"
+        assert f"time.{bound}" in validated["errors"][0]["message"]
 
 
 @pytest.mark.parametrize(("now", "expected"), [("2023-06-10", PAST), (HISTORY_NOW, CURRENT)])
@@ -677,14 +722,24 @@ def test_inspect_includes_active_undated_caveats_alongside_history(
 def test_hidden_metric_history_never_leaks(history_runtime: Runtime) -> None:
     context = {"audience": "reader"}
     time = {"start": "2023-01-01", "end": AFTER_2023}
-    visible = history_runtime.query(
-        {"select": [REVENUE], "time": {"temporal_role": ORDER_TIME, **time}},
-        context=context,
-        now=HISTORY_NOW,
+    revenue_call = _revenue_query(time={"temporal_role": ORDER_TIME, **time})
+    auditor = {"audience": "auditor"}
+    shown = history_runtime.query(revenue_call, context=auditor, now=HISTORY_NOW)
+    assert [row["details"]["caveat_id"] for row in _applied(shown)] == [
+        VISIBLE_MEASURE_CAVEAT["id"]
+    ]
+    shown_card = inspect_payload(
+        history_runtime,
+        object_id=REVENUE,
+        partial_query={"policy_context": {**auditor, "now": time["start"]}},
     )
+    assert [row["id"] for row in shown_card["card"]["caveats"]] == [VISIBLE_MEASURE_CAVEAT["id"]]
+    visible = history_runtime.query(revenue_call, context=context, now=HISTORY_NOW)
     assert visible["ok"] and not _applied(visible)
     card = inspect_payload(
-        history_runtime, object_id=REVENUE, partial_query={"policy_context": context}
+        history_runtime,
+        object_id=REVENUE,
+        partial_query={"policy_context": {**context, "now": time["start"]}},
     )
     assert "caveats" not in card["card"]
     error = history_runtime.validate(_aov(**time), context=context, now=HISTORY_NOW)
@@ -696,7 +751,7 @@ def test_hidden_metric_history_never_leaks(history_runtime: Runtime) -> None:
         )
     assert refusal.value.code == "OBJECT_NOT_FOUND"
     channels = json.dumps([visible, card, error, str(refusal.value), refusal.value.details])
-    for row in HISTORY:
+    for row in [*HISTORY, VISIBLE_MEASURE_CAVEAT]:
         for key in ("id", "message", "source_pr"):
             assert row[key] not in channels
 
@@ -705,6 +760,11 @@ def test_hidden_metric_history_never_leaks(history_runtime: Runtime) -> None:
     ("change", "message"),
     [
         ({"valid_from": "2023-12-31"}, "overlapping validity windows"),
+        ({"valid_from": "2023-12-31", "audiences": ["reader"]}, "overlapping validity windows"),
+        (
+            {"valid_from": "2022-01-01", "valid_to": "2023-01-01"},
+            "valid_from precedes",
+        ),
         ({"valid_from": "2025-01-01", "valid_to": "2024-01-01"}, "valid_to must be later"),
         ({"valid_to": AFTER_2023}, "valid_to must be later"),
         ({"supersedes": "caveat.missing"}, "supersedes must name an existing caveat"),
@@ -723,3 +783,52 @@ def test_invalid_caveat_history_is_refused(tmp_path: Path, change: dict, message
     with pytest.raises(SemanticLayerError, match=message) as exc:
         load_package_config(str(package))
     assert exc.value.code == "INVALID_CONFIG"
+
+
+def test_incident_can_overlap_a_definition_period(tmp_path: Path) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    incident = {
+        "id": "caveat.test.aov_incident",
+        "kind": "data_quality",
+        "message": "A store's order records arrived late in March.",
+        "object_ids": [HISTORY_METRIC],
+        "valid_from": "2024-03-01",
+        "valid_to": "2024-04-01",
+    }
+    _write_caveats(package, [*HISTORY, incident])
+    runtime = Runtime.from_path(str(package))
+    try:
+        answer = runtime.compile(_aov(start="2024-03-01", end="2024-04-01"), now=HISTORY_NOW)
+        assert [row["details"]["caveat_id"] for row in _applied(answer)] == [
+            CURRENT,
+            incident["id"],
+        ]
+    finally:
+        runtime.close()
+
+
+def test_replacement_for_another_audience_can_overlap_and_omits_pointer(tmp_path: Path) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    _write_caveats(
+        package,
+        [
+            {**HISTORY[0], "audiences": ["internal"], "valid_to": "2025-01-01"},
+            {**HISTORY[1], "audiences": ["public"]},
+        ],
+    )
+    runtime = Runtime.from_path(str(package))
+    try:
+        for audience, expected in (("internal", PAST), ("public", CURRENT)):
+            context = {"audience": audience, "now": HISTORY_NOW}
+            answer = runtime.compile(_aov(this="year"), context=context, now=HISTORY_NOW)
+            [warning] = _applied(answer)
+            assert warning["details"]["caveat_id"] == expected
+            assert "supersedes" not in warning["details"]
+            card = inspect_payload(
+                runtime, object_id=HISTORY_METRIC, partial_query={"policy_context": context}
+            )
+            [active] = card["card"]["caveats"]
+            assert active["id"] == expected
+            assert "supersedes" not in active
+    finally:
+        runtime.close()
