@@ -108,10 +108,14 @@ class _UniqueKeyLoader(Yaml12SafeLoader):
                 continue  # ``<<`` keys may be overridden; that's what they're for.
             key = self.construct_object(key_node, deep=True)
             marker = (type(key).__name__, key)
+            try:
+                hash(marker)
+            except TypeError:
+                continue  # The base loader refuses an unhashable key itself.
             if marker in seen:
                 raise _DuplicateKey(key, key_node.start_mark)
             seen.add(marker)
-        return super().construct_mapping(node, deep=deep)  # type: ignore[no-any-return]
+        return super().construct_mapping(node, deep=deep)
 
 
 class _DecimalLoader(_UniqueKeyLoader):
