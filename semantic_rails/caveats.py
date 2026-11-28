@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from . import operators
 from .ast import child_groups, every_filter
-from .clock import shift_period
+from .clock import current_time, local_now, shift_period
 from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
@@ -77,8 +77,13 @@ def caveats_in_force(
     start, end = (_bound(value, zone) for value in period)
     active = []
     for row in caveats:
-        lower = _bound(row.valid_from, zone)
-        upper = _bound(row.valid_to, zone)
+        try:
+            lower = _bound(row.valid_from, zone)
+            upper = _bound(row.valid_to, zone)
+        except ValueError:
+            # An in-memory config can bypass YAML validation. A malformed advisory row
+            # cannot apply to a well-defined period.
+            continue
         if lower is None and upper is None:
             active.append(row)
         elif start is None and end is None:
@@ -135,7 +140,8 @@ def caveat_warnings(
         verbosity = "compact"
     signals = _signals_for_query(config, compiled, payload)
     matches: list[_Match] = []
-    for caveat in caveats_in_force(caveats, period, today=today or date.today(), timezone=timezone):
+    today = today or local_now(current_time(), timezone).date()
+    for caveat in caveats_in_force(caveats, period, today=today, timezone=timezone):
         match = _match_caveat(caveat, config, signals)
         if match is not None:
             matches.append(match)
